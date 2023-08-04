@@ -72,7 +72,6 @@ private:
 };
 #endif
 
-#ifndef Q_OS_MAC
 class QFramelessButton;
 class SearchLineEdit : public QLineEdit
 {
@@ -99,29 +98,5 @@ private slots:
 signals:
     void searchDelayedChanged( const QString& );
 };
-#else
-
-/* On Mac, we try to use the native NSSearchField */
-#include <QMacCocoaViewContainer>
-
-class SearchLineEdit : public QMacCocoaViewContainer
-{
-    Q_OBJECT
-
-public:
-    SearchLineEdit(QWidget *parent = 0);
-    virtual ~SearchLineEdit() {}
-
-    virtual QSize sizeHint() const { return QSize(150, 40); }
-
-public slots:
-    void clear() {}
-
-signals:
-    void searchDelayedChanged( const QString& );
-    void textEdited( const QString& );
-};
-#endif
 
 #endif
-

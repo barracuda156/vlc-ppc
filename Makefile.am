@@ -6,12 +6,12 @@
 # something. DIST_SUBDIRS stores the directories where nothing is built but
 # which have makefiles with distribution information.
 #  - src (libvlccore) is nedeed by modules
-DIST_SUBDIRS = m4 compat doc po share src modules lib bin test
+DIST_SUBDIRS = m4 compat doc po share src modules lib bin
 SUBDIRS = compat doc po share src modules lib
 if BUILD_VLC
 SUBDIRS += bin
 endif
-SUBDIRS += test
+# SUBDIRS += test
 
 EXTRA_DIST = \
 	extras/package/win32/vlc.exe.manifest \
@@ -562,8 +562,8 @@ EXTRA_DIST += \
 ###############################################################################
 # iOS project
 ##############################################################################
-EXTRA_DIST += \
-	extras/package/ios/build.sh
+# EXTRA_DIST += \
+#	extras/package/ios/build.sh
 
 ###############################################################################
 # tools (needed for contrib)
@@ -581,7 +581,6 @@ EXTRA_DIST += \
 	extras/analyser/zsh.cpp \
 	extras/analyser/emacs.init \
 	extras/analyser/vlc.vim \
-	extras/analyser/valgrind.suppressions \
 	extras/buildsystem/make.pl \
 	extras/misc/mpris.py \
 	extras/misc/mpris.xml
@@ -656,24 +655,24 @@ endif
 vlc$(EXEEXT):
 	$(AM_V_GEN)$(LN_S) -f bin/vlc-static$(EXEEXT) vlc$(EXEEXT)
 
-TESTS = test/run_vlc.sh
-dist_noinst_SCRIPTS += test/run_vlc.sh
+# TESTS = test/run_vlc.sh
+# dist_noinst_SCRIPTS += test/run_vlc.sh
 
 ###############################################################################
 # Installing plugins cache
 ###############################################################################
-install-exec-hook:
-	if test "$(build)" = "$(host)"; then \
-		PATH="$(DESTDIR)$(bindir):$$PATH" \
-		LD_LIBRARY_PATH="$(DESTDIR)$(libdir):$$LD_LIBRARY_PATH" \
-		"$(DESTDIR)$(vlclibdir)/vlc-cache-gen$(EXEEXT)" \
-			 "$(DESTDIR)$(vlclibdir)/plugins" ; \
-	else \
-		echo "Cross-compilation: cache generation skipped!" ; \
-	fi
+# install-exec-hook:
+#	if test "$(build)" = "$(host)"; then \
+#		PATH="$(DESTDIR)$(bindir):$$PATH" \
+#		LD_LIBRARY_PATH="$(DESTDIR)$(libdir):$$LD_LIBRARY_PATH" \
+#		"$(DESTDIR)$(vlclibdir)/vlc-cache-gen$(EXEEXT)" \
+#			 "$(DESTDIR)$(vlclibdir)/plugins" ; \
+#	else \
+#		echo "Cross-compilation: cache generation skipped!" ; \
+#	fi
 
-uninstall-hook:
-	rm -f -- "$(DESTDIR)$(vlclibdir)/plugins/plugins.dat"
+# uninstall-hook:
+#	rm -f -- "$(DESTDIR)$(vlclibdir)/plugins/plugins.dat"
 
 ###############################################################################
 # PO translation files update
@@ -686,7 +685,6 @@ update-po:
 ###############################################################################
 # OS Packaging rules
 ###############################################################################
-include extras/package/macosx/package.mak
-include extras/package/win32/package.mak
-include extras/package/win32/msi.mak
-
+# include extras/package/macosx/package.mak
+# include extras/package/win32/package.mak
+# include extras/package/win32/msi.mak

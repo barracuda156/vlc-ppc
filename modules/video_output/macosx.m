@@ -498,6 +498,7 @@ static void OpenglSwap (vlc_gl_t *gl)
     if (!self)
         return nil;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED > 1060
     /* enable HiDPI support on OS X 10.7 and later */
     if (OSX_LION)
         [self setWantsBestResolutionOpenGLSurface:YES];
@@ -516,7 +517,7 @@ static void OpenglSwap (vlc_gl_t *gl)
                                                                              withObject:nil
                                                                           waitUntilDone:NO];
                                                   }];
-
+#endif
     [self setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     return self;
 }
@@ -773,10 +774,12 @@ static void OpenglSwap (vlc_gl_t *gl)
     NSRect videoRect = [self bounds];
     BOOL b_inside = [self mouse: ml inRect: videoRect];
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED > 1070
     if (OSX_LION) {
         ml = [self convertPointToBacking: ml];
         videoRect = [self convertRectToBacking: videoRect];
     }
+#endif
 
     if (b_inside) {
         @synchronized (self) {

@@ -9,7 +9,7 @@ SOURCES_oldrc = rc.c
 libvlc_motion_la_SOURCES = motionlib.c motionlib.h
 if HAVE_DARWIN
 libvlc_motion_la_SOURCES += unimotion.c unimotion.h
-libvlc_motion_la_CFLAGS = $(AM_CFLAGS) -fconstant-cfstrings
+libvlc_motion_la_CFLAGS = $(AM_CFLAGS) -mconstant-cfstrings
 endif
 libvlc_motion_la_LDFLAGS = -static
 noinst_LTLIBRARIES = libvlc_motion.la

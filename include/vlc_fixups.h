@@ -239,9 +239,12 @@ static inline locale_t newlocale(int mask, const char * locale, locale_t base)
 }
 #endif
 
-#if !defined (HAVE_STATIC_ASSERT)
-# define _Static_assert(x, s) ((void) sizeof (struct { unsigned:-!(x); }))
-# define static_assert _Static_assert
+/* static_assert missing in assert.h */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && __STDC_VERSION__ < 202311L
+#   include <assert.h>
+#   ifndef static_assert
+#   define static_assert _Static_assert
+#   endif
 #endif
 
 /* Alignment of critical static data structures */

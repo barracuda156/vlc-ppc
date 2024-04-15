@@ -957,7 +957,7 @@ AX_APPEND_COMPILE_FLAGS([-Wall -Wextra -Wsign-compare -Wundef -Wpointer-arith -W
 AX_APPEND_COMPILE_FLAGS([-Wall -Wextra -Wsign-compare -Wundef -Wpointer-arith -Wvolatile-register-var -Wformat -Wformat-security], [CXXFLAGS])
 
 dnl -Werror-implicit-function-declaration is used for the if_nametoindex detection with winstore
-AX_APPEND_COMPILE_FLAGS([-Wbad-function-cast -Wwrite-strings -Wmissing-prototypes -Werror-implicit-function-declaration -Winit-self -Wlogical-op -Wshadow=local], [CFLAGS])
+AX_APPEND_COMPILE_FLAGS([-Wbad-function-cast -Wwrite-strings -Wmissing-prototypes -Wno-implicit-function-declaration -Winit-self -Wlogical-op -Wshadow=local], [CFLAGS])
 AX_APPEND_COMPILE_FLAGS([-pipe], [CFLAGS])
 
 dnl Checks for socket stuff
@@ -980,7 +980,7 @@ AC_SEARCH_LIBS([inet_pton], [nsl], [
 ],, [${SOCKET_LIBS}])
 
 LIBS="${LIBS} ${SOCKET_LIBS}"
-CFLAGS="${CFLAGS} -Werror-implicit-function-declaration"
+CFLAGS="${CFLAGS} -Wno-implicit-function-declaration"
 AC_LINK_IFELSE([
     AC_LANG_PROGRAM([#ifdef _WIN32
         #include <ws2tcpip.h>

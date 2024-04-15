@@ -254,7 +254,6 @@ endif
 vlccoreios_SOURCES = iosvlc.m
 vlccoreios_LDFLAGS = $(LDFLAGS_vlc) -Wl,-framework,Foundation,-framework,UIKit
 vlccoreios_LDFLAGS += -Xlinker -rpath -Xlinker "@executable_path/Frameworks/"
-vlccoreios_OBJCFLAGS = -fobjc-arc
 vlccoreios_LDADD = ../lib/libvlc.la ../src/libvlccore.la
 if HAVE_DARWIN
 if !HAVE_OSX

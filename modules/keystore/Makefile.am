@@ -27,7 +27,7 @@ libkwallet_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(keystoredir)'
 libkwallet_plugin_la_LIBADD = $(DBUS_LIBS) $(LIBM)
 
 libkeychain_plugin_la_SOURCES = keystore/keychain.m keystore/list_util.c keystore/list_util.h
-libkeychain_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS) -fobjc-arc
+libkeychain_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS)
 libkeychain_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(keystoredir)' -Wl,-framework,Foundation -Wl,-framework,Security -Wl,-framework,Cocoa
 
 if HAVE_OSX

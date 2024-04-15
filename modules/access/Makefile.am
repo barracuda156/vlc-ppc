@@ -75,7 +75,7 @@ access_LTLIBRARIES += libpulsesrc_plugin.la
 endif
 
 libavaudiocapture_plugin_la_SOURCES = access/avaudiocapture.m
-libavaudiocapture_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS) -fobjc-arc
+libavaudiocapture_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS)
 libavaudiocapture_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)' -Wl,-framework,Foundation -Wl,-framework,AVFoundation -Wl,-framework,CoreMedia
 if HAVE_AVFOUNDATION
 access_LTLIBRARIES += libavaudiocapture_plugin.la
@@ -93,7 +93,7 @@ endif
 ### Video capture ###
 
 libavcapture_plugin_la_SOURCES = access/avcapture.m
-libavcapture_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS) -fobjc-arc
+libavcapture_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS)
 libavcapture_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)' -Wl,-framework,Foundation -Wl,-framework,AVFoundation -Wl,-framework,CoreMedia,  -Wl,-framework,CoreVideo
 if HAVE_AVFOUNDATION
 access_LTLIBRARIES += libavcapture_plugin.la

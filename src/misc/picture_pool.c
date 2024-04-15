@@ -213,6 +213,7 @@ picture_t *picture_pool_Get(picture_pool_t *pool)
 {
     vlc_mutex_lock(&pool->lock);
     assert(pool->refs > 0);
+    unsigned i;
 
     if (pool->canceled)
     {
@@ -220,7 +221,7 @@ picture_t *picture_pool_Get(picture_pool_t *pool)
         return NULL;
     }
 
-    for (unsigned i = ffsll(pool->available); i; i = fnsll(pool->available, i))
+    for (i = ffsll(pool->available); i; i = fnsll(pool->available, i))
     {
         pool->available &= ~(1ULL << (i - 1));
         vlc_mutex_unlock(&pool->lock);

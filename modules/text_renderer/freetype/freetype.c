@@ -1440,9 +1440,9 @@ static int Create( vlc_object_t *p_this )
         goto error;
 
 #elif defined( __APPLE__ )
-    p_sys->pf_select = Generic_Select;
-    p_sys->pf_get_family = CoreText_GetFamily;
-    p_sys->pf_get_fallbacks = CoreText_GetFallbacks;
+#if !TARGET_OS_IPHONE
+    p_sys->pf_select = MacLegacy_Select;
+#endif
 #elif defined( _WIN32 )
     if( InitDWrite( p_filter ) == VLC_SUCCESS )
     {

@@ -164,8 +164,11 @@ const vlc_family_t *Win32_GetFamily( filter_t *p_filter, const char *psz_family 
 #endif /* _WIN32 */
 
 #ifdef __APPLE__
-vlc_family_t *CoreText_GetFallbacks(filter_t *p_filter, const char *psz_family, uni_char_t codepoint);
-const vlc_family_t *CoreText_GetFamily(filter_t *p_filter, const char *psz_family);
+#if !TARGET_OS_IPHONE
+char* MacLegacy_Select( filter_t *p_filter, const char* psz_fontname,
+                        bool b_bold, bool b_italic,
+                        int *i_idx, uni_char_t codepoint );
+#endif
 #endif /* __APPLE__ */
 
 #ifdef __ANDROID__

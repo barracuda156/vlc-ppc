@@ -1,11 +1,14 @@
 /*****************************************************************************
- * darwin.c : Put text on the video, using freetype2
+ * freetype.c : Put text on the video, using freetype2
  *****************************************************************************
- * Copyright (C) 2015 VLC authors and VideoLAN
- * $Id: 6de42015d29ba5ebaea6f18413b78a12966cb89c $
+ * Copyright (C) 2002 - 2015 VLC authors and VideoLAN
+ * $Id$
  *
- * Authors: Felix Paul Kühne <fkuehne@videolan.org>
+ * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
+ *          Gildas Bazin <gbazin@videolan.org>
+ *          Bernie Purcell <bitmap@videolan.org>
  *          Jean-Baptiste Kempf <jb@videolan.org>
+ *          Felix Paul Kühne <fkuehne@videolan.org>
  *          Salah-Eddin Shaban <salshaaban@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -33,233 +36,93 @@
 
 #include <vlc_common.h>
 #include <vlc_filter.h>                                      /* filter_sys_t */
-#include <vlc_charset.h>                                     /* FromCFString */
 
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreText/CoreText.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
+# include <Carbon/Carbon.h>
+#endif
+#include <sys/param.h>                         /* for MAXPATHLEN */
 
 #include "../platform_fonts.h"
 
-char* getPathForFontDescription(CTFontDescriptorRef fontDescriptor);
-void addNewFontToFamily(filter_t *p_filter, CTFontDescriptorRef iter, char *path, vlc_family_t *family);
-
-
-char* getPathForFontDescription(CTFontDescriptorRef fontDescriptor)
+#if !TARGET_OS_IPHONE
+char* MacLegacy_Select( filter_t *p_filter, const char* psz_fontname,
+                        bool b_bold, bool b_italic,
+                        int *i_idx, uni_char_t codepoint )
 {
-    CFURLRef url = CTFontDescriptorCopyAttribute(fontDescriptor, kCTFontURLAttribute);
-    if (url == NULL)
+    VLC_UNUSED( b_bold );
+    VLC_UNUSED( b_italic );
+    VLC_UNUSED( codepoint );
+    FSRef ref;
+    unsigned char path[MAXPATHLEN];
+    char * psz_path;
+
+    CFStringRef  cf_fontName;
+    ATSFontRef   ats_font_id;
+
+    *i_idx = 0;
+
+    if( psz_fontname == NULL )
         return NULL;
-    CFStringRef path = CFURLCopyFileSystemPath(url, kCFURLPOSIXPathStyle);
-    if (path == NULL) {
-        CFRelease(url);
-        return NULL;
-    }
-    char *retPath = FromCFString(path, kCFStringEncodingUTF8);
-    CFRelease(path);
-    CFRelease(url);
-    return retPath;
-}
 
-void addNewFontToFamily(filter_t *p_filter, CTFontDescriptorRef iter, char *path, vlc_family_t *p_family)
-{
-    bool b_bold = false;
-    bool b_italic = false;
-    CFDictionaryRef fontTraits = CTFontDescriptorCopyAttribute(iter, kCTFontTraitsAttribute);
-    CFNumberRef trait = CFDictionaryGetValue(fontTraits, kCTFontWeightTrait);
-    float traitValue = 0.;
-    CFNumberGetValue(trait, kCFNumberFloatType, &traitValue);
-    b_bold = traitValue > 0.23;
-    trait = CFDictionaryGetValue(fontTraits, kCTFontSlantTrait);
-    traitValue = 0.;
-    CFNumberGetValue(trait, kCFNumberFloatType, &traitValue);
-    b_italic = traitValue > 0.03;
+    msg_Dbg( p_filter, "looking for %s", psz_fontname );
+    cf_fontName = CFStringCreateWithCString( kCFAllocatorDefault, psz_fontname, kCFStringEncodingUTF8 );
 
-#ifndef NDEBUG
-    msg_Dbg(p_filter, "New font: bold %i italic %i path '%s'", b_bold, b_italic, path);
-#else
-    VLC_UNUSED(p_filter);
-#endif
-    NewFont(path, 0, b_bold, b_italic, p_family);
+    ats_font_id = ATSFontFindFromName( cf_fontName, kATSOptionFlagsIncludeDisabledMask );
 
-    CFRelease(fontTraits);
-}
+    if ( ats_font_id == 0 || ats_font_id == 0xFFFFFFFFUL )
+    {
+        msg_Dbg( p_filter, "ATS couldn't find %s by name, checking family", psz_fontname );
+        ats_font_id = ATSFontFamilyFindFromName( cf_fontName, kATSOptionFlagsDefault );
 
-const vlc_family_t *CoreText_GetFamily(filter_t *p_filter, const char *psz_family)
-{
-    filter_sys_t *p_sys = p_filter->p_sys;
+        if ( ats_font_id == 0 || ats_font_id == 0xFFFFFFFFUL )
+        {
+            msg_Dbg( p_filter, "ATS couldn't find either %s nor its family, checking PS name", psz_fontname );
+            ats_font_id = ATSFontFindFromPostScriptName( cf_fontName, kATSOptionFlagsDefault );
 
-    if (unlikely(psz_family == NULL)) {
-        return NULL;
-    }
-
-    char *psz_lc = ToLower(psz_family);
-    if (unlikely(!psz_lc)) {
-        return NULL;
-    }
-
-    /* let's double check if we have parsed this family already */
-    vlc_family_t *p_family = vlc_dictionary_value_for_key(&p_sys->family_map, psz_lc);
-    if (p_family) {
-        free(psz_lc);
-        return p_family;
-    }
-
-    CTFontCollectionRef coreTextFontCollection = NULL;
-    CFArrayRef matchedFontDescriptions = NULL;
-
-    /* we search for family name, display name and name to find them all */
-    const size_t numberOfAttributes = 3;
-    CTFontDescriptorRef coreTextFontDescriptors[numberOfAttributes];
-    CFMutableDictionaryRef coreTextAttributes[numberOfAttributes];
-    CFStringRef attributeNames[numberOfAttributes] = {
-        kCTFontFamilyNameAttribute,
-        kCTFontDisplayNameAttribute,
-        kCTFontNameAttribute,
-    };
-
-#ifndef NDEBUG
-    msg_Dbg(p_filter, "Creating new family for '%s'", psz_family);
-#endif
-
-    CFStringRef familyName = CFStringCreateWithCString(kCFAllocatorDefault,
-                                                       psz_family,
-                                                       kCFStringEncodingUTF8);
-    for (size_t x = 0; x < numberOfAttributes; x++) {
-        coreTextAttributes[x] = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, NULL, NULL);
-        CFDictionaryAddValue(coreTextAttributes[x], attributeNames[x], familyName);
-        coreTextFontDescriptors[x] = CTFontDescriptorCreateWithAttributes(coreTextAttributes[x]);
-    }
-
-    CFArrayRef coreTextFontDescriptorsArray = CFArrayCreate(kCFAllocatorDefault,
-                                                            (const void **)&coreTextFontDescriptors,
-                                                            numberOfAttributes, NULL);
-
-    coreTextFontCollection = CTFontCollectionCreateWithFontDescriptors(coreTextFontDescriptorsArray, 0);
-    if (coreTextFontCollection == NULL) {
-        msg_Warn(p_filter,"CTFontCollectionCreateWithFontDescriptors (1) failed!");
-        goto end;
-    }
-
-    matchedFontDescriptions = CTFontCollectionCreateMatchingFontDescriptors(coreTextFontCollection);
-    if (matchedFontDescriptions == NULL) {
-        msg_Warn(p_filter, "CTFontCollectionCreateMatchingFontDescriptors (2) failed!");
-        goto end;
-    }
-
-    CFIndex numberOfFoundFontDescriptions = CFArrayGetCount(matchedFontDescriptions);
-
-    char *path = NULL;
-
-    /* create a new family object */
-    p_family = NewFamily(p_filter, psz_lc, &p_sys->p_families, &p_sys->family_map, psz_lc);
-    if (unlikely(!p_family)) {
-        goto end;
-    }
-
-    for (CFIndex i = 0; i < numberOfFoundFontDescriptions; i++) {
-        CTFontDescriptorRef iter = CFArrayGetValueAtIndex(matchedFontDescriptions, i);
-        path = getPathForFontDescription(iter);
-
-        /* check if the path is empty, which can happen in rare circumstances */
-        if (path == NULL || *path == '\0') {
-            FREENULL(path);
-            continue;
+            if ( ats_font_id == 0 || ats_font_id == 0xFFFFFFFFUL )
+            {
+                msg_Err( p_filter, "ATS couldn't find %s (no font name, family or PS name)", psz_fontname );
+                CFRelease( cf_fontName );
+                return NULL;
+            }
         }
-
-        addNewFontToFamily(p_filter, iter, path, p_family);
     }
+    CFRelease( cf_fontName );
 
-end:
-    if (matchedFontDescriptions != NULL) {
-        CFRelease(matchedFontDescriptions);
-    }
-    if (coreTextFontCollection != NULL) {
-        CFRelease(coreTextFontCollection);
-    }
-
-    for (size_t x = 0; x < numberOfAttributes; x++) {
-        CFRelease(coreTextAttributes[x]);
-        CFRelease(coreTextFontDescriptors[x]);
-    }
-
-    CFRelease(coreTextFontDescriptorsArray);
-    CFRelease(familyName);
-    free(psz_lc);
-
-    return p_family;
-}
-
-vlc_family_t *CoreText_GetFallbacks(filter_t *p_filter, const char *psz_family, uni_char_t codepoint)
-{
-    filter_sys_t *p_sys = p_filter->p_sys;
-    if (unlikely(psz_family == NULL)) {
+    if ( noErr != ATSFontGetFileReference( ats_font_id, &ref ) )
+    {
+        msg_Err( p_filter, "ATS couldn't get file ref for %s", psz_fontname );
         return NULL;
     }
 
-    vlc_family_t *p_family = NULL;
-    CFStringRef postScriptFallbackFontname = NULL;
-    CTFontDescriptorRef fallbackFontDescriptor = NULL;
-    char *psz_lc_fallback = NULL;
-    char *psz_fontPath = NULL;
+    /* i_idx calculation by searching preceding fontIDs */
+    /* with same FSRef                                       */
+    {
+        ATSFontRef  id2 = ats_font_id - 1;
+        FSRef       ref2;
 
-    CFStringRef familyName = CFStringCreateWithCString(kCFAllocatorDefault,
-                                                       psz_family,
-                                                       kCFStringEncodingUTF8);
-    CTFontRef font = CTFontCreateWithName(familyName, 0, NULL);
-    uint32_t littleEndianCodePoint = OSSwapHostToLittleInt32(codepoint);
-    CFStringRef codepointString = CFStringCreateWithBytes(kCFAllocatorDefault,
-                                                          (const UInt8 *)&littleEndianCodePoint,
-                                                          sizeof(littleEndianCodePoint),
-                                                          kCFStringEncodingUTF32LE,
-                                                          false);
-    CTFontRef fallbackFont = CTFontCreateForString(font, codepointString, CFRangeMake(0,1));
-    CFStringRef fallbackFontFamilyName = CTFontCopyFamilyName(fallbackFont);
+        while ( id2 > 0 )
+        {
+            if ( noErr != ATSFontGetFileReference( id2, &ref2 ) )
+                break;
+            if ( noErr != FSCompareFSRefs( &ref, &ref2 ) )
+                break;
 
-    /* create a new family object */
-    char *psz_fallbackFamilyName = FromCFString(fallbackFontFamilyName, kCFStringEncodingUTF8);
-    if (psz_fallbackFamilyName == NULL) {
-        msg_Warn(p_filter, "Failed to convert font family name CFString to C string");
-        goto done;
-    }
-#ifndef NDEBUG
-    msg_Dbg(p_filter, "Will deploy fallback font '%s'", psz_fallbackFamilyName);
-#endif
-
-    psz_lc_fallback = ToLower(psz_fallbackFamilyName);
-
-    p_family = vlc_dictionary_value_for_key(&p_sys->family_map, psz_lc_fallback);
-    if (p_family) {
-        goto done;
+            id2 --;
+        }
+        *i_idx = ats_font_id - ( id2 + 1 );
     }
 
-    p_family = NewFamily(p_filter, psz_lc_fallback, &p_sys->p_families, &p_sys->family_map, psz_lc_fallback);
-    if (unlikely(!p_family)) {
-        goto done;
+    if ( noErr != FSRefMakePath( &ref, path, sizeof(path) ) )
+    {
+        msg_Err( p_filter, "failure when getting path from FSRef" );
+        return NULL;
     }
+    msg_Dbg( p_filter, "found %s", path );
 
-    postScriptFallbackFontname = CTFontCopyPostScriptName(fallbackFont);
-    fallbackFontDescriptor = CTFontDescriptorCreateWithNameAndSize(postScriptFallbackFontname, 0.);
-    psz_fontPath = getPathForFontDescription(fallbackFontDescriptor);
+    psz_path = strdup( (char *)path );
 
-    /* check if the path is empty, which can happen in rare circumstances */
-    if (psz_fontPath == NULL || *psz_fontPath == '\0') {
-        goto done;
-    }
-
-    addNewFontToFamily(p_filter, fallbackFontDescriptor, strdup(psz_fontPath), p_family);
-
-done:
-    CFRelease(familyName);
-    CFRelease(font);
-    CFRelease(codepointString);
-    CFRelease(fallbackFont);
-    CFRelease(fallbackFontFamilyName);
-    free(psz_fallbackFamilyName);
-    free(psz_lc_fallback);
-    free(psz_fontPath);
-    if (postScriptFallbackFontname != NULL)
-        CFRelease(postScriptFallbackFontname);
-    if (fallbackFontDescriptor != NULL)
-        CFRelease(fallbackFontDescriptor);
-    return p_family;
+    return psz_path;
 }
+#endif

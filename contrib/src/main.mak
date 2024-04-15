@@ -123,7 +123,6 @@ XCODE_FLAGS += OTHER_CFLAGS=-fno-stack-check
 endif
 
 ifdef HAVE_MACOSX
-EXTRA_CXXFLAGS += -stdlib=libc++
 ifeq ($(ARCH),aarch64)
 XCODE_FLAGS += -arch arm64
 else

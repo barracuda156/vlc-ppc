@@ -29,15 +29,7 @@
 inline static int DiscProbeMacOSPermission( vlc_object_t *p_this, const char *psz_file )
 {
 #ifdef __APPLE__
-    /* Check is only relevant starting macOS Catalina */
-    if( __builtin_available( macOS 10.15, * ) )
-    {
-        /* Continue. The check above cannot be negated. */
-    }
-    else
-    {
-        return VLC_SUCCESS;
-    }
+    return VLC_SUCCESS;
 
     msg_Dbg( p_this, "Checking access permission for path %s", psz_file );
 

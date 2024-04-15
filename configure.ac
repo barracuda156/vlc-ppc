@@ -3075,7 +3075,7 @@ dnl  X C Bindings modules
 dnl
 AC_ARG_ENABLE(xcb,
   [  --enable-xcb            X11 support with XCB (default enabled)],, [
-  AS_IF([test "${SYS}" != "mingw32" -a "${SYS}" != "darwin"], [
+  AS_IF([test "${SYS}" != "mingw32"], [
     enable_xcb="yes"
   ], [
     enable_xcb="no"

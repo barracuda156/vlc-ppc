@@ -48,7 +48,12 @@ struct vlc_inhibit_sys
     posix_spawnattr_t attr;
 };
 
-extern char **environ;
+#ifdef __APPLE__
+    #include <crt_externs.h>
+    #define environ (*_NSGetEnviron())
+#else
+    extern char **environ;
+#endif
 
 static void Timer (void *data)
 {

@@ -3052,33 +3052,13 @@ PKG_CHECK_MODULES([EGL], [egl], [
 ])
 AM_CONDITIONAL([HAVE_EGL], [test "${have_egl}" = "yes"])
 
-have_gl="no"
-PKG_CHECK_MODULES([GL], [gl], [
+AC_ARG_ENABLE(gl,
+[  --enable-gl            OpenGL (default enabled)])
+AS_IF([test "${enable_gl}" != "no"], [
   have_gl="yes"
-], [
-  AC_MSG_CHECKING([for OpenGL])
-  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
-#ifdef _WIN32
-# include <GL/glew.h>
-#endif
-#include <GL/gl.h>
-]], [
-    [int t0 = GL_TEXTURE0;]])
-  ], [
-    GL_CFLAGS=""
-    have_gl="yes"
-    AS_IF([test "${SYS}" != "mingw32"], [
-      GL_LIBS="-lGL"
-    ], [
-      GL_LIBS="-lopengl32"
-    ])
-  ])
-  AC_MSG_RESULT([${have_gl}])
+  AC_DEFINE(HAVE_GL, 1, [Define if OpenGL support is enabled])
 ])
 AM_CONDITIONAL([HAVE_GL], [test "${have_gl}" = "yes"])
-AS_IF([test "${have_gl}" = "yes"], [
-  AC_DEFINE([HAVE_GL], 1, [Defined if having OpenGL])
-])
 
 dnl OpenGL ES 2: depends on EGL 1.1
 PKG_ENABLE_MODULES_VLC([GLES2], [], [glesv2], [OpenGL ES v2 support], [disabled])

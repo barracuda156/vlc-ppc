@@ -366,7 +366,7 @@ AM_CONDITIONAL(HAVE_OS2,     test "${SYS}" = "os2")
 
 AM_CONDITIONAL(HAVE_DARWIN,  test "${SYS}" = "darwin")
 AM_CONDITIONAL(HAVE_IOS,     test "${HAVE_IOS}" = "1")
-AM_CONDITIONAL(HAVE_OSX,     test "${HAVE_OSX}" = "1")
+AM_CONDITIONAL(HAVE_OSX,     [test "$enable_osx" != "no" -a "${SYS}" = "darwin"])
 AM_CONDITIONAL(HAVE_TVOS,    test "${HAVE_TVOS}" = "1")
 
 AM_CONDITIONAL(HAVE_NACL,    test "${SYS}" = "nacl")

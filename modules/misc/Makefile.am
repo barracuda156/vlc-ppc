@@ -38,7 +38,7 @@ endif
 EXTRA_LTLIBRARIES += libgnutls_plugin.la
 misc_LTLIBRARIES += $(LTLIBgnutls)
 
-if HAVE_DARWIN
+if HAVE_OSX
 libsecuretransport_plugin_la_SOURCES = misc/securetransport.c
 libsecuretransport_plugin_la_CFLAGS = $(AM_CFLAGS) $(SECURETRANSPORT_CFLAGS)
 libsecuretransport_plugin_la_LIBADD = $(SECURETRANSPORT_LIBS)

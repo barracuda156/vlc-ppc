@@ -33,7 +33,7 @@ libupnp_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(sddir)'
 libupnp_plugin_la_LIBADD = $(UPNP_LIBS)
 EXTRA_LTLIBRARIES += libupnp_plugin.la
 sd_LTLIBRARIES += $(LTLIBupnp)
-if HAVE_OSX
+if HAVE_DARWIN
 libupnp_plugin_la_LDFLAGS += -Wl,-framework,CoreFoundation,-framework,SystemConfiguration
 endif
 
@@ -85,6 +85,6 @@ EXTRA_LTLIBRARIES += libmicrodns_plugin.la
 libbonjour_plugin_la_SOURCES = services_discovery/bonjour.m
 libbonjour_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS) -fobjc-arc
 libbonjour_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(sddir)' -Wl,-framework,Foundation
-if HAVE_DARWIN
+if HAVE_OSX
 sd_LTLIBRARIES += libbonjour_plugin.la
 endif

@@ -481,7 +481,7 @@ libvlccore_la_LIBADD += $(DBUS_LIBS)
 endif
 if HAVE_DARWIN
 libvlccore_la_LDFLAGS += -Xlinker -install_name -Xlinker @rpath/libvlccore.dylib
-if !HAVE_OSX
+if HAVE_IOS
 libvlccore_la_LDFLAGS += -Wl,-framework,CFNetwork
 endif
 endif

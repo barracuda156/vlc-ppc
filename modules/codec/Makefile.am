@@ -63,7 +63,7 @@ endif
 libaudiotoolboxmidi_plugin_la_SOURCES = codec/audiotoolbox_midi.c
 libaudiotoolboxmidi_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(codecdir)'
 libaudiotoolboxmidi_plugin_la_LDFLAGS += -Wl,-framework,CoreFoundation,-framework,AudioToolbox
-if HAVE_OSX
+if HAVE_DARWIN
 libaudiotoolboxmidi_plugin_la_LDFLAGS += -Wl,-framework,AudioUnit
 endif
 EXTRA_LTLIBRARIES += libaudiotoolboxmidi_plugin.la

@@ -21,6 +21,7 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
+
 #include "mkv.hpp"
 #include "matroska_segment.hpp"
 #include "chapters.hpp"
@@ -29,6 +30,12 @@
 #include "Ebml_dispatcher.hpp"
 #include "string_dispatcher.hpp"
 #include "util.hpp"
+
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <cinttypes>
 
 extern "C" {
 #include "../vobsub.h"

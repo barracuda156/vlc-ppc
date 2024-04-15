@@ -33,8 +33,13 @@
 
 #include "stream_io_callback.hpp"
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <new>
 #include <limits>
+#include <cinttypes>
 
 extern "C" {
     #include "../av1_unpack.h"

@@ -21,10 +21,17 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
+
 #include "mkv.hpp"
 #include "util.hpp"
 #include "demux.hpp"
 #include "../../codec/webvtt/helpers.h"
+
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <cinttypes>
 
 /*****************************************************************************
  * Local prototypes

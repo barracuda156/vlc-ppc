@@ -42,9 +42,14 @@
 #include <vlc_demux.h>
 #include <vlc_threads.h>
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <algorithm>
 #include <ctime>
 #include <cassert>
+#include <cinttypes>
 
 using namespace adaptive::http;
 using namespace adaptive::logic;

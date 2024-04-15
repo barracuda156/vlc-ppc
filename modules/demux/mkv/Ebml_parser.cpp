@@ -26,6 +26,12 @@
 #include "Ebml_parser.hpp"
 #include "stream_io_callback.hpp"
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <cinttypes>
+
 /*****************************************************************************
  * Ebml Stream parser
  *****************************************************************************/

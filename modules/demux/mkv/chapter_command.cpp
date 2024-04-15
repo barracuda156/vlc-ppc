@@ -23,7 +23,13 @@
  *****************************************************************************/
 
 #include "chapter_command.hpp"
+
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <algorithm>
+#include <cinttypes>
 
 void chapter_codec_cmds_c::AddCommand( const KaxChapterProcessCommand & command )
 {

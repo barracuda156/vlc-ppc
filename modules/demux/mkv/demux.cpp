@@ -29,6 +29,12 @@
 
 #include <vlc_actions.h>
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <cinttypes>
+
 event_thread_t::event_thread_t(demux_t *p_demux) : p_demux(p_demux)
 {
     vlc_mutex_init( &lock );

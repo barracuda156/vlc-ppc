@@ -29,9 +29,14 @@
 #include "Ebml_parser.hpp"
 #include "Ebml_dispatcher.hpp"
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <new>
 #include <iterator>
 #include <limits>
+#include <cinttypes>
 
 matroska_segment_c::matroska_segment_c( demux_sys_t & demuxer, EbmlStream & estream, KaxSegment *p_seg )
     :segment(p_seg)

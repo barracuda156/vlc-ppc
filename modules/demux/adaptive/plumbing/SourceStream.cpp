@@ -29,6 +29,12 @@
 #include <vlc_stream.h>
 #include <vlc_demux.h>
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <cinttypes>
+
 using namespace adaptive;
 
 AbstractChunksSourceStream::AbstractChunksSourceStream(vlc_object_t *p_obj_, AbstractSource *source_)

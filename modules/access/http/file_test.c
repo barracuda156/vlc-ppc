@@ -35,8 +35,6 @@
 #include "file.h"
 #include "message.h"
 
-const char vlc_module_name[] = "test_http_file";
-
 static const char url[] = "https://www.example.com:8443/dir/file.ext?a=b";
 static const char url_http[] = "http://www.example.com:8443/dir/file.ext?a=b";
 static const char url_mmsh[] = "mmsh://www.example.com:8443/dir/file.ext?a=b";
@@ -312,7 +310,7 @@ static struct vlc_http_msg *stream_read_headers(struct vlc_http_stream *s)
     return m;
 }
 
-static block_t *stream_read(struct vlc_http_stream *s)
+static struct block_t *stream_read(struct vlc_http_stream *s)
 {
     assert(s == &stream);
     return NULL;
@@ -327,7 +325,6 @@ static void stream_close(struct vlc_http_stream *s, bool abort)
 static const struct vlc_http_stream_cbs stream_callbacks =
 {
     stream_read_headers,
-    NULL,
     stream_read,
     stream_close,
 };
@@ -336,8 +333,7 @@ static struct vlc_http_stream stream = { &stream_callbacks };
 
 struct vlc_http_msg *vlc_http_mgr_request(struct vlc_http_mgr *mgr, bool https,
                                           const char *host, unsigned port,
-                                          const struct vlc_http_msg *req,
-                                          bool idempotent, bool payload)
+                                          const struct vlc_http_msg *req)
 {
     const char *str;
     char *end;
@@ -346,8 +342,6 @@ struct vlc_http_msg *vlc_http_mgr_request(struct vlc_http_mgr *mgr, bool https,
     assert(mgr == NULL);
     assert(!strcmp(host, "www.example.com"));
     assert(port == 8443);
-    assert(idempotent);
-    assert(!payload);
 
     str = vlc_http_msg_get_method(req);
     assert(!strcmp(str, "GET"));

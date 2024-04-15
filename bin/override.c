@@ -173,7 +173,7 @@ static struct
 void srand (unsigned int seed)
 {
     pthread_mutex_lock (&prng.lock);
-    LOG("Warning", "%u", seed);
+    LOG("Warning", "%d", seed);
     prng.seed = seed;
     pthread_mutex_unlock (&prng.lock);
 }
@@ -278,7 +278,7 @@ char *strerror (int val)
 }
 
 /*** Xlib ****/
-#ifndef X_DISPLAY_MISSING
+#ifdef HAVE_X11_XLIB_H
 # include <X11/Xlib.h>
 
 static pthread_mutex_t xlib_lock = PTHREAD_MUTEX_INITIALIZER;

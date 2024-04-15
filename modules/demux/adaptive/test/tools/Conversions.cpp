@@ -26,6 +26,8 @@
 #include "../test.hpp"
 
 #include <limits>
+#define vlc_tick_from_sec(a) (CLOCK_FREQ * (a))
+#define VLC_TICK_FROM_MS(a) (1000 * (a))
 
 int Conversions_test()
 {
@@ -47,11 +49,6 @@ int Conversions_test()
     Expect(utc.mtime() == vlc_tick_from_sec(1560271925) + VLC_TICK_FROM_MS(12));
     utc = UTCTime("T16:52:05.012Z");
 
-    /* Check non ms fractional */
-    utc = UTCTime("2021-05-28T12:51:32+00:00");
-    Expect(utc.mtime() == vlc_tick_from_sec(1622206292));
-    utc = UTCTime("2021-05-28T12:51:32.996000+00:00");
-    Expect(utc.mtime() == vlc_tick_from_sec(1622206292)+VLC_TICK_FROM_MS(996));
 
     IsoTime isotime("PT0H9M56.46S");
     Expect(isotime == (vlc_tick_from_sec(9*60+56)+VLC_TICK_FROM_MS(460)));

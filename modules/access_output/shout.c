@@ -2,6 +2,7 @@
  * shout.c: This module forwards vorbis streams to an icecast server
  *****************************************************************************
  * Copyright (C) 2005 VLC authors and VideoLAN
+ * $Id: 0ec0c3355aa0cb4d7e0563f41eaa17776bce7dc8 $
  *
  * Authors: Daniel Fischer <dan at subsignal dot org>
  *          Derk-Jan Hartman <hartman at videolan dot org>
@@ -110,28 +111,29 @@ vlc_module_begin ()
     set_description( N_("IceCAST output") )
     set_shortname( "Shoutcast" )
     set_capability( "sout access", 0 )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_ACO )
     add_shortcut( "shout" )
     add_string( SOUT_CFG_PREFIX "name", "VLC media player - Live stream",
-                NAME_TEXT, NAME_LONGTEXT )
+                NAME_TEXT, NAME_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "description", "Live stream from VLC media player",
-                DESCRIPTION_TEXT, DESCRIPTION_LONGTEXT )
+                DESCRIPTION_TEXT, DESCRIPTION_LONGTEXT, false )
     add_bool(   SOUT_CFG_PREFIX "mp3", false,
-                MP3_TEXT, MP3_LONGTEXT )
+                MP3_TEXT, MP3_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "genre", "Alternative",
-                GENRE_TEXT, GENRE_LONGTEXT )
-    add_string( SOUT_CFG_PREFIX "url", "https://www.videolan.org/vlc",
-                URL_TEXT, URL_LONGTEXT )
+                GENRE_TEXT, GENRE_LONGTEXT, false )
+    add_string( SOUT_CFG_PREFIX "url", "http://www.videolan.org/vlc",
+                URL_TEXT, URL_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "bitrate", "",
-                BITRATE_TEXT, BITRATE_LONGTEXT )
+                BITRATE_TEXT, BITRATE_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "samplerate", "",
-                SAMPLERATE_TEXT, SAMPLERATE_LONGTEXT )
+                SAMPLERATE_TEXT, SAMPLERATE_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "channels", "",
-                CHANNELS_TEXT, CHANNELS_LONGTEXT )
+                CHANNELS_TEXT, CHANNELS_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "quality", "",
-                QUALITY_TEXT, QUALITY_LONGTEXT )
+                QUALITY_TEXT, QUALITY_LONGTEXT, false )
     add_bool(   SOUT_CFG_PREFIX "public", false,
-                PUBLIC_TEXT, PUBLIC_LONGTEXT )
+                PUBLIC_TEXT, PUBLIC_LONGTEXT, true )
     set_callbacks( Open, Close )
 vlc_module_end ()
 
@@ -150,10 +152,10 @@ static const char *const ppsz_sout_options[] = {
 static ssize_t Write( sout_access_out_t *, block_t * );
 static int Control( sout_access_out_t *, int, va_list );
 
-typedef struct
+struct sout_access_out_sys_t
 {
     shout_t *p_shout;
-} sout_access_out_sys_t;
+};
 
 /*****************************************************************************
  * Open: open the shout connection
@@ -173,6 +175,13 @@ static int Open( vlc_object_t *p_this )
     vlc_url_t url;
 
     config_ChainParse( p_access, SOUT_CFG_PREFIX, ppsz_sout_options, p_access->p_cfg );
+
+    if( !p_access->psz_path )
+    {
+        msg_Err( p_access,
+                 "please specify url=user:password@host:port/mountpoint" );
+        return VLC_EGENERIC;
+    }
 
     vlc_UrlParse( &url , p_access->psz_path );
     if( url.i_port <= 0 )
@@ -208,10 +217,10 @@ static int Open( vlc_object_t *p_this )
          || shout_set_mount( p_shout, url.psz_path ) != SHOUTERR_SUCCESS
          || shout_set_user( p_shout, url.psz_username ) != SHOUTERR_SUCCESS
          || shout_set_agent( p_shout, "VLC media player " VERSION ) != SHOUTERR_SUCCESS
-         || shout_set_meta( p_shout, SHOUT_META_NAME, psz_name ) != SHOUTERR_SUCCESS
-         || shout_set_meta( p_shout, SHOUT_META_DESCRIPTION, psz_description ) != SHOUTERR_SUCCESS
-         || shout_set_meta( p_shout, SHOUT_META_GENRE, psz_genre ) != SHOUTERR_SUCCESS
-         || shout_set_meta( p_shout, SHOUT_META_URL, psz_url ) != SHOUTERR_SUCCESS
+         || shout_set_name( p_shout, psz_name ) != SHOUTERR_SUCCESS
+         || shout_set_description( p_shout, psz_description ) != SHOUTERR_SUCCESS
+         || shout_set_genre( p_shout, psz_genre ) != SHOUTERR_SUCCESS
+         || shout_set_url( p_shout, psz_url ) != SHOUTERR_SUCCESS
          /* || shout_set_nonblocking( p_shout, 1 ) != SHOUTERR_SUCCESS */
       )
     {
@@ -230,10 +239,8 @@ static int Open( vlc_object_t *p_this )
     free( psz_genre );
     free( psz_url );
 
-    unsigned format = var_GetBool( p_access, SOUT_CFG_PREFIX "mp3" ) ?
-        SHOUT_FORMAT_MP3 : SHOUT_FORMAT_OGG;
-
-    i_ret = shout_set_content_format( p_shout, format, SHOUT_USAGE_AUDIO, NULL );
+    i_ret = shout_set_format( p_shout, var_GetBool( p_access, SOUT_CFG_PREFIX "mp3" ) ?
+                                       SHOUT_FORMAT_MP3 : SHOUT_FORMAT_OGG );
 
     if( i_ret != SHOUTERR_SUCCESS )
     {
@@ -367,7 +374,7 @@ static int Open( vlc_object_t *p_this )
         if ( i_ret != SHOUTERR_CONNECTED )
         {
             msg_Warn( p_access, "unable to establish connection, retrying..." );
-            vlc_tick_sleep( VLC_TICK_FROM_SEC(30) );
+            msleep( 30000000 );
         }
     }
 

@@ -49,9 +49,6 @@
 /*****************************************************************************
  * filter_sys_t : filter descriptor
  *****************************************************************************/
-
-namespace {
-
 struct filter_sys_t
 {
     CvMemStorage* p_storage;
@@ -60,13 +57,11 @@ struct filter_sys_t
     int i_id;
 };
 
-} // namespace
-
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
 static int  OpenFilter ( vlc_object_t * );
-static void CloseFilter( filter_t * );
+static void CloseFilter( vlc_object_t * );
 
 static picture_t *Filter( filter_t *, picture_t * );
 
@@ -79,12 +74,13 @@ vlc_module_begin ()
     set_capability( "opencv internal filter", 1 )
     add_shortcut( "opencv_example" )
 
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    set_callback( OpenFilter )
+    set_callbacks( OpenFilter, CloseFilter )
 
     add_string( "opencv-haarcascade-file", "c:\\haarcascade_frontalface_alt.xml",
                           N_("Haar cascade filename"),
-                          N_("Name of XML file containing Haar cascade description"));
+                          N_("Name of XML file containing Haar cascade description"), false);
 vlc_module_end ()
 
 /*****************************************************************************
@@ -107,23 +103,15 @@ static int OpenFilter( vlc_object_t *p_this )
     p_sys->event_info.p_region = NULL;
     p_sys->i_id = 0;
 
-    static const struct FilterOperationInitializer {
-        struct vlc_filter_operations ops {};
-        FilterOperationInitializer()
-        {
-            ops.filter_video = Filter;
-            ops.close        = CloseFilter;
-        };
-    } filter_ops;
-    p_filter->ops = &filter_ops.ops;
+    p_filter->pf_video_filter = Filter;
 
     //create the VIDEO_FILTER_EVENT_VARIABLE
     vlc_value_t val;
-    if (var_Create( vlc_object_instance(p_filter), VIDEO_FILTER_EVENT_VARIABLE, VLC_VAR_ADDRESS | VLC_VAR_DOINHERIT ) != VLC_SUCCESS)
+    if (var_Create( p_filter->obj.libvlc, VIDEO_FILTER_EVENT_VARIABLE, VLC_VAR_ADDRESS | VLC_VAR_DOINHERIT ) != VLC_SUCCESS)
         msg_Err( p_filter, "Could not create %s", VIDEO_FILTER_EVENT_VARIABLE);
 
     val.p_address = &(p_sys->event_info);
-    if (var_Set( vlc_object_instance(p_filter), VIDEO_FILTER_EVENT_VARIABLE, val )!=VLC_SUCCESS)
+    if (var_Set( p_filter->obj.libvlc, VIDEO_FILTER_EVENT_VARIABLE, val )!=VLC_SUCCESS)
         msg_Err( p_filter, "Could not set %s", VIDEO_FILTER_EVENT_VARIABLE);
 
     //OpenCV init specific to this example
@@ -138,9 +126,10 @@ static int OpenFilter( vlc_object_t *p_this )
 /*****************************************************************************
  * CloseFilter: clean up the filter
  *****************************************************************************/
-static void CloseFilter( filter_t *p_filter )
+static void CloseFilter( vlc_object_t *p_this )
 {
-    filter_sys_t *p_sys = static_cast<filter_sys_t *>(p_filter->p_sys);
+    filter_t *p_filter = (filter_t*)p_this;
+    filter_sys_t *p_sys = p_filter->p_sys;
 
     if( p_sys->p_cascade )
         cvReleaseHaarClassifierCascade( &p_sys->p_cascade );
@@ -151,7 +140,7 @@ static void CloseFilter( filter_t *p_filter )
     free( p_sys->event_info.p_region );
     free( p_sys );
 
-    var_Destroy( vlc_object_instance(p_filter), VIDEO_FILTER_EVENT_VARIABLE);
+    var_Destroy( p_filter->obj.libvlc, VIDEO_FILTER_EVENT_VARIABLE);
 }
 
 /****************************************************************************
@@ -162,8 +151,8 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     IplImage** p_img = NULL;
     CvPoint pt1, pt2;
     int scale = 1;
-    filter_sys_t *p_sys = static_cast<filter_sys_t *>(p_filter->p_sys);
-
+    filter_sys_t *p_sys = p_filter->p_sys;
+ 
     if ((!p_pic) )
     {
         msg_Err( p_filter, "no image array" );
@@ -216,10 +205,11 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
         }
 
         if (faces && (faces->total > 0))    //raise the video filter event
-            var_TriggerCallback( vlc_object_instance(p_filter), VIDEO_FILTER_EVENT_VARIABLE );
+            var_TriggerCallback( p_filter->obj.libvlc, VIDEO_FILTER_EVENT_VARIABLE );
     }
     else
         msg_Err( p_filter, "No cascade - is opencv-haarcascade-file valid?" );
 
     return p_pic;
 }
+

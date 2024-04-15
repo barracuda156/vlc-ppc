@@ -22,11 +22,6 @@
 
 # include <vlc_common.h>
 # include <vlc_es.h>
-# include <vlc_bits.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #define PROFILE_H264_BASELINE             66
 #define PROFILE_H264_MAIN                 77
@@ -79,11 +74,6 @@ enum h264_nal_unit_type_e
     H264_NAL_RESERVED_22 = 22,
     H264_NAL_RESERVED_23 = 23,
 };
-
-static inline enum h264_nal_unit_type_e h264_getNALType(const uint8_t *p)
-{
-    return (enum h264_nal_unit_type_e) (*p & 0x1f);
-}
 
 typedef struct h264_sequence_parameter_set_t h264_sequence_parameter_set_t;
 typedef struct h264_picture_parameter_set_t h264_picture_parameter_set_t;
@@ -213,21 +203,10 @@ bool h264_get_colorimetry( const h264_sequence_parameter_set_t *p_sps,
                            video_color_primaries_t *p_primaries,
                            video_transfer_func_t *p_transfer,
                            video_color_space_t *p_colorspace,
-                           video_color_range_t *p_full_range );
+                           bool *p_full_range );
 
 /* Get level and Profile from DecoderConfigurationRecord */
 bool h264_get_profile_level(const es_format_t *p_fmt, uint8_t *pi_profile,
                             uint8_t *pi_level, uint8_t *p_nal_length_size);
-
-typedef struct
-{
-    unsigned i_frames;
-} h264_sei_recovery_point_t;
-
-bool h264_decode_sei_recovery_point( bs_t *, h264_sei_recovery_point_t * );
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* H264_NAL_H */

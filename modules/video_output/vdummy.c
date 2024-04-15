@@ -2,6 +2,7 @@
  * vdummy.c: Dummy video output display method for testing purposes
  *****************************************************************************
  * Copyright (C) 2000-2009 VLC authors and VideoLAN
+ * $Id: 58e708604420f5e49ec679b49f4f01a21f5539b3 $
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *
@@ -38,38 +39,54 @@
     "format instead of trying to improve performances by using the most " \
     "efficient one.")
 
-static int OpenDummy(vout_display_t *vd,
-                     video_format_t *fmtp, vlc_video_context *context);
-static int OpenStats(vout_display_t *vd,
-                     video_format_t *fmtp, vlc_video_context *context);
+static int OpenDummy( vlc_object_t * );
+static int OpenStats( vlc_object_t * );
+static void Close( vlc_object_t * );
 
 vlc_module_begin ()
     set_shortname( N_("Dummy") )
     set_description( N_("Dummy video output") )
-    set_callback_display( OpenDummy, 0 )
+    set_capability( "vout display", 0 )
+    set_callbacks( OpenDummy, Close )
     add_shortcut( "dummy" )
 
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VOUT )
-    add_string( "dummy-chroma", NULL, CHROMA_TEXT, CHROMA_LONGTEXT )
+    add_string( "dummy-chroma", NULL, CHROMA_TEXT, CHROMA_LONGTEXT, true )
 
     add_submodule ()
     set_description( N_("Statistics video output") )
+    set_capability( "vout display", 0 )
     add_shortcut( "stats" )
-    set_callback_display( OpenStats, 0 )
+    set_callbacks( OpenStats, Close )
 vlc_module_end ()
 
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static void            DisplayStat(vout_display_t *, picture_t *);
-static int             Control(vout_display_t *, int);
+struct vout_display_sys_t {
+    picture_pool_t *pool;
+};
+static picture_pool_t *Pool(vout_display_t *, unsigned count);
+static void            Display(vout_display_t *, picture_t *, subpicture_t *);
+static void            DisplayStat(vout_display_t *, picture_t *, subpicture_t *);
+static int             Control(vout_display_t *, int, va_list);
 
 /*****************************************************************************
  * OpenVideo: activates dummy vout display method
  *****************************************************************************/
-static void Open(vout_display_t *vd, video_format_t *fmt)
+static int Open(vlc_object_t *object,
+                void (*display)(vout_display_t *, picture_t *, subpicture_t *))
 {
+    vout_display_t *vd = (vout_display_t *)object;
+    vout_display_sys_t *sys;
+
+    vd->sys = sys = calloc(1, sizeof(*sys));
+    if (!sys)
+        return VLC_EGENERIC;
+    sys->pool = NULL;
+
     /* p_vd->info is not modified */
 
     char *chroma = var_InheritString(vd, "dummy-chroma");
@@ -77,72 +94,73 @@ static void Open(vout_display_t *vd, video_format_t *fmt)
         vlc_fourcc_t fcc = vlc_fourcc_GetCodecFromString(VIDEO_ES, chroma);
         if (fcc != 0) {
             msg_Dbg(vd, "forcing chroma 0x%.8x (%4.4s)", fcc, (char*)&fcc);
-            fmt->i_chroma = fcc;
+            vd->fmt.i_chroma = fcc;
         }
         free(chroma);
     }
-}
+    vd->pool    = Pool;
+    vd->prepare = NULL;
+    vd->display = display;
+    vd->control = Control;
 
-static void Display(vout_display_t *vd, picture_t *picture)
-{
-    (void) vd;
-    (void) picture;
-}
+    vout_display_DeleteWindow(vd, NULL);
 
-static const struct vlc_display_operations ops_dummy = {
-    .display = Display,
-    .control = Control,
-};
-
-static int OpenDummy(vout_display_t *vd,
-                     video_format_t *fmtp, vlc_video_context *context)
-{
-    (void) context;
-    Open(vd, fmtp);
-    vd->ops = &ops_dummy;
     return VLC_SUCCESS;
 }
 
-static const struct vlc_display_operations ops_stats = {
-    .display = DisplayStat,
-    .control = Control,
-};
-
-static int OpenStats(vout_display_t *vd,
-                     video_format_t *fmtp, vlc_video_context *context)
+static int OpenDummy(vlc_object_t *object)
 {
-    (void) context;
-    Open(vd, fmtp);
-    vd->ops = &ops_stats;
-    return VLC_SUCCESS;
+    return Open(object, Display);
 }
 
-static void DisplayStat(vout_display_t *vd, picture_t *picture)
+static int OpenStats(vlc_object_t *object)
 {
-    plane_t *p = picture->p;
+    return Open(object, DisplayStat);
+}
 
+static void Close(vlc_object_t *object)
+{
+    vout_display_t *vd = (vout_display_t *)object;
+    vout_display_sys_t *sys = vd->sys;
+
+    if (sys->pool)
+        picture_pool_Release(sys->pool);
+    free(sys);
+}
+
+static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
+{
+    vout_display_sys_t *sys = vd->sys;
+    if (!sys->pool)
+        sys->pool = picture_pool_NewFromFormat(&vd->fmt, count);
+    return sys->pool;
+}
+
+static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
+{
     VLC_UNUSED(vd);
-
-    if (picture->format.i_width * picture->format.i_height >= sizeof (vlc_tick_t)
-     && (p->i_pitch * p->i_lines) >= (ssize_t)sizeof (vlc_tick_t)) {
-        vlc_tick_t date;
-        memcpy(&date, p->p_pixels, sizeof(date));
-        msg_Dbg(vd, "VOUT got %"PRIu64" ms offset",
-                MS_FROM_VLC_TICK(vlc_tick_now() - date));
-    }
+    VLC_UNUSED(subpicture);
+    picture_Release(picture);
 }
 
-static int Control(vout_display_t *vd, int query)
+static void DisplayStat(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
 {
-    (void) vd;
-
-    switch (query) {
-        case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
-        case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
-        case VOUT_DISPLAY_CHANGE_ZOOM:
-        case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
-        case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
-            return VLC_SUCCESS;
+    VLC_UNUSED(vd);
+    VLC_UNUSED(subpicture);
+    if ( vd->fmt.i_width*vd->fmt.i_height >= sizeof(vlc_tick_t) &&
+         (picture->p->i_pitch * picture->p->i_lines) >= sizeof(vlc_tick_t) ) {
+        vlc_tick_t date;
+        memcpy(&date, picture->p->p_pixels, sizeof(date));
+        msg_Dbg(vd, "VOUT got %"PRIu64" ms offset",
+                (mdate() - date) / 1000 );
     }
+    picture_Release(picture);
+}
+
+static int Control(vout_display_t *vd, int query, va_list args)
+{
+    VLC_UNUSED(vd);
+    VLC_UNUSED(query);
+    VLC_UNUSED(args);
     return VLC_SUCCESS;
 }

@@ -53,7 +53,7 @@ struct dropesout
     es_out_t esout;
 };
 
-static es_out_id_t *dummy_callback_add(es_out_t *, input_source_t *, const es_format_t *)
+static es_out_id_t *dummy_callback_add(es_out_t *, const es_format_t *)
 {
     return (es_out_id_t *) 0x01;
 }
@@ -72,7 +72,7 @@ static void dummy_callback_del(es_out_t *, es_out_id_t *)
 
 }
 
-static int dummy_callback_control(es_out_t *out, input_source_t *, int i_query, va_list args)
+static int dummy_callback_control(es_out_t *out, int i_query, va_list args)
 {
     struct context *ctx = container_of(out, dropesout, esout)->ctx;
 
@@ -98,16 +98,6 @@ static void dummy_callback_destroy(es_out_t *)
 
 }
 
-const struct es_out_callbacks dummycbs =
-{
-    .add = dummy_callback_add,
-    .send = dummy_callback_send,
-    .del = dummy_callback_del,
-    .control = dummy_callback_control,
-    .destroy = dummy_callback_destroy,
-    .priv_control = nullptr,
-};
-
 static void enqueue(es_out_t *out, es_out_id_t *id, vlc_tick_t dts, vlc_tick_t pts)
 {
     block_t *b = block_Alloc(1);
@@ -119,8 +109,8 @@ static void enqueue(es_out_t *out, es_out_id_t *id, vlc_tick_t dts, vlc_tick_t p
     }
 }
 
-#define TMS(t) (VLC_TICK_0 + VLC_TICK_FROM_MS(t))
-#define DMS(t) (VLC_TICK_FROM_MS(t))
+#define DMS(t) ((t)*INT64_C(1000))
+#define TMS(t) (VLC_TICK_0 + DMS(t))
 #define SEND(t) enqueue(out, id, t, t)
 #define PCR(t) es_out_SetPCR(out, t)
 #define FROM_MPEGTS(x) (INT64_C(x) * 100 / 9)
@@ -159,9 +149,9 @@ static int check2(es_out_t *out, struct context *, FakeESOut *fakees)
         SEND(TMS(100000));
 
         first = fakees->commandsQueue()->getFirstTimes();
-        fprintf(stderr,"first.continuous %" PRId64 "\n", first.continuous);
+        fprintf(stderr,"first.continuous %ld", first.continuous);
         Expect(first.continuous == TMS(100000));
-        fprintf(stderr,"first.segment.demux %" PRId64 "\n", first.segment.demux);
+        fprintf(stderr,"first.segment.demux %ld", first.segment.demux);
         Expect(first.segment.demux == TMS(100000));
 
         fakees->resetTimestamps();
@@ -175,7 +165,7 @@ static int check2(es_out_t *out, struct context *, FakeESOut *fakees)
         SEND(TMS(100000 + 5000));
         PCR(TMS(100000 + 5000));
         first = fakees->commandsQueue()->getFirstTimes();
-        fprintf(stderr,"first %" PRId64 "\n", first.continuous);
+        fprintf(stderr,"first %ld\n", first.continuous);
         Expect(first.continuous == TMS(60000));
 
         fakees->resetTimestamps();
@@ -188,7 +178,7 @@ static int check2(es_out_t *out, struct context *, FakeESOut *fakees)
         SEND(TMS(500000));
         PCR(TMS(500000));
         first = fakees->commandsQueue()->getFirstTimes();
-        fprintf(stderr,"first %" PRId64 "\n", first.continuous);
+        fprintf(stderr,"first %ld\n", first.continuous);
         Expect(first.continuous == TMS(60000));
 
         /* setAssociatedTimestamp check explicit rolled MPEGTS timestamp mapping (WebVTT) */
@@ -198,7 +188,7 @@ static int check2(es_out_t *out, struct context *, FakeESOut *fakees)
         SEND(TMS(500000));
         PCR(TMS(500000));
         first = fakees->commandsQueue()->getFirstTimes();
-        fprintf(stderr,"first %" PRId64 "\n", first.continuous);
+        fprintf(stderr,"first %ld\n", first.continuous);
         Expect(first.continuous == TMS(60000));
 
     } catch (...) {
@@ -215,7 +205,7 @@ static int check1(es_out_t *out, struct context *ctx, FakeESOut *fakees)
     es_out_id_t *id = es_out_Add(out, &fmt);
 
     /* ensure ES is created */
-    const Times drainTimes(SegmentTimes(),std::numeric_limits<vlc_tick_t>::max());
+    const Times drainTimes(SegmentTimes(),std::numeric_limits<mtime_t>::max());
     fakees->commandsQueue()->Commit();
     fakees->commandsQueue()->Process(drainTimes);
 
@@ -247,7 +237,7 @@ static int check1(es_out_t *out, struct context *ctx, FakeESOut *fakees)
         Expect(fakees->commandsQueue()->getBufferingLevel().continuous == reference);
         vlc_tick_t ts = TMS(1000) + FROM_MPEGTS(0x1FFFFFFFF);
         ts = fakees->applyTimestampContinuity(ts);
-        fprintf(stderr, "timestamp %" PRId64 "\n", ts);
+        fprintf(stderr, "timestamp %ld\n", ts);
         Expect(ts == reference + DMS(1000));
 
         /* Reference has local multiple rolled timestamp < multiple rolled ts */
@@ -259,7 +249,7 @@ static int check1(es_out_t *out, struct context *ctx, FakeESOut *fakees)
         PCR(reference);
         ts = TMS(1000) + FROM_MPEGTS(0x1FFFFFFFF) * 5;
         ts = fakees->applyTimestampContinuity(ts);
-        fprintf(stderr, "timestamp %" PRId64 "\n", ts);
+        fprintf(stderr, "timestamp %ld\n", ts);
         Expect(ts == reference + DMS(1000));
 
 
@@ -273,7 +263,7 @@ static int check1(es_out_t *out, struct context *ctx, FakeESOut *fakees)
         Expect(fakees->commandsQueue()->getBufferingLevel().continuous == reference);
         ts = VLC_TICK_0 + 1;
         ts = fakees->applyTimestampContinuity(ts);
-        fprintf(stderr, "timestamp %" PRId64 "\n", ts);
+        fprintf(stderr, "timestamp %ld\n", ts);
         Expect(ts == reference + 1);
 
         /* Reference has local timestamp mutiple rolled > multiple rolled ts */
@@ -286,7 +276,7 @@ static int check1(es_out_t *out, struct context *ctx, FakeESOut *fakees)
         Expect(fakees->commandsQueue()->getBufferingLevel().continuous == reference);
         ts = VLC_TICK_0 + 1 + FROM_MPEGTS(0x1FFFFFFFF) * 2;
         ts = fakees->applyTimestampContinuity(ts);
-        fprintf(stderr, "timestamp %" PRId64 "\n", ts);
+        fprintf(stderr, "timestamp %ld\n", ts);
         Expect(ts == reference + 1);
 
         /* Do not trigger unwanted roll on long playbacks due to
@@ -375,7 +365,16 @@ static int check0(es_out_t *out, struct context *, FakeESOut *fakees)
 int FakeEsOut_test()
 {
     struct context ctx = {VLC_TICK_INVALID,VLC_TICK_INVALID,VLC_TICK_INVALID};
-    struct dropesout dummy = { .ctx = &ctx, .esout = { .cbs = &dummycbs } };
+    struct dropesout dummy = {
+            .ctx = &ctx,
+            .esout = {
+                .pf_add = dummy_callback_add,
+                .pf_send = dummy_callback_send,
+                .pf_del = dummy_callback_del,
+                .pf_control = dummy_callback_control,
+                .pf_destroy = dummy_callback_destroy,
+                .p_sys = nullptr,
+    } };
 
     int(* const tests[3])(es_out_t *, struct context *, FakeESOut *)
             = { check0, check1, check2 };

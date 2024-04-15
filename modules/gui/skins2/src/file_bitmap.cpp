@@ -2,6 +2,7 @@
  * file_bitmap.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 5eddb67394f509843a22f8ce84cee7c31e03aeee $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -36,10 +37,10 @@ FileBitmap::FileBitmap( intf_thread_t *pIntf, image_handler_t *pImageHandler,
     GenericBitmap( pIntf, nbFrames, fps, nbLoops ), m_width( 0 ), m_height( 0 ),
     m_pData( NULL )
 {
-    video_format_t fmt_out;
+    video_format_t fmt_in, fmt_out;
     picture_t *pPic;
-    unsigned size;
 
+    video_format_Init( &fmt_in, 0 );
     video_format_Init( &fmt_out, VLC_CODEC_RGBA );
 
     if( strstr( fileName.c_str(), "://" ) == NULL )
@@ -51,22 +52,14 @@ FileBitmap::FileBitmap( intf_thread_t *pIntf, image_handler_t *pImageHandler,
         free( psz_uri );
     }
 
-    pPic = image_ReadUrl( pImageHandler, fileName.c_str(), &fmt_out );
+    pPic = image_ReadUrl( pImageHandler, fileName.c_str(), &fmt_in, &fmt_out );
     if( !pPic )
-    {
-        video_format_Clean( &fmt_out );
         return;
-    }
 
     m_width = fmt_out.i_width;
     m_height = fmt_out.i_height;
-    video_format_Clean( &fmt_out );
 
-    if (mul_overflow((unsigned)m_width, (unsigned)m_height, &size)
-     || mul_overflow(size, 4, &size))
-        throw std::bad_alloc();
-
-    m_pData = new uint8_t[size];
+    m_pData = new uint8_t[m_height * m_width * 4];
 
     // Compute the alpha layer
     uint8_t *pData = m_pData, *pSrc = pPic->p->p_pixels;

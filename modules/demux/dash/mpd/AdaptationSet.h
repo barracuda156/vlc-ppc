@@ -25,6 +25,10 @@
 #ifndef ADAPTATIONSET_H_
 #define ADAPTATIONSET_H_
 
+#include <vector>
+#include <string>
+#include <map>
+
 #include "../../adaptive/playlist/BaseAdaptationSet.h"
 #include "DASHCommonAttributesElements.h"
 

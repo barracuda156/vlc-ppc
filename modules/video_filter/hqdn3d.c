@@ -2,6 +2,7 @@
  * hqdn3d.c : high-quality denoise 3D ported from MPlayer
  *****************************************************************************
  * Copyright (C) 2011 VLC authors and VideoLAN
+ * $Id: c9b9bafab5a2023234bd23b3a1388632b21369ba $
  *
  * Authors: Cheng Sun <chengsun9@gmail.com>
  *
@@ -40,8 +41,8 @@
 /*****************************************************************************
  * Local protypes
  *****************************************************************************/
-static int  Open         (filter_t *);
-static void Close        (filter_t *);
+static int  Open         (vlc_object_t *);
+static void Close        (vlc_object_t *);
 static picture_t *Filter (filter_t *, picture_t *);
 static int DenoiseCallback( vlc_object_t *p_this, char const *psz_var,
                             vlc_value_t oldval, vlc_value_t newval,
@@ -61,20 +62,22 @@ static int DenoiseCallback( vlc_object_t *p_this, char const *psz_var,
 vlc_module_begin()
     set_shortname(N_("HQ Denoiser 3D"))
     set_description(N_("High Quality 3D Denoiser filter"))
+    set_capability("video filter", 0)
+    set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VFILTER)
 
     add_float_with_range(FILTER_PREFIX "luma-spat", 4.0, 0.0, 254.0,
-            LUMA_SPAT_TEXT, NULL)
+            LUMA_SPAT_TEXT, LUMA_SPAT_TEXT, false)
     add_float_with_range(FILTER_PREFIX "chroma-spat", 3.0, 0.0, 254.0,
-            CHROMA_SPAT_TEXT, NULL)
+            CHROMA_SPAT_TEXT, CHROMA_SPAT_TEXT, false)
     add_float_with_range(FILTER_PREFIX "luma-temp", 6.0, 0.0, 254.0,
-            LUMA_TEMP_TEXT, NULL)
+            LUMA_TEMP_TEXT, LUMA_TEMP_TEXT, false)
     add_float_with_range(FILTER_PREFIX "chroma-temp", 4.5, 0.0, 254.0,
-            CHROMA_TEMP_TEXT, NULL)
+            CHROMA_TEMP_TEXT, CHROMA_TEMP_TEXT, false)
 
     add_shortcut("hqdn3d")
 
-    set_callback_video_filter(Open)
+    set_callbacks(Open, Close)
 vlc_module_end()
 
 static const char *const filter_options[] = {
@@ -84,7 +87,7 @@ static const char *const filter_options[] = {
 /*****************************************************************************
  * filter_sys_t
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     const vlc_chroma_description_t *chroma;
     int w[3], h[3];
@@ -93,13 +96,14 @@ typedef struct
     bool   b_recalc_coefs;
     vlc_mutex_t coefs_mutex;
     float  luma_spat, luma_temp, chroma_spat, chroma_temp;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Open
  *****************************************************************************/
-static int Open(filter_t *filter)
+static int Open(vlc_object_t *this)
 {
+    filter_t *filter = (filter_t *)this;
     filter_sys_t *sys;
     struct vf_priv_s *cfg;
     const video_format_t *fmt_in  = &filter->fmt_in.video;
@@ -151,13 +155,8 @@ static int Open(filter_t *filter)
     sys->luma_temp = var_CreateGetFloatCommand(filter, FILTER_PREFIX "luma-temp");
     sys->chroma_temp = var_CreateGetFloatCommand(filter, FILTER_PREFIX "chroma-temp");
 
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_video = Filter, .close = Close,
-    };
-
     filter->p_sys = sys;
-    filter->ops = &filter_ops;
+    filter->pf_video_filter = Filter;
 
     var_AddCallback( filter, FILTER_PREFIX "luma-spat", DenoiseCallback, sys );
     var_AddCallback( filter, FILTER_PREFIX "chroma-spat", DenoiseCallback, sys );
@@ -170,8 +169,9 @@ static int Open(filter_t *filter)
 /*****************************************************************************
  * Close
  *****************************************************************************/
-static void Close(filter_t *filter)
+static void Close(vlc_object_t *this)
 {
+    filter_t *filter = (filter_t *)this;
     filter_sys_t *sys = filter->p_sys;
     struct vf_priv_s *cfg = &sys->cfg;
 
@@ -179,6 +179,8 @@ static void Close(filter_t *filter)
     var_DelCallback( filter, FILTER_PREFIX "chroma-spat", DenoiseCallback, sys );
     var_DelCallback( filter, FILTER_PREFIX "luma-temp", DenoiseCallback, sys );
     var_DelCallback( filter, FILTER_PREFIX "chroma-temp", DenoiseCallback, sys );
+
+    vlc_mutex_destroy( &sys->coefs_mutex );
 
     for (int i = 0; i < 3; ++i) {
         free(cfg->Frame[i]);
@@ -255,7 +257,7 @@ static int DenoiseCallback( vlc_object_t *p_this, char const *psz_var,
 {
     VLC_UNUSED(p_this); VLC_UNUSED(oldval);
 
-    filter_sys_t *sys = p_data;
+    filter_sys_t *sys = (filter_sys_t*)p_data;
 
     /* Just take values and flag for recalc so we don't block UI thread calling this
      * and don't right thread safety calcing coefs in here without mutex*/

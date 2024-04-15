@@ -24,8 +24,6 @@ endif
 
 .jack: jack
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) install
 	touch $@

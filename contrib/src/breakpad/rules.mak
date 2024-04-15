@@ -2,7 +2,7 @@
 
 # This is the VideoLAN fork of Breakpad, not Google Breakpad!
 BREAKPAD_VERSION := 0.1.3
-BREAKPAD_URL := $(CONTRIB_VIDEOLAN)/breakpad/breakpad-$(BREAKPAD_VERSION).tar.gz
+BREAKPAD_URL := http://download.videolan.org/pub/contrib/breakpad/breakpad-$(BREAKPAD_VERSION).tar.gz
 
 ifdef HAVE_MACOSX
 PKGS += breakpad
@@ -19,8 +19,6 @@ breakpad: breakpad-$(BREAKPAD_VERSION).tar.gz .sum-breakpad
 	sed -i.orig -e "s/GCC_TREAT_WARNINGS_AS_ERRORS = YES/GCC_TREAT_WARNINGS_AS_ERRORS = NO/" "$(UNPACK_DIR)/src/common/mac/Breakpad.xcconfig"
 	$(MOVE)
 
-BREAKPAD_CONF := --disable-processor
-
 .breakpad: breakpad
 	# Framework
 ifdef HAVE_MACOSX
@@ -36,9 +34,7 @@ ifdef HAVE_MACOSX
 		install build/Release/dump_syms "$(PREFIX)/bin"
 else
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(BREAKPAD_CONF)
-	+Configuration=Release $(MAKEBUILD)
-	+Configuration=Release $(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --disable-processor
+	cd $< && Configuration=Release $(MAKE) install
 endif
 	touch $@

@@ -70,7 +70,7 @@ static void parseAvailability(MPD *mpd, Node *node, T *s)
     if(node->hasAttribute("availabilityTimeOffset"))
     {
         double val = Integer<double>(node->getAttributeValue("availabilityTimeOffset"));
-        s->addAttribute(new AvailabilityTimeOffsetAttr(vlc_tick_from_sec(val)));
+        s->addAttribute(new AvailabilityTimeOffsetAttr(val * CLOCK_FREQ));
     }
     if(node->hasAttribute("availabilityTimeComplete"))
     {
@@ -123,12 +123,10 @@ void    IsoffMainParser::parseMPDAttributes   (MPD *mpd, xml::Node *node)
     it = attr.find("minimumUpdatePeriod");
     if(it != attr.end())
     {
-        mpd->b_needsUpdates = true;
         vlc_tick_t minupdate = IsoTime(it->second);
         if(minupdate > 0)
             mpd->minUpdatePeriod.Set(minupdate);
     }
-    else mpd->b_needsUpdates = false;
 
     it = attr.find("maxSegmentDuration");
     if(it != attr.end())
@@ -295,8 +293,8 @@ void    IsoffMainParser::parseAdaptationSets  (MPD *mpd, Node *periodNode, BaseP
         AdaptationSet *adaptationSet = new AdaptationSet(period);
         if(!adaptationSet)
             continue;
-
-        parseCommonAttributesElements(*it, adaptationSet);
+        if((*it)->hasAttribute("mimeType"))
+            adaptationSet->setMimeType((*it)->getAttributeValue("mimeType"));
 
         if((*it)->hasAttribute("lang"))
             adaptationSet->setLang((*it)->getAttributeValue("lang"));
@@ -338,15 +336,14 @@ void    IsoffMainParser::parseAdaptationSets  (MPD *mpd, Node *periodNode, BaseP
                     adaptationSet->setRole(Role::Value::Subtitle);
             }
         }
+#ifdef ADAPTATIVE_ADVANCED_DEBUG
+        if(adaptationSet->description.Get().empty())
+            adaptationSet->description.Set(adaptationSet->getMimeType());
+#endif
 
         parseSegmentInformation(mpd, *it, adaptationSet, &nextid);
 
         parseRepresentations(mpd, (*it), adaptationSet);
-
-#ifdef ADAPTATIVE_ADVANCED_DEBUG
-        if(adaptationSet->description.Get().empty())
-            adaptationSet->description.Set(adaptationSet->getID().str());
-#endif
 
         if(!adaptationSet->getRepresentations().empty())
             period->addAdaptationSet(adaptationSet);
@@ -354,20 +351,6 @@ void    IsoffMainParser::parseAdaptationSets  (MPD *mpd, Node *periodNode, BaseP
             delete adaptationSet;
     }
 }
-
-void IsoffMainParser::parseCommonAttributesElements(Node *node,
-                                                    CommonAttributesElements *commonAttrElements)
-{
-    if(node->hasAttribute("width"))
-        commonAttrElements->setWidth(atoi(node->getAttributeValue("width").c_str()));
-
-    if(node->hasAttribute("height"))
-        commonAttrElements->setHeight(atoi(node->getAttributeValue("height").c_str()));
-
-    if(node->hasAttribute("mimeType"))
-        commonAttrElements->setMimeType(node->getAttributeValue("mimeType"));
-}
-
 void    IsoffMainParser::parseRepresentations (MPD *mpd, Node *adaptationSetNode, AdaptationSet *adaptationSet)
 {
     std::vector<Node *> representations = DOMHelper::getElementByTagName(adaptationSetNode, "Representation", false);
@@ -388,10 +371,17 @@ void    IsoffMainParser::parseRepresentations (MPD *mpd, Node *adaptationSetNode
         if(repNode->hasAttribute("id"))
             currentRepresentation->setID(ID(repNode->getAttributeValue("id")));
 
-        parseCommonAttributesElements(repNode, currentRepresentation);
+        if(repNode->hasAttribute("width"))
+            currentRepresentation->setWidth(atoi(repNode->getAttributeValue("width").c_str()));
+
+        if(repNode->hasAttribute("height"))
+            currentRepresentation->setHeight(atoi(repNode->getAttributeValue("height").c_str()));
 
         if(repNode->hasAttribute("bandwidth"))
             currentRepresentation->setBandwidth(atoi(repNode->getAttributeValue("bandwidth").c_str()));
+
+        if(repNode->hasAttribute("mimeType"))
+            currentRepresentation->setMimeType(repNode->getAttributeValue("mimeType"));
 
         if(repNode->hasAttribute("codecs"))
             currentRepresentation->addCodecs(repNode->getAttributeValue("codecs"));

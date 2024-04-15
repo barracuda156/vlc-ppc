@@ -26,7 +26,7 @@
 #endif
 
 /* libv4l2 functions */
-extern int v4l2_fd_open(int, int);
+extern int (*v4l2_fd_open) (int, int);
 extern int (*v4l2_close) (int);
 extern int (*v4l2_ioctl) (int, unsigned long int, ...);
 extern ssize_t (*v4l2_read) (int, void *, size_t);
@@ -37,23 +37,10 @@ extern int (*v4l2_munmap) (void *, size_t);
 
 typedef struct vlc_v4l2_ctrl vlc_v4l2_ctrl_t;
 
-#include <vlc_atomic.h>
-#include <vlc_block.h>
-
-struct vlc_v4l2_buffer {
-    block_t block;
-    struct vlc_v4l2_buffers *pool;
-    uint32_t index;
-};
-
-struct vlc_v4l2_buffers {
-    size_t count;
-    struct vlc_v4l2_buffer **bufs;
-
-    int fd;
-    vlc_atomic_rc_t refs;
-    _Atomic size_t unused;
-    vlc_mutex_t lock;
+struct buffer_t
+{
+    void *  start;
+    size_t  length;
 };
 
 /* v4l2.c */
@@ -62,15 +49,19 @@ int OpenDevice (vlc_object_t *, const char *, uint32_t *);
 v4l2_std_id var_InheritStandard (vlc_object_t *, const char *);
 
 /* video.c */
+int SetupInput (vlc_object_t *, int fd, v4l2_std_id *std);
+int SetupFormat (vlc_object_t *, int, uint32_t,
+                 struct v4l2_format *, struct v4l2_streamparm *);
+#define SetupFormat(o,fd,fcc,fmt,p) \
+        SetupFormat(VLC_OBJECT(o),fd,fcc,fmt,p)
 int SetupTuner (vlc_object_t *, int fd, uint32_t);
-int SetupVideo(vlc_object_t *, int fd, uint32_t,
-               es_format_t *, uint32_t *, uint32_t *);
 
-struct vlc_v4l2_buffers *StartMmap(vlc_object_t *, int);
-void StopMmap(struct vlc_v4l2_buffers *);
+int StartUserPtr (vlc_object_t *, int);
+struct buffer_t *StartMmap (vlc_object_t *, int, uint32_t *);
+void StopMmap (int, struct buffer_t *, uint32_t);
 
 vlc_tick_t GetBufferPTS (const struct v4l2_buffer *);
-block_t* GrabVideo(vlc_object_t *, struct vlc_v4l2_buffers *);
+block_t* GrabVideo (vlc_object_t *, int, const struct buffer_t *);
 
 #ifdef ZVBI_COMPILED
 /* vbi.c */

@@ -23,12 +23,14 @@
 #include "Segment.h"
 #include "Inheritables.hpp"
 #include "Templates.hpp"
+#include "../tools/Properties.hpp"
 
 namespace adaptive
 {
     namespace playlist
     {
         class SegmentInformation;
+        class SegmentTimeline;
 
         class AbstractSegmentBaseType : public Initializable<InitSegment>,
                                         public Indexable<IndexSegment>,

@@ -44,14 +44,16 @@ vlc_module_begin ()
     set_capability( "spu decoder", 10 )
     set_shortname( N_("TTML decoder"))
     set_description( N_("TTML subtitles decoder") )
-    set_callback( tt_OpenDecoder )
+    set_callbacks( tt_OpenDecoder, tt_CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
-    add_integer( "ttml-align", 0, ALIGN_TEXT, ALIGN_LONGTEXT )
+    add_integer( "ttml-align", 0, ALIGN_TEXT, ALIGN_LONGTEXT, false )
 
     add_submodule()
         set_shortname( N_("TTML") )
         set_description( N_("TTML demuxer") )
         set_capability( "demux", 11 )
+        set_category( CAT_INPUT )
         set_subcategory( SUBCAT_INPUT_DEMUX )
         set_callbacks( tt_OpenDemux, tt_CloseDemux )
         add_shortcut( "ttml" )
@@ -90,13 +92,13 @@ static tt_time_t tt_ParseTime( const char *s )
         sscanf( s, "%u:%2u:%2u",         &h1, &m1, &s1          ) == 3 ||
                            tt_ScanReset( &h1, &m1, &s1, &c, &d1 ) )
     {
-        t.base = vlc_tick_from_sec(h1 * 3600 + m1 * 60 + s1);
+        t.base = CLOCK_FREQ * (h1 * 3600 + m1 * 60 + s1);
         if( c == '.' && d1 > 0 )
         {
             unsigned i_den = 1;
             for( const char *p = strchr( s, '.' ) + 1; *p && (i_den < UINT_MAX / 10); p++ )
                 i_den *= 10;
-            t.base += vlc_tick_from_samples(d1, i_den);
+            t.base += CLOCK_FREQ * d1 / i_den;
         }
         else if( c == ':' )
         {
@@ -106,23 +108,23 @@ static tt_time_t tt_ParseTime( const char *s )
     else /* Offset Time */
     {
         char *psz_end = (char *) s;
-        double v = vlc_strtod_c( s, &psz_end );
+        double v = us_strtod( s, &psz_end );
         if( psz_end != s && *psz_end )
         {
             if( *psz_end == 'm' )
             {
                 if( *(psz_end + 1) == 's' )
-                    t.base = VLC_TICK_FROM_MS(v);
+                    t.base = 1000 * v;
                 else
-                    t.base = vlc_tick_from_sec(60 * v);
+                    t.base = CLOCK_FREQ * 60 * v;
             }
             else if( *psz_end == 's' )
             {
-                t.base = vlc_tick_from_sec(v);
+                t.base = CLOCK_FREQ * v;
             }
             else if( *psz_end == 'h' )
             {
-                t.base = vlc_tick_from_sec(v * 3600);
+                t.base = CLOCK_FREQ * v * 3600;
             }
             else if( *psz_end == 'f' )
             {

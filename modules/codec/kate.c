@@ -2,6 +2,7 @@
  * kate.c : a decoder for the kate bitstream format
  *****************************************************************************
  * Copyright (C) 2000-2008 VLC authors and VideoLAN
+ * $Id: e65daba61c19790ded07d9188f1d05a3f345e2b0 $
  *
  * Authors: Vincent Penquerc'h <ogg.k.ogg.k@googlemail.com>
  *
@@ -29,7 +30,7 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-#include <vlc_input_item.h>
+#include <vlc_input.h>
 #include <vlc_codec.h>
 #include "../demux/xiph.h"
 
@@ -42,8 +43,8 @@
 /* #define ENABLE_PROFILE */
 
 #ifdef ENABLE_PROFILE
-# define PROFILE_START(name) int64_t profile_start_##name = vlc_tick_now()
-# define PROFILE_STOP(name) fprintf( stderr, #name ": %f ms\n", (vlc_tick_now() - profile_start_##name)/1000.0f )
+# define PROFILE_START(name) int64_t profile_start_##name = mdate()
+# define PROFILE_STOP(name) fprintf( stderr, #name ": %f ms\n", (mdate() - profile_start_##name)/1000.0f )
 #else
 # define PROFILE_START(name) ((void)0)
 # define PROFILE_STOP(name) ((void)0)
@@ -52,18 +53,17 @@
 #define CHECK_TIGER_RET( statement )                                   \
     do                                                                 \
     {                                                                  \
-        int i_ret_check = (statement);                                 \
-        if( i_ret_check < 0 )                                          \
+        int i_ret = (statement);                                       \
+        if( i_ret < 0 )                                                \
         {                                                              \
-            msg_Dbg( p_dec, "Error in " #statement ": %d",             \
-                     i_ret_check );                                    \
+            msg_Dbg( p_dec, "Error in " #statement ": %d", i_ret );    \
         }                                                              \
     } while( 0 )
 
 /*****************************************************************************
  * decoder_sys_t : decoder descriptor
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
 #ifdef ENABLE_PACKETIZER
     /* Module mode */
@@ -113,13 +113,13 @@ typedef struct
      */
     bool   b_formatted;
     bool   b_use_tiger;
-} decoder_sys_t;
+};
 
-typedef struct
+struct subpicture_updater_sys_t
 {
     decoder_sys_t *p_dec_sys;
     vlc_tick_t     i_start;
-} kate_spu_updater_sys_t;
+};
 
 
 /*
@@ -171,6 +171,9 @@ static void DecSysRelease( decoder_sys_t *p_sys );
 static void DecSysHold( decoder_sys_t *p_sys );
 #ifdef HAVE_TIGER
 static uint32_t GetTigerColor( decoder_t *p_dec, const char *psz_prefix );
+static char *GetTigerString( decoder_t *p_dec, const char *psz_name );
+static int GetTigerInteger( decoder_t *p_dec, const char *psz_name );
+static double GetTigerFloat( decoder_t *p_dec, const char *psz_name );
 static void UpdateTigerFontColor( decoder_t *p_dec );
 static void UpdateTigerBackgroundColor( decoder_t *p_dec );
 static void UpdateTigerFontEffect( decoder_t *p_dec );
@@ -192,8 +195,7 @@ static void UpdateTigerFontDesc( decoder_t *p_dec );
 
 #ifdef HAVE_TIGER
 
-static const tiger_font_effect pp_font_effects[] = { tiger_font_plain, tiger_font_shadow, tiger_font_outline };
-static const int pi_font_effects[] = { 0, 1, 2 };
+static const tiger_font_effect pi_font_effects[] = { tiger_font_plain, tiger_font_shadow, tiger_font_outline };
 static const char * const ppsz_font_effect_names[] = { N_("None"), N_("Shadow"), N_("Outline") };
 
 /* nicked off freetype.c */
@@ -268,42 +270,52 @@ vlc_module_begin ()
     set_help( HELP_TEXT )
     set_capability( "spu decoder", 50 )
     set_callbacks( OpenDecoder, CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
     add_shortcut( "kate" )
 
-    add_bool( "kate-formatted", true, FORMAT_TEXT, FORMAT_LONGTEXT )
+    add_bool( "kate-formatted", true, FORMAT_TEXT, FORMAT_LONGTEXT,
+              true )
 
 #ifdef HAVE_TIGER
-    add_bool( "kate-use-tiger", true, TIGER_TEXT, TIGER_LONGTEXT )
+    add_bool( "kate-use-tiger", true, TIGER_TEXT, TIGER_LONGTEXT,
+              true )
     add_float_with_range( "kate-tiger-quality",
                           TIGER_QUALITY_DEFAULT, 0.0f, 1.0f,
-                          TIGER_QUALITY_TEXT, TIGER_QUALITY_LONGTEXT )
+                          TIGER_QUALITY_TEXT, TIGER_QUALITY_LONGTEXT,
+                          true )
 
     set_section( N_("Tiger rendering defaults"), NULL );
     add_string( "kate-tiger-default-font-desc", TIGER_DEFAULT_FONT_DESC_DEFAULT,
-                TIGER_DEFAULT_FONT_DESC_TEXT, TIGER_DEFAULT_FONT_DESC_LONGTEXT);
+                TIGER_DEFAULT_FONT_DESC_TEXT, TIGER_DEFAULT_FONT_DESC_LONGTEXT, true);
     add_integer_with_range( "kate-tiger-default-font-effect",
                             TIGER_DEFAULT_FONT_EFFECT_DEFAULT,
-                            0, ARRAY_SIZE(pi_font_effects),
-                            TIGER_DEFAULT_FONT_EFFECT_TEXT, TIGER_DEFAULT_FONT_EFFECT_LONGTEXT )
+                            0, sizeof(pi_font_effects)/sizeof(pi_font_effects[0])-1,
+                            TIGER_DEFAULT_FONT_EFFECT_TEXT, TIGER_DEFAULT_FONT_EFFECT_LONGTEXT,
+                            true )
     change_integer_list( pi_font_effects, ppsz_font_effect_names );
     add_float_with_range( "kate-tiger-default-font-effect-strength",
               TIGER_DEFAULT_FONT_EFFECT_STRENGTH_DEFAULT, 0.0f, 1.0f,
-              TIGER_DEFAULT_FONT_EFFECT_STRENGTH_TEXT, TIGER_DEFAULT_FONT_EFFECT_STRENGTH_LONGTEXT )
+              TIGER_DEFAULT_FONT_EFFECT_STRENGTH_TEXT, TIGER_DEFAULT_FONT_EFFECT_STRENGTH_LONGTEXT,
+              true )
     add_integer_with_range( "kate-tiger-default-font-color",
                             TIGER_DEFAULT_FONT_COLOR_DEFAULT, 0, 0x00ffffff,
-                            TIGER_DEFAULT_FONT_COLOR_TEXT, TIGER_DEFAULT_FONT_COLOR_LONGTEXT);
+                            TIGER_DEFAULT_FONT_COLOR_TEXT, TIGER_DEFAULT_FONT_COLOR_LONGTEXT,
+                            true);
     change_integer_list( pi_color_values, ppsz_color_descriptions );
     add_integer_with_range( "kate-tiger-default-font-alpha",
                             TIGER_DEFAULT_FONT_ALPHA_DEFAULT, 0, 255,
-                            TIGER_DEFAULT_FONT_ALPHA_TEXT, TIGER_DEFAULT_FONT_ALPHA_LONGTEXT);
+                            TIGER_DEFAULT_FONT_ALPHA_TEXT, TIGER_DEFAULT_FONT_ALPHA_LONGTEXT,
+                            true);
     add_integer_with_range( "kate-tiger-default-background-color",
                             TIGER_DEFAULT_BACKGROUND_COLOR_DEFAULT, 0, 0x00ffffff,
-                            TIGER_DEFAULT_BACKGROUND_COLOR_TEXT, TIGER_DEFAULT_BACKGROUND_COLOR_LONGTEXT);
+                            TIGER_DEFAULT_BACKGROUND_COLOR_TEXT, TIGER_DEFAULT_BACKGROUND_COLOR_LONGTEXT,
+                            true);
     change_integer_list( pi_color_values, ppsz_color_descriptions );
     add_integer_with_range( "kate-tiger-default-background-alpha",
                             TIGER_DEFAULT_BACKGROUND_ALPHA_DEFAULT, 0, 255,
-                            TIGER_DEFAULT_BACKGROUND_ALPHA_TEXT, TIGER_DEFAULT_BACKGROUND_ALPHA_LONGTEXT);
+                            TIGER_DEFAULT_BACKGROUND_ALPHA_TEXT, TIGER_DEFAULT_BACKGROUND_ALPHA_LONGTEXT,
+                            true);
 #endif
 
 #ifdef ENABLE_PACKETIZER
@@ -316,27 +328,32 @@ vlc_module_begin ()
 
 vlc_module_end ()
 
-static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
+/*****************************************************************************
+ * OpenDecoder: probe the decoder and return score
+ *****************************************************************************
+ * Tries to launch a decoder and return score so that the interface is able
+ * to chose.
+ *****************************************************************************/
+static int OpenDecoder( vlc_object_t *p_this )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_KATE )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_KATE )
     {
         return VLC_EGENERIC;
     }
 
     msg_Dbg( p_dec, "kate: OpenDecoder");
 
+    /* Set callbacks */
+    p_dec->pf_decode    = DecodeSub;
+    p_dec->pf_packetize = Packetize;
+    p_dec->pf_flush     = Flush;
+
     /* Allocate the memory needed to store the decoder's structure */
     if( ( p_dec->p_sys = p_sys = malloc(sizeof(*p_sys)) ) == NULL )
         return VLC_ENOMEM;
-
-    if( b_packetizer )
-        p_dec->pf_packetize = Packetize;
-    else
-        p_dec->pf_decode    = DecodeSub;
-    p_dec->pf_flush = Flush;
 
     vlc_mutex_init( &p_sys->lock );
     p_sys->i_refcount = 0;
@@ -344,7 +361,7 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
 
     /* init of p_sys */
 #ifdef ENABLE_PACKETIZER
-    p_sys->b_packetizer = b_packetizer;
+    p_sys->b_packetizer = false;
 #endif
     p_sys->b_ready = false;
     p_sys->i_pts =
@@ -369,15 +386,10 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
     /* get initial value of configuration */
     p_sys->i_tiger_default_font_color = GetTigerColor( p_dec, "kate-tiger-default-font" );
     p_sys->i_tiger_default_background_color = GetTigerColor( p_dec, "kate-tiger-default-background" );
-
-    int font_effect_idx = var_InheritInteger( p_dec, "kate-tiger-default-font-effect" );
-    if (font_effect_idx < 0 || (size_t)font_effect_idx >= ARRAY_SIZE(pp_font_effects))
-        font_effect_idx = TIGER_DEFAULT_FONT_EFFECT_DEFAULT;
-
-    p_sys->e_tiger_default_font_effect = pp_font_effects[font_effect_idx];
-    p_sys->f_tiger_default_font_effect_strength = var_InheritFloat( p_dec, "kate-tiger-default-font-effect-strength" );
-    p_sys->psz_tiger_default_font_desc = var_InheritString( p_dec, "kate-tiger-default-font-desc" );
-    p_sys->f_tiger_quality = var_InheritFloat( p_dec, "kate-tiger-quality" );
+    p_sys->e_tiger_default_font_effect = GetTigerInteger( p_dec, "kate-tiger-default-font-effect" );
+    p_sys->f_tiger_default_font_effect_strength = GetTigerFloat( p_dec, "kate-tiger-default-font-effect-strength" );
+    p_sys->psz_tiger_default_font_desc = GetTigerString( p_dec, "kate-tiger-default-font-desc" );
+    p_sys->f_tiger_quality = GetTigerFloat( p_dec, "kate-tiger-quality" );
 
     if( p_sys->b_use_tiger )
     {
@@ -405,10 +417,7 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
 
 #endif
 
-    if( b_packetizer )
-        p_dec->fmt_out.i_codec = VLC_CODEC_KATE;
-    else
-        p_dec->fmt_out.i_codec = 0; // may vary during the stream
+    p_dec->fmt_out.i_codec = 0; // may vary during the stream
 
     /* add the decoder to the global list */
     decoder_t **list = realloc( kate_decoder_list, (kate_decoder_list_size+1) * sizeof( *list ));
@@ -423,15 +432,20 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
     return VLC_SUCCESS;
 }
 
-static int OpenDecoder( vlc_object_t *p_this )
-{
-    return OpenCommon( p_this, false );
-}
-
 #ifdef ENABLE_PACKETIZER
 static int OpenPacketizer( vlc_object_t *p_this )
 {
-    return OpenCommon( p_this, true );
+    decoder_t *p_dec = (decoder_t*)p_this;
+
+    int i_ret = OpenDecoder( p_this );
+
+    if( i_ret == VLC_SUCCESS )
+    {
+        p_dec->p_sys->b_packetizer = true;
+        p_dec->fmt_out.i_codec = VLC_CODEC_KATE;
+    }
+
+    return i_ret;
 }
 #endif
 
@@ -529,7 +543,7 @@ static int ProcessHeaders( decoder_t *p_dec )
     const void *pp_data[XIPH_MAX_HEADER_COUNT];
     unsigned i_count;
     if( xiph_SplitHeaders( pi_size, pp_data, &i_count,
-                           p_dec->fmt_in->i_extra, p_dec->fmt_in->p_extra) )
+                           p_dec->fmt_in.i_extra, p_dec->fmt_in.p_extra) )
         return VLC_EGENERIC;
 
     if( i_count < 1 )
@@ -587,15 +601,15 @@ static int ProcessHeaders( decoder_t *p_dec )
     else
     {
         void* p_extra = realloc( p_dec->fmt_out.p_extra,
-                                 p_dec->fmt_in->i_extra );
+                                 p_dec->fmt_in.i_extra );
         if( unlikely( p_extra == NULL ) )
         {
             return VLC_ENOMEM;
         }
         p_dec->fmt_out.p_extra = p_extra;
-        p_dec->fmt_out.i_extra = p_dec->fmt_in->i_extra;
+        p_dec->fmt_out.i_extra = p_dec->fmt_in.i_extra;
         memcpy( p_dec->fmt_out.p_extra,
-                p_dec->fmt_in->p_extra, p_dec->fmt_out.i_extra );
+                p_dec->fmt_in.p_extra, p_dec->fmt_out.i_extra );
     }
 #endif
 
@@ -611,7 +625,7 @@ static void *ProcessPacket( decoder_t *p_dec, kate_packet *p_kp,
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     /* Date management */
-    if( p_block->i_pts != VLC_TICK_INVALID && p_block->i_pts != p_sys->i_pts )
+    if( p_block->i_pts > VLC_TICK_INVALID && p_block->i_pts != p_sys->i_pts )
     {
         p_sys->i_pts = p_block->i_pts;
     }
@@ -740,9 +754,8 @@ static void SetupText( decoder_t *p_dec, subpicture_t *p_spu, const kate_event *
 
 static void TigerDestroySubpicture( subpicture_t *p_subpic )
 {
-    kate_spu_updater_sys_t *p_spusys = p_subpic->updater.p_sys;
-    DecSysRelease( p_spusys->p_dec_sys );
-    free( p_spusys );
+    DecSysRelease( p_subpic->updater.p_sys->p_dec_sys );
+    free( p_subpic->updater.p_sys );
 }
 /*
  * We get premultiplied alpha, but VLC doesn't expect this, so we demultiply
@@ -802,8 +815,7 @@ static int TigerValidateSubpicture( subpicture_t *p_subpic,
 {
     VLC_UNUSED(p_fmt_src); VLC_UNUSED(p_fmt_dst);
 
-    kate_spu_updater_sys_t *p_spusys = p_subpic->updater.p_sys;
-    decoder_sys_t *p_sys = p_spusys->p_dec_sys;
+    decoder_sys_t *p_sys = p_subpic->updater.p_sys->p_dec_sys;
 
     if( b_fmt_src || b_fmt_dst )
         return VLC_EGENERIC;
@@ -811,7 +823,7 @@ static int TigerValidateSubpicture( subpicture_t *p_subpic,
     PROFILE_START( TigerValidateSubpicture );
 
     /* time in seconds from the start of the stream */
-    kate_float t = (p_spusys->i_start + ts - p_subpic->i_start ) / 1000000.0f;
+    kate_float t = (p_subpic->updater.p_sys->i_start + ts - p_subpic->i_start ) / 1000000.0f;
 
     /* it is likely that the current region (if any) can be kept as is; test for this */
     vlc_mutex_lock( &p_sys->lock );
@@ -844,15 +856,14 @@ static void TigerUpdateSubpicture( subpicture_t *p_subpic,
                                    const video_format_t *p_fmt_dst,
                                    vlc_tick_t ts )
 {
-    kate_spu_updater_sys_t *p_spusys = p_subpic->updater.p_sys;
-    decoder_sys_t *p_sys = p_spusys->p_dec_sys;
+    decoder_sys_t *p_sys = p_subpic->updater.p_sys->p_dec_sys;
     plane_t *p_plane;
     kate_float t;
     int i_ret;
 
 
     /* time in seconds from the start of the stream */
-    t = (p_spusys->i_start + ts - p_subpic->i_start ) / 1000000.0f;
+    t = (p_subpic->updater.p_sys->i_start + ts - p_subpic->i_start ) / 1000000.0f;
 
     PROFILE_START( TigerUpdateSubpicture );
 
@@ -921,19 +932,46 @@ static uint32_t GetTigerColor( decoder_t *p_dec, const char *psz_prefix )
 
     if( asprintf( &psz_tmp, "%s-color", psz_prefix ) >= 0 )
     {
-        uint32_t i_rgb = var_InheritInteger( p_dec, psz_tmp );
+        uint32_t i_rgb = var_CreateGetInteger( p_dec, psz_tmp );
+        var_Destroy( p_dec, psz_tmp );
         free( psz_tmp );
         i_color |= i_rgb;
     }
 
     if( asprintf( &psz_tmp, "%s-alpha", psz_prefix ) >= 0 )
     {
-        uint32_t i_alpha = var_InheritInteger( p_dec, psz_tmp );
+        uint32_t i_alpha = var_CreateGetInteger( p_dec, psz_tmp );
+        var_Destroy( p_dec, psz_tmp );
         free( psz_tmp );
         i_color |= (i_alpha << 24);
     }
 
     return i_color;
+}
+
+static char *GetTigerString( decoder_t *p_dec, const char *psz_name )
+{
+    char *psz_value = var_CreateGetString( p_dec, psz_name );
+    if( psz_value)
+    {
+        psz_value = strdup( psz_value );
+    }
+    var_Destroy( p_dec, psz_name );
+    return psz_value;
+}
+
+static int GetTigerInteger( decoder_t *p_dec, const char *psz_name )
+{
+    int i_value = var_CreateGetInteger( p_dec, psz_name );
+    var_Destroy( p_dec, psz_name );
+    return i_value;
+}
+
+static double GetTigerFloat( decoder_t *p_dec, const char *psz_name )
+{
+    double f_value = var_CreateGetFloat( p_dec, psz_name );
+    var_Destroy( p_dec, psz_name );
+    return f_value;
 }
 
 static void UpdateTigerQuality( decoder_t *p_dec )
@@ -1021,7 +1059,7 @@ static subpicture_t *DecodePacket( decoder_t *p_dec, kate_packet *p_kp, block_t 
     /* we have an event */
 
     /* Get a new spu */
-    kate_spu_updater_sys_t *p_spu_sys = NULL;
+    subpicture_updater_sys_t *p_spu_sys = NULL;
     if( p_sys->b_use_tiger)
     {
         p_spu_sys = malloc( sizeof(*p_spu_sys) );
@@ -1046,7 +1084,8 @@ static subpicture_t *DecodePacket( decoder_t *p_dec, kate_packet *p_kp, block_t 
     }
 
     p_spu->i_start = p_block->i_pts;
-    p_spu->i_stop = p_block->i_pts + vlc_tick_from_samples(ev->duration * p_sys->ki.gps_denominator, p_sys->ki.gps_numerator);
+    p_spu->i_stop = p_block->i_pts + CLOCK_FREQ *
+        ev->duration * p_sys->ki.gps_denominator / p_sys->ki.gps_numerator;
     p_spu->b_ephemer = false;
     p_spu->b_absolute = false;
 
@@ -1207,11 +1246,9 @@ static void ParseKateComments( decoder_t *p_dec )
     char *psz_name, *psz_value, *psz_comment;
     int i = 0;
 
-    decoder_sys_t *p_sys = p_dec->p_sys;
-
-    while ( i < p_sys->kc.comments )
+    while ( i < p_dec->p_sys->kc.comments )
     {
-        psz_comment = strdup( p_sys->kc.user_comments[i] );
+        psz_comment = strdup( p_dec->p_sys->kc.user_comments[i] );
         if( !psz_comment )
             break;
         psz_name = psz_comment;
@@ -1273,6 +1310,7 @@ static void DecSysRelease( decoder_sys_t *p_sys )
     }
 
     vlc_mutex_unlock( &p_sys->lock );
+    vlc_mutex_destroy( &p_sys->lock );
 
 #ifdef HAVE_TIGER
     if( p_sys->p_tr )
@@ -1287,3 +1325,4 @@ static void DecSysRelease( decoder_sys_t *p_sys )
 
     free( p_sys );
 }
+

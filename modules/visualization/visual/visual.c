@@ -2,6 +2,7 @@
  * visual.c : Visualisation system
  *****************************************************************************
  * Copyright (C) 2002-2009 VLC authors and VideoLAN
+ * $Id: b4c72201b8fffeb88d9c5849140cc374c533ac04 $
  *
  * Authors: Clément Stenac <zorglub@via.ecp.fr>
  *
@@ -35,8 +36,6 @@
 #include <vlc_vout.h>
 #include <vlc_aout.h>
 #include <vlc_filter.h>
-#include <vlc_queue.h>
-#include <vlc_picture_pool.h>
 
 #include "visual.h"
 
@@ -113,56 +112,61 @@
 #define VOUT_HEIGHT 500
 
 static int  Open         ( vlc_object_t * );
-static void Close        ( filter_t * );
+static void Close        ( vlc_object_t * );
 
 vlc_module_begin ()
     set_shortname( N_("Visualizer"))
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_VISUAL )
     set_description( N_("Visualizer filter") )
     set_section( N_( "General") , NULL )
     add_string("effect-list", "spectrum",
-            ELIST_TEXT, ELIST_LONGTEXT )
+            ELIST_TEXT, ELIST_LONGTEXT, true )
     add_integer("effect-width",VOUT_WIDTH,
-             WIDTH_TEXT, WIDTH_LONGTEXT )
+             WIDTH_TEXT, WIDTH_LONGTEXT, false )
     add_integer("effect-height" , VOUT_HEIGHT ,
-             HEIGHT_TEXT, HEIGHT_LONGTEXT )
-    add_string("effect-fft-window", "none",
-            FFT_WINDOW_TEXT, FFT_WINDOW_LONGTEXT )
+             HEIGHT_TEXT, HEIGHT_LONGTEXT, false )
+    add_string("effect-fft-window", "flat",
+            FFT_WINDOW_TEXT, FFT_WINDOW_LONGTEXT, true )
         change_string_list( window_list, window_list_text )
     add_float("effect-kaiser-param", 3.0f,
-            KAISER_PARAMETER_TEXT, KAISER_PARAMETER_LONGTEXT )
+            KAISER_PARAMETER_TEXT, KAISER_PARAMETER_LONGTEXT, true )
     set_section( N_("Spectrum analyser") , NULL )
+    add_obsolete_integer( "visual-nbbands" ) /* Since 1.0.0 */
     add_bool("visual-80-bands", true,
-             NBBANDS_TEXT, NULL );
+             NBBANDS_TEXT, NBBANDS_TEXT, true );
+    add_obsolete_integer( "visual-separ" ) /* Since 1.0.0 */
+    add_obsolete_integer( "visual-amp" ) /* Since 1.0.0 */
     add_bool("visual-peaks", true,
-             PEAKS_TEXT, NULL )
+             PEAKS_TEXT, PEAKS_TEXT, true )
     set_section( N_("Spectrometer") , NULL )
     add_bool("spect-show-original", false,
-             ORIG_TEXT, ORIG_LONGTEXT )
+             ORIG_TEXT, ORIG_LONGTEXT, true )
     add_bool("spect-show-base", true,
-             BASE_TEXT, NULL )
+             BASE_TEXT, BASE_TEXT, true )
     add_integer("spect-radius", 42,
-             RADIUS_TEXT, RADIUS_LONGTEXT )
+             RADIUS_TEXT, RADIUS_LONGTEXT, true )
     add_integer_with_range("spect-sections", 3, 1, INT_MAX,
-             SSECT_TEXT, SSECT_LONGTEXT )
+             SSECT_TEXT, SSECT_LONGTEXT, true )
     add_integer("spect-color", 80,
-             COLOR1_TEXT, COLOR1_LONGTEXT )
+             COLOR1_TEXT, COLOR1_LONGTEXT, true )
     add_bool("spect-show-bands", true,
-             BANDS_TEXT, NULL );
+             BANDS_TEXT, BANDS_TEXT, true );
+    add_obsolete_integer( "spect-nbbands" ) /* Since 1.0.0 */
     add_bool("spect-80-bands", true,
-             NBBANDS_TEXT, NULL )
+             NBBANDS_TEXT, NBBANDS_TEXT, true )
     add_integer("spect-separ", 1,
-             SEPAR_TEXT, NULL )
+             SEPAR_TEXT, SEPAR_TEXT, true )
     add_integer("spect-amp", 8,
-             AMP_TEXT, AMP_LONGTEXT )
+             AMP_TEXT, AMP_LONGTEXT, true )
     add_bool("spect-show-peaks", true,
-             PEAKS_TEXT, NULL )
+             PEAKS_TEXT, PEAKS_TEXT, true )
     add_integer("spect-peak-width", 61,
-             PEAK_WIDTH_TEXT, PEAK_WIDTH_LONGTEXT )
+             PEAK_WIDTH_TEXT, PEAK_WIDTH_LONGTEXT, true )
     add_integer("spect-peak-height", 1,
-             PEAK_HEIGHT_TEXT, PEAK_HEIGHT_LONGTEXT )
+             PEAK_HEIGHT_TEXT, PEAK_HEIGHT_LONGTEXT, true )
     set_capability( "visualization", 0 )
-    set_callback( Open )
+    set_callbacks( Open, Close )
     add_shortcut( "visualizer")
 vlc_module_end ()
 
@@ -171,24 +175,15 @@ vlc_module_end ()
  * Local prototypes
  *****************************************************************************/
 static block_t *DoWork( filter_t *, block_t * );
-static void Flush( filter_t * );
 static void *Thread( void *);
 
-typedef struct
+struct filter_sys_t
 {
-    vlc_queue_t     queue;
+    block_fifo_t    *fifo;
     vout_thread_t   *p_vout;
-    picture_pool_t  *pool;
     visual_effect_t **effect;
     int             i_effect;
-    bool            dead;
     vlc_thread_t    thread;
-} filter_sys_t;
-
-static const struct vlc_filter_operations filter_ops = {
-    .filter_audio = DoWork,
-    .flush = Flush,
-    .close = Close,
 };
 
 /*****************************************************************************
@@ -204,10 +199,9 @@ static int Open( vlc_object_t *p_this )
     p_sys = p_filter->p_sys = malloc( sizeof( filter_sys_t ) );
     if( unlikely (p_sys == NULL ) )
         return VLC_EGENERIC;
-    p_sys->pool = NULL;
 
     int width = var_InheritInteger( p_filter , "effect-width");
-    int height = var_InheritInteger( p_filter , "effect-height");
+    int height = var_InheritInteger( p_filter , "effect-width");
     /* No resolution under 400x532 and no odd dimension */
     if( width < 532 )
         width  = 532;
@@ -308,37 +302,34 @@ static int Open( vlc_object_t *p_this )
         .primaries = COLOR_PRIMARIES_SRGB,
         .space = COLOR_SPACE_SRGB,
     };
-
-    /* TODO: the number of picture is arbitrary for now. */
-    p_sys->pool = picture_pool_NewFromFormat(&fmt, 3);
-    if (p_sys->pool == NULL)
-        goto error;
-
-    p_sys->p_vout = aout_filter_GetVout( p_filter, &fmt );
+    p_sys->p_vout = aout_filter_RequestVout( p_filter, NULL, &fmt );
     if( p_sys->p_vout == NULL )
     {
         msg_Err( p_filter, "no suitable vout module" );
         goto error;
     }
 
-    p_sys->dead = false;
-    vlc_queue_Init(&p_sys->queue, offsetof (block_t, p_next));
-
-    if( vlc_clone( &p_sys->thread, Thread, p_filter ) )
+    p_sys->fifo = block_FifoNew();
+    if( unlikely( p_sys->fifo == NULL ) )
     {
-        vout_Close( p_sys->p_vout );
+        aout_filter_RequestVout( p_filter, p_sys->p_vout, NULL );
+        goto error;
+    }
+
+    if( vlc_clone( &p_sys->thread, Thread, p_filter,
+                   VLC_THREAD_PRIORITY_VIDEO ) )
+    {
+        block_FifoRelease( p_sys->fifo );
+        aout_filter_RequestVout( p_filter, p_sys->p_vout, NULL );
         goto error;
     }
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = DoWork;
     return VLC_SUCCESS;
 
 error:
-    if (p_sys->pool)
-        picture_pool_Release(p_sys->pool);
-
     for( int i = 0; i < p_sys->i_effect; i++ )
         free( p_sys->effect[i] );
     free( p_sys->effect );
@@ -351,10 +342,10 @@ static block_t *DoRealWork( filter_t *p_filter, block_t *p_in_buf )
     filter_sys_t *p_sys = p_filter->p_sys;
 
     /* First, get a new picture */
-    picture_t *p_outpic = picture_pool_Wait(p_sys->pool);
+    picture_t *p_outpic = vout_GetPicture( p_sys->p_vout );
+    p_outpic->b_progressive = true;
     if( unlikely(p_outpic == NULL) )
         return p_in_buf;
-    p_outpic->b_progressive = true;
 
     /* Blank the picture */
     for( int i = 0 ; i < p_outpic->i_planes ; i++ )
@@ -383,41 +374,40 @@ static block_t *DoRealWork( filter_t *p_filter, block_t *p_in_buf )
 
 static void *Thread( void *data )
 {
-    vlc_thread_set_name("vlc-visual");
-
     filter_t *p_filter = data;
     filter_sys_t *sys = p_filter->p_sys;
-    block_t *block;
 
-    while ((block = vlc_queue_DequeueKillable(&sys->queue, &sys->dead)))
+    for (;;)
+    {
+        block_t *block = block_FifoGet( sys->fifo );
+
+        int canc = vlc_savecancel( );
         block_Release( DoRealWork( p_filter, block ) );
-
-    return NULL;
+        vlc_restorecancel( canc );
+    }
+    vlc_assert_unreachable();
 }
 
 static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-
-    vlc_queue_Enqueue(&p_sys->queue, block_Duplicate(p_in_buf));
+    block_t *block = block_Duplicate( p_in_buf );
+    if( likely(block != NULL) )
+        block_FifoPut( p_filter->p_sys->fifo, block );
     return p_in_buf;
-}
-
-static void Flush( filter_t *p_filter )
-{
-    filter_sys_t *p_sys = p_filter->p_sys;
-    vout_FlushAll( p_sys->p_vout );
 }
 
 /*****************************************************************************
  * Close: close the plugin
  *****************************************************************************/
-static void Close( filter_t * p_filter )
+static void Close( vlc_object_t *p_this )
 {
+    filter_t * p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
-    vlc_queue_Kill(&p_sys->queue, &p_sys->dead);
+    vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
+    block_FifoRelease( p_sys->fifo );
+    aout_filter_RequestVout( p_filter, p_filter->p_sys->p_vout, NULL );
 
     /* Free the list */
     for( int i = 0; i < p_sys->i_effect; i++ )
@@ -428,7 +418,6 @@ static void Close( filter_t * p_filter )
 #undef p_effect
     }
 
-    picture_pool_Release(p_sys->pool);
     free( p_sys->effect );
     free( p_sys );
 }

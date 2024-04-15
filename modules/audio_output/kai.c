@@ -37,7 +37,7 @@
 
 #define FRAME_SIZE 2048
 
-#define AUDIO_BUFFER_SIZE_IN_SECONDS  SEC_FROM_VLC_TICK( AOUT_MAX_ADVANCE_TIME )
+#define AUDIO_BUFFER_SIZE_IN_SECONDS ( AOUT_MAX_ADVANCE_TIME / CLOCK_FREQ )
 
 struct audio_buffer_t
 {
@@ -47,6 +47,7 @@ struct audio_buffer_t
     int         length;
     int         size;
     vlc_mutex_t mutex;
+    vlc_cond_t  cond;
 };
 
 typedef struct audio_buffer_t audio_buffer_t;
@@ -57,23 +58,23 @@ typedef struct audio_buffer_t audio_buffer_t;
  * This structure is part of the audio output thread descriptor.
  * It describes the specific properties of an audio device.
  *****************************************************************************/
-typedef struct
+struct aout_sys_t
 {
     audio_buffer_t *buffer;
     HKAI            hkai;
     float           soft_gain;
     bool            soft_mute;
     audio_sample_format_t format;
-} aout_sys_t;
+};
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
 static int  Open    ( vlc_object_t * );
 static void Close   ( vlc_object_t * );
-static void Play    ( audio_output_t *_p_aout, block_t *block, vlc_tick_t );
+static void Play    ( audio_output_t *_p_aout, block_t *block );
 static void Pause   ( audio_output_t *, bool, vlc_tick_t );
-static void Flush   ( audio_output_t * );
+static void Flush   ( audio_output_t *, bool );
 static int  TimeGet ( audio_output_t *, vlc_tick_t *restrict );
 
 static ULONG APIENTRY KaiCallback ( PVOID, PVOID, ULONG );
@@ -108,13 +109,15 @@ vlc_module_begin ()
     set_shortname( "KAI" )
     set_description( N_("K Audio Interface audio output") )
     set_capability( "audio output", 100 )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_AOUT )
     add_string( "kai-audio-device", ppsz_kai_audio_device[0],
-                KAI_AUDIO_DEVICE_TEXT, KAI_AUDIO_DEVICE_LONGTEXT )
+                KAI_AUDIO_DEVICE_TEXT, KAI_AUDIO_DEVICE_LONGTEXT, false )
         change_string_list( ppsz_kai_audio_device, ppsz_kai_audio_device_text )
     add_sw_gain( )
     add_bool( "kai-audio-exclusive-mode", false,
-              KAI_AUDIO_EXCLUSIVE_MODE_TEXT, KAI_AUDIO_EXCLUSIVE_MODE_LONGTEXT )
+              KAI_AUDIO_EXCLUSIVE_MODE_TEXT, KAI_AUDIO_EXCLUSIVE_MODE_LONGTEXT,
+              true )
     set_callbacks( Open, Close )
 vlc_module_end ()
 
@@ -230,7 +233,7 @@ exit_kai_done :
 /*****************************************************************************
  * Play: play a sound samples buffer
  *****************************************************************************/
-static void Play(audio_output_t *p_aout, block_t *block, vlc_tick_t date)
+static void Play (audio_output_t *p_aout, block_t *block)
 {
     aout_sys_t *p_sys = p_aout->sys;
 
@@ -239,7 +242,6 @@ static void Play(audio_output_t *p_aout, block_t *block, vlc_tick_t date)
     WriteBuffer( p_aout, block->p_buffer, block->i_buffer );
 
     block_Release( block );
-    (void) date;
 }
 
 /*****************************************************************************
@@ -307,15 +309,22 @@ static void Pause( audio_output_t *aout, bool pause, vlc_tick_t date )
         kaiResume( sys->hkai );
 }
 
-static void Flush( audio_output_t *aout )
+static void Flush( audio_output_t *aout, bool drain )
 {
-    aout_sys_t     *sys = aout->sys;
-    audio_buffer_t *buffer = sys->buffer;
+    audio_buffer_t *buffer = aout->sys->buffer;
 
     vlc_mutex_lock( &buffer->mutex );
 
-    buffer->read_pos = buffer->write_pos;
-    buffer->length   = 0;
+    if( drain )
+    {
+        while( buffer->length > 0 )
+            vlc_cond_wait( &buffer->cond, &buffer->mutex );
+    }
+    else
+    {
+        buffer->read_pos = buffer->write_pos;
+        buffer->length   = 0;
+    }
 
     vlc_mutex_unlock( &buffer->mutex );
 }
@@ -328,8 +337,8 @@ static int TimeGet( audio_output_t *aout, vlc_tick_t *restrict delay )
 
     vlc_mutex_lock( &buffer->mutex );
 
-    *delay = vlc_tick_from_samples( buffer->length / format->i_bytes_per_frame,
-                                    format->i_rate );
+    *delay = ( buffer->length / format->i_bytes_per_frame ) * CLOCK_FREQ /
+             format->i_rate;
 
     vlc_mutex_unlock( &buffer->mutex );
 
@@ -355,17 +364,19 @@ static int CreateBuffer( audio_output_t *aout, int size )
     buffer->size = size;
 
     vlc_mutex_init( &buffer->mutex );
+    vlc_cond_init( &buffer->cond );
 
-    aout_sys_t *sys = aout->sys;
-    sys->buffer = buffer;
+    aout->sys->buffer = buffer;
 
     return 0;
 }
 
 static void DestroyBuffer( audio_output_t *aout )
 {
-    aout_sys_t     *sys = aout->sys;
-    audio_buffer_t *buffer = sys->buffer;
+    audio_buffer_t *buffer = aout->sys->buffer;
+
+    vlc_mutex_destroy( &buffer->mutex );
+    vlc_cond_destroy( &buffer->cond );
 
     free( buffer->data );
     free( buffer );
@@ -373,8 +384,7 @@ static void DestroyBuffer( audio_output_t *aout )
 
 static int ReadBuffer( audio_output_t *aout, uint8_t *data, int size )
 {
-    aout_sys_t     *sys = aout->sys;
-    audio_buffer_t *buffer = sys->buffer;
+    audio_buffer_t *buffer = aout->sys->buffer;
     int             len;
     int             remain_len = 0;
 
@@ -399,6 +409,8 @@ static int ReadBuffer( audio_output_t *aout, uint8_t *data, int size )
 
     buffer->length -= len;
 
+    vlc_cond_signal( &buffer->cond );
+
     vlc_mutex_unlock( &buffer->mutex );
 
     return len;
@@ -406,38 +418,17 @@ static int ReadBuffer( audio_output_t *aout, uint8_t *data, int size )
 
 static int WriteBuffer( audio_output_t *aout, uint8_t *data, int size )
 {
-    aout_sys_t     *sys = aout->sys;
-    audio_buffer_t *buffer = sys->buffer;
+    audio_buffer_t *buffer = aout->sys->buffer;
     int             len;
     int             remain_len = 0;
 
     vlc_mutex_lock( &buffer->mutex );
 
-    if( buffer->length + size > buffer->size )
-    {
-        int delta = AUDIO_BUFFER_SIZE_IN_SECONDS *
-                    sys-> format.i_rate * sys->format.i_bytes_per_frame;
-        int new_size = (( buffer->length + size + delta - 1 ) / delta ) *
-                       delta;
-
-        uint8_t *p;
-
-        msg_Dbg( aout, "Trying to enlarge audio buffer: "
-                 "buffer length = %d, buffer size = %d, "
-                 "block size = %d, new buffer size = %d",
-                 buffer->length, buffer->size, size, new_size );
-
-        p = realloc( buffer->data, new_size );
-        if( unlikely( p == NULL ))
-        {
-            msg_Err( aout, "Enlarging audio buffer failed! Drop a block!");
-
-            return 0;
-        }
-
-        buffer->data = p;
-        buffer->size = new_size;
-    }
+    /* FIXME :
+     * If size is larger than buffer->size, this is locked indefinitely.
+     */
+    while( buffer->length + size > buffer->size )
+        vlc_cond_wait( &buffer->cond, &buffer->mutex );
 
     len = size;
     if( buffer->write_pos + len > buffer->size )

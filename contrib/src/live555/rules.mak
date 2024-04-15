@@ -1,6 +1,6 @@
 # live555
 
-LIVE555_VERSION := 2022.07.14
+LIVE555_VERSION := 2016.11.28
 LIVE555_FILE := live.$(LIVE555_VERSION).tar.gz
 LIVEDOTCOM_URL := http://live555.com/liveMedia/public/$(LIVE555_FILE)
 
@@ -19,7 +19,7 @@ $(TARBALLS)/$(LIVE555_FILE):
 
 .sum-live555: $(LIVE555_FILE)
 
-LIVE_EXTRA_CFLAGS := $(EXTRA_CFLAGS) -fexceptions -DNO_OPENSSL=1 $(CFLAGS)
+LIVE_EXTRA_CFLAGS := $(EXTRA_CFLAGS) -fexceptions $(CFLAGS)
 
 LIVE_TARGET = $(error live555 target not defined!)
 ifdef HAVE_LINUX
@@ -31,10 +31,9 @@ LIVE_EXTRA_CFLAGS += -DDISABLE_LOOPBACK_IP_ADDRESS_CHECK=1
 endif
 ifdef HAVE_WIN32
 LIVE_TARGET := mingw
-LIVE_EXTRA_CFLAGS += -DNO_GETIFADDRS=1
 endif
 ifdef HAVE_DARWIN_OS
-LIVE_TARGET := macosx-bigsur
+LIVE_TARGET := macosx
 else
 ifdef HAVE_BSD
 LIVE_TARGET := freebsd
@@ -58,9 +57,9 @@ live555: $(LIVE555_FILE) .sum-live555
 	# Replace libtool -s by ar cr for macOS only
 	cd live && sed -i.orig -e s/"libtool -s -o"/"ar cr"/g config.macosx*
 	# Add Extra LDFLAGS for macOS
-	cd live && sed -i.orig -e 's%$(CXX)%$(CXX)\ $(EXTRA_LDFLAGS)%' config.macosx*
+	cd live && sed -i.orig -e 's%$(CXX)%$(CXX)\ $(EXTRA_LDFLAGS)%' config.macosx
 	# Add CXXFLAGS for macOS (force libc++)
-	cd live && sed -i.orig -e 's%^\(CPLUSPLUS_FLAGS.*\)$$%\1 '"$(CXXFLAGS)%" config.macosx*
+	cd live && sed -i.orig -e 's%^\(CPLUSPLUS_FLAGS.*\)$$%\1 '"$(CXXFLAGS)%" config.macosx
 	# Add the Extra_CFLAGS to all config files
 	cd live && sed -i.orig \
 		-e 's%^\(COMPILE_OPTS.*\)$$%\1 '"$(LIVE_EXTRA_CFLAGS)%" config.*
@@ -75,21 +74,27 @@ endif
 	mv live live.$(LIVE555_VERSION)
 	# Patch for MSG_NOSIGNAL
 	$(APPLY) $(SRC)/live555/live555-nosignal.patch
+	# Don't use FormatMessageA on WinRT
+	$(APPLY) $(SRC)/live555/winstore.patch
+	# Don't rely on undefined behaviors
+	$(APPLY) $(SRC)/live555/no-null-reference.patch
 	# Add a pkg-config file
 	$(APPLY) $(SRC)/live555/add-pkgconfig-file.patch
 	# Expose Server:
 	$(APPLY) $(SRC)/live555/expose_server_string.patch
-	# Fix creating static libs on mingw
-	$(APPLY) $(SRC)/live555/mingw-static-libs.patch
-	# FormatMessageA is available on all Windows versions, even WinRT
-	$(APPLY) $(SRC)/live555/live555-formatmessage.patch
+        # Disable Multicast interface lookup option
+	$(APPLY) $(SRC)/live555/DISABLE_LOOPBACK_IP_ADDRESS_CHECK.patch
 ifdef HAVE_ANDROID
-	# ifaddrs.h is supported since API level 24
-	$(APPLY) $(SRC)/live555/android-no-ifaddrs.patch
+ifneq ($(LEGACY_NDK), 1)
+	# Always access in_addr.s_addr field
+	$(APPLY) $(SRC)/live555/in_addr-s_addr-field.patch
 	# Don't use unavailable off64_t functions
 	$(APPLY) $(SRC)/live555/file-offset-bits-64.patch
 endif
-	cd $(UNPACK_DIR) && sed -i.orig "s,LIBRARY_LINK =.*,LIBRARY_LINK = $(AR) cr ,g" config.macosx*
+endif
+	# Fix creating static libs on mingw
+	$(APPLY) $(SRC)/live555/mingw-static-libs.patch
+
 	mv live.$(LIVE555_VERSION) $@ && touch $@
 
 SUBDIRS=groupsock liveMedia UsageEnvironment BasicUsageEnvironment
@@ -104,5 +109,5 @@ SUBDIRS=groupsock liveMedia UsageEnvironment BasicUsageEnvironment
 	cd $< && ./genMakefiles $(LIVE_TARGET)
 	cd $< && for subdir in $(SUBDIRS); do $(MAKE) $(HOSTVARS) -C $$subdir; done
 	cd $< && for subdir in $(SUBDIRS); do $(MAKE) $(HOSTVARS) -C $$subdir install; done
-	$(MAKE) -C $< install_shared_libraries
+	cd $< && $(MAKE) install_shared_libraries
 	touch $@

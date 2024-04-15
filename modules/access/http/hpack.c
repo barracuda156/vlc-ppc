@@ -552,8 +552,8 @@ static int hpack_decode_hdr(struct hpack_decoder *dec,
                             char **restrict namep,
                             char **restrict valuep)
 {
-    int (*cb)(struct hpack_decoder *, const uint8_t ** restrict, size_t * restrict,
-              char ** restrict, char ** restrict);
+    int (*cb)(struct hpack_decoder *, const uint8_t **, size_t *,
+              char **, char **);
 
     assert(*lengthp >= 1);
 
@@ -630,7 +630,7 @@ static void test_integer(unsigned n, const uint8_t *buf, size_t len,
         assert(hpack_decode_int(n, &cutbuf, &cutlen) == -1);
     }
 
-    /* Check successful decoding */
+    /* Check succesful decoding */
     const uint8_t *end = buf + len;
     int_fast32_t v = hpack_decode_int(n, &buf, &len);
 
@@ -680,7 +680,7 @@ static void test_header(const char *str, size_t len,
         assert(hpack_decode_hdr(dec, &cutbuf, &cutlen, &n, &v) == -1);
     }
 
-    /* Check successful decoding */
+    /* Check succesful decoding */
     int ret = hpack_decode_hdr(dec, &buf, &len, &n, &v);
     assert(ret == 0);
     assert(!strcmp(name, n));

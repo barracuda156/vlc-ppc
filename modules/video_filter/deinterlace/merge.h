@@ -2,6 +2,7 @@
  * merge.h : Merge (line blending) routines for the VLC deinterlacer
  *****************************************************************************
  * Copyright (C) 2011 VLC authors and VideoLAN
+ * $Id: fdf3fa8c2673c248c4cf50352314d05f1897cf02 $
  *
  * Author: Sam Hocevar <sam@zoy.org>                      (generic C routine)
  *         Sigmund Augdal Helberg <sigmunau@videolan.org> (MMXEXT, 3DNow, SSE2)
@@ -31,35 +32,6 @@
  * Merge (line blending) routines for the VLC deinterlacer.
  */
 
-/**
- * Average two vectors.
- *
- * This callback shall compute the element-wise rounded average of two vectors.
- * This is used for blending scan lines of two fields for deinterlacing.
- *
- * The size of element is specified by the context,
- * namely \see deinterlace_functions.
- * Currently 8-bit and 16-bit elements are supported.
- *
- * \param d Output vector
- * \param s1 First source vector
- * \param s2 Second source vector
- * \param len size of vectors in bytes
- */
-
-typedef void (*merge_cb)(void *d, const void *s1, const void *s2, size_t len);
-
-/**
- * Deinterlacing optimisation callbacks.
- */
-struct deinterlace_functions {
-    /** Element-wise vector average
-     *
-     * The first array entries are indexed by the binary order of magnitude
-     * of the element size in bytes: 0 for 8-bit, 1 for 16-bit. */
-    merge_cb merges[2];
-};
-
 /*****************************************************************************
  * Macros
  *****************************************************************************/
@@ -86,7 +58,7 @@ struct deinterlace_functions {
  * merge routine.
  *
  */
-#define Merge p_sys->pf_merge
+#define Merge p_filter->p_sys->pf_merge
 
 /*
  * EndMerge() macro, which must be called after the merge is
@@ -94,7 +66,7 @@ struct deinterlace_functions {
  */
 #if defined(__i386__) || defined(__x86_64__)
 # define EndMerge() \
-    if(p_sys->pf_end_merge) (p_sys->pf_end_merge)()
+    if(p_filter->p_sys->pf_end_merge) (p_filter->p_sys->pf_end_merge)()
 #else
 # define EndMerge() (void)0
 #endif
@@ -141,7 +113,31 @@ void Merge16BitGeneric( void *_p_dest, const void *_p_s1, const void *_p_s2,
 void MergeAltivec ( void *, const void *, const void *, size_t );
 #endif
 
-#if defined(CAN_COMPILE_SSE2)
+#if defined(CAN_COMPILE_MMXEXT)
+/**
+ * MMXEXT routine to blend pixels from two picture lines.
+ *
+ * @param _p_dest Target
+ * @param _p_s1 Source line A
+ * @param _p_s2 Source line B
+ * @param i_bytes Number of bytes to merge
+ */
+void MergeMMXEXT  ( void *, const void *, const void *, size_t );
+#endif
+
+#if defined(CAN_COMPILE_3DNOW)
+/**
+ * 3DNow routine to blend pixels from two picture lines.
+ *
+ * @param _p_dest Target
+ * @param _p_s1 Source line A
+ * @param _p_s2 Source line B
+ * @param i_bytes Number of bytes to merge
+ */
+void Merge3DNow   ( void *, const void *, const void *, size_t );
+#endif
+
+#if defined(CAN_COMPILE_SSE)
 /**
  * SSE2 routine to blend pixels from two picture lines.
  *
@@ -162,21 +158,57 @@ void Merge8BitSSE2( void *, const void *, const void *, size_t );
 void Merge16BitSSE2( void *, const void *, const void *, size_t );
 #endif
 
+#if defined(CAN_COMPILE_ARM)
+/**
+ * ARM NEON routine to blend pixels from two picture lines.
+ */
+void merge8_arm_neon (void *, const void *, const void *, size_t);
+void merge16_arm_neon (void *, const void *, const void *, size_t);
+
+/**
+ * ARMv6 SIMD routine to blend pixels from two picture lines.
+ */
+void merge8_armv6 (void *, const void *, const void *, size_t);
+void merge16_armv6 (void *, const void *, const void *, size_t);
+#endif
+
+#if defined(CAN_COMPILE_ARM64)
+/**
+ * ARM64 NEON routine to blend pixels from two picture lines.
+ */
+void merge8_arm64_neon (void *, const void *, const void *, size_t);
+void merge16_arm64_neon (void *, const void *, const void *, size_t);
+
+#endif
+
 /*****************************************************************************
  * EndMerge routines
  *****************************************************************************/
 
-#if defined(CAN_COMPILE_SSE2)
+#if defined(CAN_COMPILE_MMXEXT) || defined(CAN_COMPILE_SSE)
 /**
- * SSE merge finalization routine.
+ * MMX merge finalization routine.
  *
- * Should be called after an SSE merge is finished.
- * This exits SSE mode (by executing the "sfence" instruction).
+ * Must be called after an MMX merge is finished.
+ * This exits MMX mode (by executing the "emms" instruction).
  *
  * The EndMerge() macro detects whether this is needed, and calls if it is,
  * so just use that.
  */
-void EndSSE( void );
+void EndMMX       ( void );
+#endif
+
+#if defined(CAN_COMPILE_3DNOW)
+/**
+ * 3DNow merge finalization routine.
+ *
+ * Must be called after a 3DNow merge is finished.
+ * This exits 3DNow mode (by executing the "femms" instruction).
+ *
+ * The EndMerge() macro detects whether this is needed, and calls if it is,
+ * so just use that.
+ */
+void End3DNow     ( void );
 #endif
 
 #endif

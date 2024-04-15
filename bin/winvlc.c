@@ -36,6 +36,9 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#ifndef _WIN32_IE
+#  define  _WIN32_IE 0x501
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <shlobj.h>
@@ -94,7 +97,7 @@ static void PrioritizeSystem32(void)
     } PROCESS_MITIGATION_IMAGE_LOAD_POLICY;
 #endif
 #if _WIN32_WINNT < _WIN32_WINNT_WIN8
-    BOOL (WINAPI *SetProcessMitigationPolicy)(PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);
+    BOOL WINAPI (*SetProcessMitigationPolicy)(PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);
     HINSTANCE h_Kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
     if ( !h_Kernel32 )
         return;
@@ -108,13 +111,10 @@ static void PrioritizeSystem32(void)
     SetProcessMitigationPolicy( 10 /* ProcessImageLoadPolicy */, &m, sizeof( m ) );
 }
 
-static void vlc_kill(void *data)
-{
-    HANDLE *semp = data;
-
-    ReleaseSemaphore(*semp, 1, NULL);
-}
-
+/*
+ * Export WinMain to force GNU ld to generate a .reloc section
+ */
+__declspec(dllexport)
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     LPSTR lpCmdLine,
                     int nCmdShow )
@@ -139,6 +139,9 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     setvbuf (stderr, NULL, _IONBF, BUFSIZ);
 #endif
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN7)
+    SetErrorMode(SEM_FAILCRITICALERRORS);
+#endif
     HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
 
     /* SetProcessDEPPolicy, SetDllDirectory, & Co. */
@@ -155,10 +158,13 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
         if(mySetProcessDEPPolicy)
             mySetProcessDEPPolicy(PROCESS_DEP_ENABLE);
 
+        /* Do NOT load any library from cwd. */
+        BOOL (WINAPI * mySetDllDirectoryA)(const char* lpPathName);
+        mySetDllDirectoryA = (BOOL (WINAPI *)(const char*))
+                            GetProcAddress(h_Kernel32, "SetDllDirectoryA");
+        if(mySetDllDirectoryA)
+            mySetDllDirectoryA("");
     }
-
-    /* Do NOT load any library from cwd. */
-    SetDllDirectory(TEXT(""));
 
     /***
      * The LoadLibrary* calls from the modules and the 3rd party code
@@ -203,10 +209,10 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     argv[argc] = NULL;
     LocalFree (wargv);
 
-#ifdef HAVE_BREAKPAD
     void* eh = NULL;
     if(crash_handling)
     {
+#ifdef HAVE_BREAKPAD
         static wchar_t path[MAX_PATH];
         if( S_OK != SHGetFolderPathW( NULL, CSIDL_APPDATA | CSIDL_FLAG_CREATE,
                     NULL, SHGFP_TYPE_CURRENT, path ) )
@@ -214,10 +220,8 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
         _snwprintf( path+wcslen( path ), MAX_PATH,  L"%s", L"\\vlc\\crashdump" );
         CheckCrashDump( &path[0] );
         eh = InstallCrashHandler( &path[0] );
-    }
-#else
-    (void)crash_handling;
 #endif
+    }
 
     _setmode( _fileno( stdin ), _O_BINARY ); /* Needed for pipes */
 
@@ -228,7 +232,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
         if( RegOpenKeyEx( HKEY_CURRENT_USER, TEXT("Software\\VideoLAN\\VLC\\"), 0, KEY_READ, &h_key )
                 == ERROR_SUCCESS )
         {
-            WCHAR szData[256];
+            TCHAR szData[256];
             DWORD len = 256;
             if( RegQueryValueEx( h_key, TEXT("Lang"), NULL, NULL, (LPBYTE) &szData, &len ) == ERROR_SUCCESS )
                 lang = FromWide( szData );
@@ -248,19 +252,14 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     vlc = libvlc_new (argc, (const char **)argv);
     if (vlc != NULL)
     {
-        HANDLE sem = CreateSemaphore(NULL, 0, 1, NULL);
-
-        libvlc_set_exit_handler(vlc, vlc_kill, &sem);
         libvlc_set_app_id (vlc, "org.VideoLAN.VLC", PACKAGE_VERSION,
                            PACKAGE_NAME);
         libvlc_set_user_agent (vlc, "VLC media player", "VLC/"PACKAGE_VERSION);
+        libvlc_add_intf (vlc, "hotkeys,none");
         libvlc_add_intf (vlc, "globalhotkeys,none");
         libvlc_add_intf (vlc, NULL);
-        libvlc_playlist_play (vlc);
-
-        WaitForSingleObject(sem, INFINITE);
-        CloseHandle(sem);
-
+        libvlc_playlist_play (vlc, -1, 0, NULL);
+        libvlc_wait (vlc);
         libvlc_release (vlc);
     }
     else

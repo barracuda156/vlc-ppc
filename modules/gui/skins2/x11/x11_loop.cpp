@@ -2,6 +2,7 @@
  * x11_loop.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 7318af1600a3bcad735dcfb9ccd1dabe0a2a0ef4 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -67,29 +68,6 @@ X11Loop::X11Loop( intf_thread_t *pIntf, X11Display &rDisplay ):
         m_keymap[XK_F10] = KEY_F10;
         m_keymap[XK_F11] = KEY_F11;
         m_keymap[XK_F12] = KEY_F12;
-        m_keymap[XK_F13] = KEY_F(13);
-        m_keymap[XK_F14] = KEY_F(14);
-        m_keymap[XK_F15] = KEY_F(15);
-        m_keymap[XK_F16] = KEY_F(16);
-        m_keymap[XK_F17] = KEY_F(17);
-        m_keymap[XK_F18] = KEY_F(18);
-        m_keymap[XK_F19] = KEY_F(19);
-        m_keymap[XK_F20] = KEY_F(20);
-        m_keymap[XK_F21] = KEY_F(21);
-        m_keymap[XK_F22] = KEY_F(22);
-        m_keymap[XK_F23] = KEY_F(23);
-        m_keymap[XK_F24] = KEY_F(24);
-        m_keymap[XK_F25] = KEY_F(25);
-        m_keymap[XK_F26] = KEY_F(26);
-        m_keymap[XK_F27] = KEY_F(27);
-        m_keymap[XK_F28] = KEY_F(28);
-        m_keymap[XK_F29] = KEY_F(29);
-        m_keymap[XK_F30] = KEY_F(30);
-        m_keymap[XK_F31] = KEY_F(31);
-        m_keymap[XK_F32] = KEY_F(32);
-        m_keymap[XK_F33] = KEY_F(33);
-        m_keymap[XK_F34] = KEY_F(34);
-        m_keymap[XK_F35] = KEY_F(35);
         m_keymap[XK_Return] = KEY_ENTER;
         m_keymap[XK_Escape] = KEY_ESC;
         m_keymap[XK_Left] = KEY_LEFT;
@@ -105,17 +83,27 @@ X11Loop::X11Loop( intf_thread_t *pIntf, X11Display &rDisplay ):
     }
 }
 
+
+X11Loop::~X11Loop()
+{
+}
+
+
 OSLoop *X11Loop::instance( intf_thread_t *pIntf, X11Display &rDisplay )
 {
-    if (pIntf->p_sys->p_osLoop == NULL)
-        pIntf->p_sys->p_osLoop = std::make_unique<X11Loop>(pIntf, rDisplay);
-    return pIntf->p_sys->p_osLoop.get();
+    if( pIntf->p_sys->p_osLoop == NULL )
+    {
+        OSLoop *pOsLoop = new X11Loop( pIntf, rDisplay );
+        pIntf->p_sys->p_osLoop = pOsLoop;
+    }
+    return pIntf->p_sys->p_osLoop;
 }
 
 
 void X11Loop::destroy( intf_thread_t *pIntf )
 {
-    pIntf->p_sys->p_osLoop.reset();
+    delete pIntf->p_sys->p_osLoop;
+    pIntf->p_sys->p_osLoop = NULL;
 }
 
 
@@ -173,7 +161,7 @@ inline int X11Loop::X11ModToMod( unsigned state )
 void X11Loop::handleX11Event()
 {
     XEvent event;
-    X11Factory *pFactory = (X11Factory*)OSFactory::instance( getIntf() );
+    OSFactory *pOsFactory = OSFactory::instance( getIntf() );
 
     // Look for the next event in the queue
     XNextEvent( XDISPLAY, &event );
@@ -191,14 +179,15 @@ void X11Loop::handleX11Event()
                 (Atom)event.xclient.data.l[0] == wm_delete )
             {
                 msg_Dbg( getIntf(), "Received WM_DELETE_WINDOW message" );
-                libvlc_Quit( vlc_object_instance(getIntf()) );
+                libvlc_Quit( getIntf()->obj.libvlc );
             }
         }
         return;
     }
 
     // Find the window to which the event is sent
-    GenericWindow *pWin = pFactory->m_windowMap[event.xany.window];
+    GenericWindow *pWin =
+        ((X11Factory*)pOsFactory)->m_windowMap[event.xany.window];
 
     if( !pWin )
     {
@@ -234,8 +223,7 @@ void X11Loop::handleX11Event()
             // Don't trust the position in the event, it is
             // out of date. Get the actual current position instead
             int x, y;
-            pFactory->getMousePos( x, y );
-            pFactory->setPointerWindow( event.xany.window );
+            pOsFactory->getMousePos( x, y );
             EvtMotion evt( getIntf(), x, y );
             pWin->processEvent( evt );
             break;
@@ -266,9 +254,9 @@ void X11Loop::handleX11Event()
             if( event.type == ButtonPress &&
                 event.xbutton.button == 1 )
             {
-                vlc_tick_t time = vlc_tick_now();
+                vlc_tick_t time = mdate();
                 int x, y;
-                pFactory->getMousePos( x, y );
+                pOsFactory->getMousePos( x, y );
                 if( time - m_lastClickTime < m_dblClickDelay &&
                     x == m_lastClickPosX && y == m_lastClickPosY )
                 {
@@ -355,7 +343,8 @@ void X11Loop::handleX11Event()
             std::string type = XGetAtomName( XDISPLAY, event.xclient.message_type );
 
             // Find the DnD object for this window
-            X11DragDrop *pDnd = pFactory->m_dndMap[event.xany.window];
+            X11DragDrop *pDnd =
+                ((X11Factory*)pOsFactory)->m_dndMap[event.xany.window];
             if( !pDnd )
             {
                 msg_Err( getIntf(), "no associated D&D object" );
@@ -372,26 +361,6 @@ void X11Loop::handleX11Event()
                 pDnd->dndDrop( event.xclient.data.l );
             break;
         }
-
-        case SelectionNotify:
-        {
-            // Check XConvertSelection completion
-            if( event.xselection.property == None )
-            {
-                msg_Err( getIntf(), "Conversion failed for Drag&Drop" );
-                return;
-            }
-
-            // Find the DnD object for this window
-            X11DragDrop *pDnd = pFactory->m_dndMap[event.xselection.requestor];
-            if( !pDnd )
-            {
-                msg_Err( getIntf(), "no associated D&D object" );
-                return;
-            }
-            pDnd->dndSelectionNotify( );
-        }
-
     }
 }
 

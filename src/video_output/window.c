@@ -1,8 +1,8 @@
 /*****************************************************************************
- * window.c: generic window management
+ * window.c: "vout window" management
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
- * Copyright © 2009-2021 Rémi Denis-Courmont
+ * $Id: 36aaa9d04602c311cd2ba678f675ca612c13678b $
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -28,227 +28,218 @@
 # include "config.h"
 #endif
 #include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #include <vlc_common.h>
-#include <vlc_window.h>
+#include <vlc_vout_window.h>
 #include <vlc_modules.h>
 #include "inhibit.h"
 #include <libvlc.h>
 
 typedef struct
 {
-    vlc_window_t wnd;
-    vlc_window_cfg_t cfg;
+    vout_window_t wnd;
     module_t *module;
-    bool inhibit_windowed;
-
-    /* Screensaver inhibition state (protected by lock) */
     vlc_inhibit_t *inhibit;
-    bool active;
-    bool fullscreen;
-    vlc_mutex_t lock;
 } window_t;
 
-static int vlc_window_start(void *func, bool forced, va_list ap)
+static int vout_window_start(void *func, va_list ap)
 {
-    int (*activate)(vlc_window_t *) = func;
-    vlc_window_t *wnd = va_arg(ap, vlc_window_t *);
+    int (*activate)(vout_window_t *, const vout_window_cfg_t *) = func;
+    vout_window_t *wnd = va_arg(ap, vout_window_t *);
+    const vout_window_cfg_t *cfg = va_arg(ap, const vout_window_cfg_t *);
 
-    int ret = activate(wnd);
-    if (ret)
-        vlc_objres_clear(VLC_OBJECT(wnd));
-    (void) forced;
-    return ret;
+    return activate(wnd, cfg);
 }
 
-vlc_window_t *vlc_window_New(vlc_object_t *obj, const char *module,
-                               const vlc_window_owner_t *owner,
-                               const vlc_window_cfg_t *restrict cfg)
+vout_window_t *vout_window_New(vlc_object_t *obj, const char *module,
+                               const vout_window_cfg_t *cfg,
+                               const vout_window_owner_t *owner)
 {
     window_t *w = vlc_custom_create(obj, sizeof(*w), "window");
-    vlc_window_t *window = &w->wnd;
+    vout_window_t *window = &w->wnd;
 
     memset(&window->handle, 0, sizeof(window->handle));
     window->info.has_double_click = false;
+    window->control = NULL;
     window->sys = NULL;
-    assert(owner != NULL);
-    window->owner = *owner;
 
-    w->cfg.is_fullscreen = false;
-    w->cfg.is_decorated = true;
-    w->cfg.width = 0;
-    w->cfg.height = 0;
+    if (owner != NULL)
+        window->owner = *owner;
+    else
+        window->owner.resized = NULL;
 
-    int dss = var_InheritInteger(obj, "disable-screensaver");
-
-    w->inhibit = NULL;
-    w->inhibit_windowed = dss == 1;
-    w->active = false;
-    w->fullscreen = false;
-    vlc_mutex_init(&w->lock);
-
-    w->module = vlc_module_load(window, "vout window", module, false,
-                                vlc_window_start, window);
+    w->module = vlc_module_load(window, "vout window", module,
+                                module && *module,
+                                vout_window_start, window, cfg);
     if (!w->module) {
-        vlc_object_delete(window);
+        vlc_object_release(window);
         return NULL;
     }
 
     /* Hook for screensaver inhibition */
-    if (dss > 0) {
-        vlc_inhibit_t *inh = vlc_inhibit_Create(VLC_OBJECT(window));
-
-        vlc_mutex_lock(&w->lock);
-        w->inhibit = inh;
-        vlc_mutex_unlock(&w->lock);
+    if (var_InheritBool(obj, "disable-screensaver") &&
+        (window->type == VOUT_WINDOW_TYPE_XID || window->type == VOUT_WINDOW_TYPE_HWND
+      || window->type == VOUT_WINDOW_TYPE_WAYLAND))
+    {
+        w->inhibit = vlc_inhibit_Create(VLC_OBJECT (window));
+        if (w->inhibit != NULL)
+            vlc_inhibit_Set(w->inhibit, VLC_INHIBIT_VIDEO);
     }
-
-    /* Apply initial configuration */
-    if (cfg != NULL) {
-        if (cfg->is_fullscreen)
-            vlc_window_SetFullScreen(window, NULL);
-        if (cfg->width != 0 && cfg->height != 0)
-            vlc_window_SetSize(window, cfg->width, cfg->height);
-
-        /* This will be applied whence the window is enabled. */
-        w->cfg.is_decorated = cfg->is_decorated;
-    }
-
+    else
+        w->inhibit = NULL;
     return window;
 }
 
-int vlc_window_Enable(vlc_window_t *window)
+static void vout_window_stop(void *func, va_list ap)
 {
-    window_t *w = container_of(window, window_t, wnd);
+    int (*deactivate)(vout_window_t *) = func;
+    vout_window_t *wnd = va_arg(ap, vout_window_t *);
 
-    if (window->ops->enable != NULL) {
-        int err = window->ops->enable(window, &w->cfg);
-        if (err)
-            return err;
-    }
-
-    vlc_window_SetInhibition(window, true);
-    return VLC_SUCCESS;
+    deactivate(wnd);
 }
 
-void vlc_window_Disable(vlc_window_t *window)
-{
-    vlc_window_SetInhibition(window, false);
-
-    if (window->ops->disable != NULL)
-        window->ops->disable(window);
-}
-
-void vlc_window_SetSize(vlc_window_t *window, unsigned width,
-                         unsigned height)
-{
-    window_t *w = container_of(window, window_t, wnd);
-
-    w->cfg.width = width;
-    w->cfg.height = height;
-
-    if (window->ops->resize != NULL)
-        window->ops->resize(window, width, height);
-}
-
-void vlc_window_Delete(vlc_window_t *window)
+void vout_window_Delete(vout_window_t *window)
 {
     if (!window)
         return;
 
-    window_t *w = container_of(window, window_t, wnd);
-
-    if (w->inhibit != NULL) {
-        vlc_inhibit_t *inh = w->inhibit;
-
-        assert(!w->active);
-        vlc_mutex_lock(&w->lock);
-        w->inhibit = NULL;
-        vlc_mutex_unlock(&w->lock);
-
-        vlc_inhibit_Destroy(inh);
+    window_t *w = (window_t *)window;
+    if (w->inhibit)
+    {
+        vlc_inhibit_Set (w->inhibit, VLC_INHIBIT_NONE);
+        vlc_inhibit_Destroy (w->inhibit);
     }
 
-    if (window->ops->destroy != NULL)
-        window->ops->destroy(window);
-
-    vlc_objres_clear(VLC_OBJECT(window));
-    vlc_object_delete(window);
+    vlc_module_unload(window, w->module, vout_window_stop, window);
+    vlc_object_release(window);
 }
 
-static void vlc_window_UpdateInhibitionUnlocked(vlc_window_t *window)
+void vout_window_SetInhibition(vout_window_t *window, bool enabled)
 {
-    window_t *w = container_of(window, window_t, wnd);
-    unsigned flags = VLC_INHIBIT_NONE;
+    window_t *w = (window_t *)window;
+    unsigned flags = enabled ? VLC_INHIBIT_VIDEO : VLC_INHIBIT_NONE;
 
-    vlc_mutex_assert(&w->lock);
-
-    if (w->active && (w->inhibit_windowed || w->fullscreen))
-        flags = VLC_INHIBIT_VIDEO;
     if (w->inhibit != NULL)
         vlc_inhibit_Set(w->inhibit, flags);
 }
 
-void vlc_window_SetInhibition(vlc_window_t *window, bool enabled)
+/* Video output display integration */
+#include <vlc_vout.h>
+#include <vlc_vout_display.h>
+#include "window.h"
+#include "event.h"
+
+typedef struct vout_display_window
 {
-    window_t *w = container_of(window, window_t, wnd);
+    vout_display_t *vd;
+    unsigned width;
+    unsigned height;
 
-    vlc_mutex_lock(&w->lock);
-    w->active = enabled;
+    vlc_mutex_t lock;
+} vout_display_window_t;
 
-    vlc_window_UpdateInhibitionUnlocked(window);
-    vlc_mutex_unlock(&w->lock);
+static void vout_display_window_ResizeNotify(vout_window_t *window,
+                                             unsigned width, unsigned height)
+{
+    vout_display_window_t *state = window->owner.sys;
+
+    msg_Dbg(window, "resized to %ux%u", width, height);
+    vlc_mutex_lock(&state->lock);
+    state->width = width;
+    state->height = height;
+
+    if (state->vd != NULL)
+        vout_display_SendEventDisplaySize(state->vd, width, height);
+    vlc_mutex_unlock(&state->lock);
 }
 
-void vlc_window_ReportWindowed(vlc_window_t *window)
+static void vout_display_window_CloseNotify(vout_window_t *window)
 {
-    window_t *w = container_of(window, window_t, wnd);
+    vout_thread_t *vout = (vout_thread_t *)window->obj.parent;
 
-    if (!w->inhibit_windowed) {
-        vlc_mutex_lock(&w->lock);
-        w->fullscreen = false;
+    vout_SendEventClose(vout);
+}
 
-        vlc_window_UpdateInhibitionUnlocked(window);
-        vlc_mutex_unlock(&w->lock);
+static void vout_display_window_MouseEvent(vout_window_t *window,
+                                           const vout_window_mouse_event_t *mouse)
+{
+    vout_thread_t *vout = (vout_thread_t *)window->obj.parent;
+    vout_WindowMouseEvent(vout, mouse);
+}
+
+/**
+ * Creates a video window, initially without any attached display.
+ */
+vout_window_t *vout_display_window_New(vout_thread_t *vout,
+                                       const vout_window_cfg_t *cfg)
+{
+    vout_display_window_t *state = malloc(sizeof (*state));
+    if (state == NULL)
+        return NULL;
+
+    state->vd = NULL;
+    state->width = cfg->width;
+    state->height = cfg->height;
+    vlc_mutex_init(&state->lock);
+
+    vout_window_owner_t owner = {
+        .sys = state,
+        .resized = vout_display_window_ResizeNotify,
+        .closed = vout_display_window_CloseNotify,
+        .mouse_event = vout_display_window_MouseEvent,
+    };
+    vout_window_t *window;
+
+    window = vout_window_New((vlc_object_t *)vout, "$window", cfg, &owner);
+    if (window == NULL) {
+        vlc_mutex_destroy(&state->lock);
+        free(state);
     }
-
-    if (window->owner.cbs->windowed != NULL)
-        window->owner.cbs->windowed(window);
+    return window;
 }
 
-void vlc_window_ReportFullscreen(vlc_window_t *window, const char *id)
+/**
+ * Attaches a window to a display. Window events will be dispatched to the
+ * display until they are detached.
+ */
+void vout_display_window_Attach(vout_window_t *window, vout_display_t *vd)
 {
-    window_t *w = container_of(window, window_t, wnd);
+    vout_display_window_t *state = window->owner.sys;
 
-    if (!w->inhibit_windowed) {
-        vlc_mutex_lock(&w->lock);
-        w->fullscreen = true;
-        vlc_window_UpdateInhibitionUnlocked(window);
-        vlc_mutex_unlock(&w->lock);
-    }
+    vout_window_SetSize(window,
+                        vd->cfg->display.width, vd->cfg->display.height);
 
-    if (window->owner.cbs->fullscreened != NULL)
-        window->owner.cbs->fullscreened(window, id);
+    vlc_mutex_lock(&state->lock);
+    state->vd = vd;
+
+    vout_display_SendEventDisplaySize(vd, state->width, state->height);
+    vlc_mutex_unlock(&state->lock);
 }
 
-void vlc_window_UnsetFullScreen(vlc_window_t *window)
+/**
+ * Detaches a window from a display. Window events will no longer be dispatched
+ * (except those that do not need a display).
+ */
+void vout_display_window_Detach(vout_window_t *window)
 {
-    window_t *w = container_of(window, window_t, wnd);
+    vout_display_window_t *state = window->owner.sys;
 
-    w->cfg.is_fullscreen = false;
-
-    if (window->ops->unset_fullscreen != NULL)
-        window->ops->unset_fullscreen(window);
+    vlc_mutex_lock(&state->lock);
+    state->vd = NULL;
+    vlc_mutex_unlock(&state->lock);
 }
 
-void vlc_window_SetFullScreen(vlc_window_t *window, const char *id)
+/**
+ * Destroys a video window.
+ * \note The window must be detached.
+ */
+void vout_display_window_Delete(vout_window_t *window)
 {
-    window_t *w = container_of(window, window_t, wnd);
+    vout_display_window_t *state = window->owner.sys;
 
-    w->cfg.is_fullscreen = true;
+    vout_window_Delete(window);
 
-    if (window->ops->set_fullscreen != NULL)
-        window->ops->set_fullscreen(window, id);
+    assert(state->vd == NULL);
+    vlc_mutex_destroy(&state->lock);
+    free(state);
 }

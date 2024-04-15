@@ -1,7 +1,7 @@
 # Theora
 
 THEORA_VERSION := 1.1.1
-THEORA_URL := $(XIPH)/theora/libtheora-$(THEORA_VERSION).tar.xz
+THEORA_URL := http://downloads.xiph.org/releases/theora/libtheora-$(THEORA_VERSION).tar.xz
 
 PKGS += theora
 ifeq ($(call need_pkg,"theora >= 1.0"),)
@@ -23,7 +23,7 @@ libtheora: libtheora-$(THEORA_VERSION).tar.xz .sum-theora
 	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 
-THEORACONF := \
+THEORACONF := $(HOSTCONF) \
 	--disable-spec \
 	--disable-sdltest \
 	--disable-oggtest \
@@ -51,8 +51,6 @@ endif
 DEPS_theora = ogg $(DEPS_ogg)
 
 .theora: libtheora
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(THEORACONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(THEORACONF)
+	cd $< && $(MAKE) install
 	touch $@

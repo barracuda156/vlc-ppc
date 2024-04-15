@@ -2,6 +2,7 @@
  * ugly.c : zero-order hold "ugly" resampler
  *****************************************************************************
  * Copyright (C) 2002, 2006 VLC authors and VideoLAN
+ * $Id: fd72e85691a5a3fb12932711aa7f90acd6f2b68b $
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *
@@ -47,12 +48,13 @@ static block_t *DoWork( filter_t *, block_t * );
 vlc_module_begin ()
     set_description( N_("Nearest-neighbor audio resampler") )
     set_capability( "audio converter", 2 )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_RESAMPLER )
-    set_callback( Create )
+    set_callbacks( Create, NULL )
 
     add_submodule()
     set_capability( "audio resampler", 2 )
-    set_callback( CreateResampler )
+    set_callbacks( CreateResampler, NULL )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -76,11 +78,7 @@ static int CreateResampler( vlc_object_t *p_this )
      || !AOUT_FMT_LINEAR( &p_filter->fmt_in.audio ) )
         return VLC_EGENERIC;
 
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_audio = DoWork,
-    };
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = DoWork;
     return VLC_SUCCESS;
 }
 
@@ -113,7 +111,8 @@ static block_t *DoWork( filter_t * p_filter, block_t * p_in_buf )
     p_out_buf->i_nb_samples = i_out_nb;
     p_out_buf->i_buffer = i_out_nb * framesize;
     p_out_buf->i_pts = p_in_buf->i_pts;
-    p_out_buf->i_length = vlc_tick_from_samples(p_out_buf->i_nb_samples, p_filter->fmt_out.audio.i_rate);
+    p_out_buf->i_length = p_out_buf->i_nb_samples *
+        1000000 / p_filter->fmt_out.audio.i_rate;
 
     while( i_out_nb )
     {

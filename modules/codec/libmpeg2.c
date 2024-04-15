@@ -2,6 +2,7 @@
  * libmpeg2.c: mpeg2 video decoder module making use of libmpeg2.
  *****************************************************************************
  * Copyright (C) 1999-2001 VLC authors and VideoLAN
+ * $Id: 8266f0b728309cf02271b3701031d2ec4bbc0fb2 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Christophe Massiot <massiot@via.ecp.fr>
@@ -58,7 +59,7 @@ typedef struct
     bool      b_displayed;
 } picture_dpb_t;
 
-typedef struct
+struct decoder_sys_t
 {
     /*
      * libmpeg2 properties
@@ -102,7 +103,7 @@ typedef struct
 #endif
     uint8_t        *p_gop_user_data;
     uint32_t        i_gop_user_data;
-} decoder_sys_t;
+};
 
 /*****************************************************************************
  * Local prototypes
@@ -135,6 +136,7 @@ static int DpbDisplayPicture( decoder_t *, picture_t * );
 vlc_module_begin ()
     set_description( N_("MPEG I/II video decoder (using libmpeg2)") )
     set_capability( "video decoder", 50 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_callbacks( OpenDecoder, CloseDecoder )
     add_shortcut( "libmpeg2" )
@@ -147,12 +149,13 @@ static int OpenDecoder( vlc_object_t *p_this )
 {
     decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
+    uint32_t i_accel = 0;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_MPGV )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_MPGV )
         return VLC_EGENERIC;
 
     /* Select only recognized original format (standard mpeg video) */
-    switch( p_dec->fmt_in->i_original_fourcc )
+    switch( p_dec->fmt_in.i_original_fourcc )
     {
     case VLC_FOURCC('m','p','g','1'):
     case VLC_FOURCC('m','p','g','2'):
@@ -161,7 +164,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     case VLC_FOURCC('h','d','v','2'):
         break;
     default:
-        if( p_dec->fmt_in->i_original_fourcc )
+        if( p_dec->fmt_in.i_original_fourcc )
             return VLC_EGENERIC;
         break;
     }
@@ -196,10 +199,35 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_sys->p_gop_user_data = NULL;
     p_sys->i_gop_user_data = 0;
 
-#if defined( __powerpc__ ) || defined( __ppc__ ) || defined( __ppc64__ )
-    /* libmpeg's detection is not thread safe for ppc-altivec */
-    mpeg2_accel( vlc_CPU_ALTIVEC() ? MPEG2_ACCEL_PPC_ALTIVEC : 0 );
+#if defined( __i386__ ) || defined( __x86_64__ )
+    if( vlc_CPU_MMX() )
+        i_accel |= MPEG2_ACCEL_X86_MMX;
+    if( vlc_CPU_3dNOW() )
+        i_accel |= MPEG2_ACCEL_X86_3DNOW;
+    if( vlc_CPU_MMXEXT() )
+        i_accel |= MPEG2_ACCEL_X86_MMXEXT;
+#elif defined( __powerpc__ ) || defined( __ppc__ ) || defined( __ppc64__ )
+    if( vlc_CPU_ALTIVEC() )
+        i_accel |= MPEG2_ACCEL_PPC_ALTIVEC;
+
+#elif defined(__arm__)
+# ifdef MPEG2_ACCEL_ARM
+    i_accel |= MPEG2_ACCEL_ARM;
+# endif
+# ifdef MPEG2_ACCEL_ARM_NEON
+    if( vlc_CPU_ARM_NEON() )
+        i_accel |= MPEG2_ACCEL_ARM_NEON;
+# endif
+
+    /* TODO: sparc */
+#else
+    /* If we do not know this CPU, trust libmpeg2's feature detection */
+    i_accel = MPEG2_ACCEL_DETECT;
+
 #endif
+
+    /* Set CPU acceleration features */
+    mpeg2_accel( i_accel );
 
     /* Initialize decoder */
     p_sys->p_mpeg2dec = mpeg2_init();
@@ -305,7 +333,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 /* Intra-slice refresh. Simulate a blank I picture. */
                 msg_Dbg( p_dec, "intra-slice refresh stream" );
                 decoder_SynchroNewPicture( p_sys->p_synchro,
-                                           I_CODING_TYPE, 2, VLC_TICK_INVALID, VLC_TICK_INVALID,
+                                           I_CODING_TYPE, 2, 0, 0,
                                            p_info->sequence->flags & SEQ_FLAG_LOW_DELAY );
                 decoder_SynchroDecode( p_sys->p_synchro );
                 decoder_SynchroEnd( p_sys->p_synchro, I_CODING_TYPE, 0 );
@@ -455,7 +483,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 if( p_sys->b_slice_i )
                 {
                     decoder_SynchroNewPicture( p_sys->p_synchro,
-                                               I_CODING_TYPE, 2, VLC_TICK_INVALID, VLC_TICK_INVALID,
+                                               I_CODING_TYPE, 2, 0, 0,
                                                p_sys->p_info->sequence->flags &
                                                             SEQ_FLAG_LOW_DELAY );
                     decoder_SynchroDecode( p_sys->p_synchro );
@@ -530,10 +558,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 {
                     p_pic->date = decoder_SynchroDate( p_sys->p_synchro );
                     if( p_sys->b_garbage_pic )
-                    {
-                        p_pic->date = VLC_TICK_INVALID; /* ??? */
-                        p_sys->b_garbage_pic = false;
-                    }
+                        p_pic->date = 0; /* ??? */
+                    p_sys->b_garbage_pic = false;
                 }
             }
 
@@ -712,11 +738,11 @@ static void GetAR( decoder_t *p_dec )
     int i_old_sar_den = p_sys->i_sar_den;
 
     /* Check whether the input gave a particular aspect ratio */
-    if( p_dec->fmt_in->video.i_sar_num > 0 &&
-        p_dec->fmt_in->video.i_sar_den > 0 )
+    if( p_dec->fmt_in.video.i_sar_num > 0 &&
+        p_dec->fmt_in.video.i_sar_den > 0 )
     {
-        p_sys->i_sar_num = p_dec->fmt_in->video.i_sar_num;
-        p_sys->i_sar_den = p_dec->fmt_in->video.i_sar_den;
+        p_sys->i_sar_num = p_dec->fmt_in.video.i_sar_num;
+        p_sys->i_sar_den = p_dec->fmt_in.video.i_sar_den;
     }
     /* Use the value provided in the MPEG sequence header */
     else if( p_sys->p_info->sequence->pixel_height > 0 )
@@ -833,7 +859,7 @@ static picture_t *DpbNewPicture( decoder_t *p_dec )
         p->b_linked = true;
         p->b_displayed = false;
 
-        p->p_picture->date = VLC_TICK_INVALID;
+        p->p_picture->date = 0;
     }
     return p->p_picture;
 }

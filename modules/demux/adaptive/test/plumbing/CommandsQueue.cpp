@@ -37,6 +37,8 @@ using namespace adaptive;
 
 using OutputVal = std::pair<const AbstractFakeESOutID *, block_t *>;
 
+#define vlc_tick_from_sec(a) (CLOCK_FREQ * (a))
+
 class TestEsOut : public AbstractFakeEsOut
 {
     public:
@@ -115,17 +117,17 @@ int CommandsQueue_test()
         cmd = factory.createEsOutDelCommand(id0);
         queue.Schedule(cmd);
         for(size_t i=0; i<3; i++) /* Add / Del will return in between */
-            queue.Process(Times(SegmentTimes(), std::numeric_limits<vlc_tick_t>::max()));
+            queue.Process(Times(SegmentTimes(), std::numeric_limits<mtime_t>::max()));
         Expect(queue.isEmpty() == false); /* no PCR issued nor commit */
         queue.Commit();
         for(size_t i=0; i<3; i++)
-            queue.Process(Times(SegmentTimes(), std::numeric_limits<vlc_tick_t>::max()));
+            queue.Process(Times(SegmentTimes(), std::numeric_limits<mtime_t>::max()));
         Expect(queue.isEOF() == false);
         Expect(queue.isDraining() == false);
         Expect(queue.isEmpty() == true);
         Expect(queue.getDemuxedAmount(DT(VLC_TICK_0)).continuous == 0);
         Expect(queue.getBufferingLevel().continuous == VLC_TICK_INVALID);
-        Expect(queue.getPCR().continuous == std::numeric_limits<vlc_tick_t>::max());
+        Expect(queue.getPCR().continuous == std::numeric_limits<mtime_t>::max());
 
         queue.Abort(true);
         esout.cleanup();
@@ -249,7 +251,7 @@ int CommandsQueue_test()
                     VLC_TICK_0 + OFFSET + vlc_tick_from_sec( (k*2)+1 ));
             queue.Schedule(cmd);
         }
-        queue.Process(Times(SegmentTimes(), std::numeric_limits<vlc_tick_t>::max()));
+        queue.Process(Times(SegmentTimes(), std::numeric_limits<mtime_t>::max()));
         Expect(esout.output.size() == 12);
         for(size_t i=0; i<12; i++)
         {
@@ -284,7 +286,7 @@ int CommandsQueue_test()
                     VLC_TICK_0 + OFFSET + vlc_tick_from_sec(k));
             queue.Schedule(cmd);
         }
-        queue.Process(Times(SegmentTimes(), std::numeric_limits<vlc_tick_t>::max()));
+        queue.Process(Times(SegmentTimes(), std::numeric_limits<mtime_t>::max()));
         Expect(esout.output.size() == 12);
         for(size_t i=0; i<6; i++)
         {

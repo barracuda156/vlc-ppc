@@ -28,10 +28,6 @@
 # include "config.h"
 #endif
 
-#ifdef HAVE_SYS_EVENTFD_H
-#include <sys/eventfd.h>
-#endif
-
 #include <assert.h>
 
 #include <vlc_common.h>
@@ -39,71 +35,12 @@
 #include <vlc_dialog.h>
 #include <vlc_aout.h>
 #include <vlc_cpu.h>
-#include <vlc_fs.h>
 
 #include <alsa/asoundlib.h>
 #include <alsa/version.h>
 
-/** Helper for ALSA -> VLC debugging output */
-static void DumpPost(struct vlc_logger *log, snd_output_t *output,
-                     const char *msg, int val)
-{
-    char *str;
-
-    if (val)
-    {
-        vlc_warning(log, "cannot get info: %s", snd_strerror(val));
-        return;
-    }
-
-    size_t len = snd_output_buffer_string (output, &str);
-    if (len > 0 && str[len - 1])
-        len--; /* strip trailing newline */
-    vlc_debug(log, "%s%.*s", msg, (int)len, str);
-    snd_output_close (output);
-}
-
-#define Dump(o, m, cb, p) \
-    do { \
-        snd_output_t *output; \
-\
-        if (likely(snd_output_buffer_open(&output) == 0)) \
-            DumpPost(o, output, m, (cb)(p, output)); \
-    } while (0)
-
-static void DumpDevice(struct vlc_logger *log, snd_pcm_t *pcm)
-{
-    snd_pcm_info_t *info;
-
-    Dump(log, " ", snd_pcm_dump, pcm);
-    snd_pcm_info_alloca (&info);
-    if (snd_pcm_info (pcm, info) == 0)
-    {
-        vlc_debug(log, " device name   : %s", snd_pcm_info_get_name (info));
-        vlc_debug(log, " device ID     : %s", snd_pcm_info_get_id (info));
-        vlc_debug(log, " subdevice name: %s",
-                  snd_pcm_info_get_subdevice_name (info));
-    }
-}
-
-static void DumpDeviceStatus(struct vlc_logger *log, snd_pcm_t *pcm)
-{
-    snd_pcm_status_t *status;
-
-    snd_pcm_status_alloca (&status);
-    snd_pcm_status (pcm, status);
-    Dump(log, "current status:\n", snd_pcm_status_dump, status);
-}
-
-typedef enum
-{
-    IDLE,
-    PLAYING,
-    PAUSED,
-} pb_state_t;
-
 /** Private data for an ALSA PCM playback stream */
-typedef struct
+struct aout_sys_t
 {
     snd_pcm_t *pcm;
     unsigned rate; /**< Sample rate */
@@ -114,411 +51,99 @@ typedef struct
     bool soft_mute;
     float soft_gain;
     char *device;
-
-    vlc_thread_t thread;
-    pb_state_t state;
-    bool started;
-    bool draining;
-    bool unrecoverable_error;
-    vlc_mutex_t lock;
-    vlc_sem_t init_sem;
-    int wakefd[2];
-    vlc_frame_t *frame_chain;
-    vlc_frame_t **frame_last;
-    uint64_t queued_samples;
-} aout_sys_t;
+};
 
 #include "audio_output/volume.h"
 
-static void wake_poll(aout_sys_t *sys)
+#define A52_FRAME_NB 1536
+
+static int Open (vlc_object_t *);
+static void Close (vlc_object_t *);
+static int EnumDevices (vlc_object_t *, char const *, char ***, char ***);
+
+#define AUDIO_DEV_TEXT N_("Audio output device")
+#define AUDIO_DEV_LONGTEXT N_("Audio output device (using ALSA syntax).")
+
+#define AUDIO_CHAN_TEXT N_("Audio output channels")
+#define AUDIO_CHAN_LONGTEXT N_("Channels available for audio output. " \
+    "If the input has more channels than the output, it will be down-mixed. " \
+    "This parameter is ignored when digital pass-through is active.")
+static const int channels[] = {
+    AOUT_CHAN_CENTER, AOUT_CHANS_STEREO, AOUT_CHANS_4_0, AOUT_CHANS_4_1,
+    AOUT_CHANS_5_0, AOUT_CHANS_5_1, AOUT_CHANS_7_1,
+};
+static const char *const channels_text[] = {
+    N_("Mono"), N_("Stereo"), N_("Surround 4.0"), N_("Surround 4.1"),
+    N_("Surround 5.0"), N_("Surround 5.1"), N_("Surround 7.1"),
+};
+
+vlc_module_begin ()
+    set_shortname( "ALSA" )
+    set_description( N_("ALSA audio output") )
+    set_category( CAT_AUDIO )
+    set_subcategory( SUBCAT_AUDIO_AOUT )
+    add_string ("alsa-audio-device", "default",
+                AUDIO_DEV_TEXT, AUDIO_DEV_LONGTEXT, false)
+        change_string_cb (EnumDevices)
+    add_integer ("alsa-audio-channels", AOUT_CHANS_FRONT,
+                 AUDIO_CHAN_TEXT, AUDIO_CHAN_LONGTEXT, false)
+        change_integer_list (channels, channels_text)
+    add_sw_gain ()
+    set_capability( "audio output", 150 )
+    set_callbacks( Open, Close )
+vlc_module_end ()
+
+
+/** Helper for ALSA -> VLC debugging output */
+static void Dump (vlc_object_t *obj, const char *msg,
+                  int (*cb)(void *, snd_output_t *), void *p)
 {
-    uint64_t val = 1;
-    ssize_t rd = write(sys->wakefd[1], &val, sizeof(val));
-    assert(rd == sizeof(val));
-    (void) rd;
-}
+    snd_output_t *output;
+    char *str;
 
-static int recover_from_pcm_state(snd_pcm_t *pcm)
-{
-    snd_pcm_state_t state = snd_pcm_state(pcm);
-    int err = 0;
-    switch (state)
-    {
-    case SND_PCM_STATE_RUNNING:
-    case SND_PCM_STATE_PAUSED:
-        return 0;
-    case SND_PCM_STATE_XRUN:
-        err = -EPIPE;
-        break;
-    case SND_PCM_STATE_SUSPENDED:
-        err = -ESTRPIPE;
-        break;
-    default:
-        err = 0;
-    }
+    if (unlikely(snd_output_buffer_open (&output)))
+        return;
 
-    if (err)
-        return snd_pcm_recover(pcm, err, -1);
-
-    return -1;
-}
-
-static int fill_pfds_from_state_locked(audio_output_t *aout, struct pollfd **pfds, int *pfds_count)
-{
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
-    switch (sys->state)
-    {
-    case IDLE:
-    case PAUSED:
-        /* We are paused or drained no need to wait for snd pcm*/
-        return 1;
-    case PLAYING:
-    {
-        if (sys->frame_chain == NULL && !sys->draining)
-            return 1; /* Waiting for data */
-
-        int cnt = snd_pcm_poll_descriptors_count(pcm);
-        if (unlikely(cnt < 0))
-        {
-            if (!recover_from_pcm_state(pcm))
-                return 0;
-
-            msg_Err(aout, "Cannot retrieve descriptors' count (%d)", cnt);
-            return -1;
-        }
-        else if (cnt + 1 > *pfds_count)
-        {
-            struct pollfd * tmp = realloc(*pfds, sizeof(struct pollfd) * (cnt + 1));
-            if (tmp == NULL)
-            {
-                sys->unrecoverable_error = true;
-                return -1;
-            }
-            *pfds = tmp;
-            *pfds_count = cnt + 1;
-        }
-
-        cnt = snd_pcm_poll_descriptors(pcm, &(*pfds)[1], cnt);
-        if (unlikely(cnt < 0))
-        {
-            if (!recover_from_pcm_state(pcm))
-                return 0;
-
-            msg_Err(aout, "snd_pcm_poll_descriptors failed (%d)", cnt);
-            return -1;
-        }
-        return cnt + 1;
-    }
-    default:
-        return -1;
-    }
-    return -1;
-}
-
-static void * InjectionThread(void * data)
-{
-    audio_output_t *aout = (audio_output_t *) data;
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
-
-    /* We're expecting at least 2 fds:
-     * - one for generic wakeup
-     * - one or more for alsa
-     */
-    struct pollfd * pfds = calloc(2, sizeof(struct pollfd));
-    if (pfds == NULL)
-    {
-      sys->unrecoverable_error = true;
-      vlc_sem_post(&sys->init_sem);
-      return NULL;
-    }
-    int pfds_count = 2;
-
-    pfds[0].fd = sys->wakefd[0];
-    pfds[0].events = POLLIN;
-
-    vlc_sem_post(&sys->init_sem);
-
-    vlc_mutex_lock(&sys->lock);
-    while (sys->started)
-    {
-        int cnt = fill_pfds_from_state_locked(aout, &pfds, &pfds_count);
-        if (unlikely(cnt < 0))
-            break;
-        else if (unlikely(cnt == 0))
-            continue;
-
-        vlc_mutex_unlock(&sys->lock);
-
-        cnt = poll(pfds, cnt, -1);
-
-        vlc_mutex_lock(&sys->lock);
-        if (unlikely(cnt < 0))
-        {
-            if (errno == -EINTR)
-                continue;
-            msg_Err(aout, "poll failed (%s)", strerror(errno));
-            break;
-        }
-
-        if (pfds[0].revents & POLLIN)
-        {
-            uint64_t val;
-            ssize_t rd = read(sys->wakefd[0], &val, sizeof(val));
-            if (rd != sizeof(val))
-            {
-                msg_Err(aout, "Invalid read on wakefd got %zd (%s)", rd, strerror(errno));
-                break;
-            }
-            /* We either got data or a state change, let's refill the pfds or abort */
-            continue;
-        }
-
-        unsigned short revents;
-        cnt = snd_pcm_poll_descriptors_revents(pcm, &pfds[1], pfds_count-1, &revents);
-        if (cnt != 0)
-        {
-            if (!recover_from_pcm_state(pcm))
-                continue;
-
-            msg_Err(aout, "snd_pcm_poll_descriptors_revents failed (%d)", cnt);
-            break;
-        }
-
-        if (unlikely(revents & POLLERR))
-        {
-            if (!recover_from_pcm_state(pcm))
-                continue;
-            if (sys->draining)
-            {
-                msg_Warn(aout,"Polling error from drain");
-                snd_pcm_prepare(pcm);
-                sys->state = IDLE;
-                sys->draining = false;
-                aout_DrainedReport(aout);
-                continue;
-            }
-            msg_Err(aout, "Unrecoverable polling error");
-            break;
-        }
-
-        if (!(revents & POLLOUT) ||
-            sys->state == PAUSED ||
-            sys->state == IDLE)
-            continue;
-
-        if (sys->frame_chain == NULL)
-        {
-            if (sys->draining)
-            {
-                /* SND_PCM_NONBLOCK makes snd_pcm_drain non blocking so we must
-                 * call poll until its completion
-                 */
-                if (snd_pcm_drain(pcm) == -EAGAIN)
-                    continue;
-                snd_pcm_prepare(pcm);
-                sys->state = IDLE;
-                sys->draining = false;
-                aout_DrainedReport(aout);
-            }
-            continue;
-        }
-
-        vlc_frame_t * f = sys->frame_chain;
-        snd_pcm_sframes_t frames = snd_pcm_writei(pcm, f->p_buffer, f->i_nb_samples);
-        if (frames >= 0)
-        {
-            size_t bytes = snd_pcm_frames_to_bytes(pcm, frames);
-            f->i_nb_samples -= frames;
-            f->p_buffer += bytes;
-            f->i_buffer -= bytes;
-            sys->queued_samples -= frames;
-            // pts, length
-            if (f->i_nb_samples == 0)
-            {
-                sys->frame_chain = f->p_next;
-                if (sys->frame_chain == NULL)
-                    sys->frame_last = &sys->frame_chain;
-                vlc_frame_Release(f);
-            }
-        }
-        else if (frames == -EAGAIN)
-            continue;
-        else
-        {
-            int val = snd_pcm_recover(pcm, frames, 1);
-            if (val)
-            {
-                msg_Err(aout, "cannot recover playback stream: %s",
-                        snd_strerror (val));
-                DumpDeviceStatus(aout->obj.logger, pcm);
-                break;
-            }
-            msg_Warn(aout, "cannot write samples: %s", snd_strerror(frames));
-        }
-    }
-    free(pfds);
-    if (sys->started && !sys->unrecoverable_error)
-    {
-        msg_Err(aout, "Unhandled error in injection thread, requesting aout restart");
-        aout_RestartRequest(aout, AOUT_RESTART_OUTPUT);
-    }
-    vlc_mutex_unlock(&sys->lock);
-    return NULL;
-}
-
-static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
-{
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_sframes_t frames;
-
-    vlc_mutex_lock(&sys->lock);
-    int val = snd_pcm_delay(sys->pcm, &frames);
+    int val = cb (p, output);
     if (val)
     {
-        msg_Err(aout, "cannot estimate delay: %s", snd_strerror(val));
-        vlc_mutex_unlock(&sys->lock);
-        return -1;
-    }
-    *delay = vlc_tick_from_samples(frames + sys->queued_samples, sys->rate);
-    vlc_mutex_unlock(&sys->lock);
-    return 0;
-}
-
-
-/**
- * Queues one audio buffer to the hardware.
- */
-static void Play(audio_output_t *aout, block_t *block, vlc_tick_t date)
-{
-    aout_sys_t *sys = aout->sys;
-
-    if (sys->chans_to_reorder != 0)
-        aout_ChannelReorder(block->p_buffer, block->i_buffer,
-                            sys->chans_to_reorder, sys->chans_table,
-                            sys->format);
-
-    vlc_mutex_lock(&sys->lock);
-    if (unlikely(sys->unrecoverable_error))
-    {
-        vlc_frame_Release(block);
-        vlc_mutex_unlock(&sys->lock);
+        msg_Warn (obj, "cannot get info: %s", snd_strerror (val));
         return;
     }
-    if (sys->frame_chain == NULL)
-        wake_poll(sys);
-    vlc_frame_ChainLastAppend(&sys->frame_last, block);
-    sys->queued_samples += block->i_nb_samples;
-    vlc_mutex_unlock(&sys->lock);
 
-    (void) date;
+    size_t len = snd_output_buffer_string (output, &str);
+    if (len > 0 && str[len - 1])
+        len--; /* strip trailing newline */
+    msg_Dbg (obj, "%s%.*s", msg, (int)len, str);
+    snd_output_close (output);
 }
+#define Dump(o, m, cb, p) \
+        Dump(VLC_OBJECT(o), m, (int (*)(void *, snd_output_t *))(cb), p)
 
-static void PauseDummy(audio_output_t *aout, bool pause, vlc_tick_t date)
+static void DumpDevice (vlc_object_t *obj, snd_pcm_t *pcm)
 {
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
+    snd_pcm_info_t *info;
 
-    /* Stupid device cannot pause. Discard samples. */
-    vlc_mutex_lock(&sys->lock);
-    if (pause)
+    Dump (obj, " ", snd_pcm_dump, pcm);
+    snd_pcm_info_alloca (&info);
+    if (snd_pcm_info (pcm, info) == 0)
     {
-        sys->state = PAUSED;
-        snd_pcm_drop(pcm);
+        msg_Dbg (obj, " device name   : %s", snd_pcm_info_get_name (info));
+        msg_Dbg (obj, " device ID     : %s", snd_pcm_info_get_id (info));
+        msg_Dbg (obj, " subdevice name: %s",
+                snd_pcm_info_get_subdevice_name (info));
     }
-    else
-    {
-        sys->state = PLAYING;
-        snd_pcm_prepare(pcm);
-    }
-    wake_poll(sys);
-    vlc_mutex_unlock(&sys->lock);
-
-    (void) date;
 }
 
-/**
- * Pauses/resumes the audio playback.
- */
-static void Pause(audio_output_t *aout, bool pause, vlc_tick_t date)
+static void DumpDeviceStatus (vlc_object_t *obj, snd_pcm_t *pcm)
 {
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
+    snd_pcm_status_t *status;
 
-    int val = snd_pcm_pause(pcm, pause);
-    if (unlikely(val))
-    {
-        PauseDummy(aout, pause, date);
-        return;
-    }
-    vlc_mutex_lock(&sys->lock);
-    sys->state = pause? PAUSED: PLAYING;
-    wake_poll(sys);
-    vlc_mutex_unlock(&sys->lock);
+    snd_pcm_status_alloca (&status);
+    snd_pcm_status (pcm, status);
+    Dump (obj, "current status:\n", snd_pcm_status_dump, status);
 }
-
-/**
- * Flushes the audio playback buffer.
- */
-static void Flush (audio_output_t *aout)
-{
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
-
-    vlc_mutex_lock(&sys->lock);
-    vlc_frame_ChainRelease(sys->frame_chain);
-    sys->frame_chain = NULL;
-    sys->frame_last = &sys->frame_chain;
-    sys->queued_samples = 0;
-    sys->draining = false;
-
-    if (sys->state == IDLE)
-        sys->state = PLAYING;
-    wake_poll(sys);
-    vlc_mutex_unlock(&sys->lock);
-
-    snd_pcm_drop(pcm);
-    snd_pcm_prepare(pcm);
-}
-
-/**
- * Drains the audio playback buffer.
- */
-static void Drain (audio_output_t *aout)
-{
-    aout_sys_t *sys = aout->sys;
-
-    vlc_mutex_lock(&sys->lock);
-    sys->draining = true;
-    wake_poll(sys);
-    vlc_mutex_unlock(&sys->lock);
-}
-
-/**
- * Releases the audio output.
- */
-static void Stop (audio_output_t *aout)
-{
-    aout_sys_t *sys = aout->sys;
-    snd_pcm_t *pcm = sys->pcm;
-
-    vlc_mutex_lock(&sys->lock);
-    sys->started = false;
-    sys->state = IDLE;
-    sys->draining = false;
-    vlc_frame_ChainRelease(sys->frame_chain);
-    sys->frame_chain = NULL;
-    sys->frame_last = &sys->frame_chain;
-    sys->queued_samples = 0;
-    wake_poll(sys);
-    snd_pcm_drop(pcm);
-    vlc_mutex_unlock(&sys->lock);
-
-    vlc_join(sys->thread, NULL);
-
-    snd_pcm_close(pcm);
-}
+#define DumpDeviceStatus(o, p) DumpDeviceStatus(VLC_OBJECT(o), p)
 
 #if (SND_LIB_VERSION >= 0x01001B)
 static const uint16_t vlc_chans[] = {
@@ -617,8 +242,8 @@ static unsigned SetupChannels (vlc_object_t *obj, snd_pcm_t *pcm,
         if (chans == -1)
             continue;
 
-        unsigned score = (vlc_popcount (chans & *mask) << 8)
-                       | (255 - vlc_popcount (chans));
+        unsigned score = (popcount (chans & *mask) << 8)
+                       | (255 - popcount (chans));
         if (score > best_score)
         {
             best_offset = p - maps;
@@ -649,22 +274,18 @@ out:
 # define SetupChannels(obj, pcm, mask, tab) (0)
 #endif
 
-enum {
-    PASSTHROUGH_NONE,
-    PASSTHROUGH_SPDIF,
-    PASSTHROUGH_HDMI,
-};
-
-#define A52_FRAME_NB 1536
+static int TimeGet (audio_output_t *aout, vlc_tick_t *);
+static void Play (audio_output_t *, block_t *);
+static void Pause (audio_output_t *, bool, mtime_t);
+static void PauseDummy (audio_output_t *, bool, mtime_t);
+static void Flush (audio_output_t *, bool);
 
 /** Initializes an ALSA playback stream */
 static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
 {
-    struct vlc_logger *log = aout->obj.logger;
     aout_sys_t *sys = aout->sys;
     snd_pcm_format_t pcm_format; /* ALSA sample format */
-    unsigned channels;
-    int passthrough = PASSTHROUGH_NONE;
+    bool spdif = false;
 
     if (aout_FormatNbChannels(fmt) == 0)
         return VLC_EGENERIC;
@@ -688,19 +309,8 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
             break;
         default:
             if (AOUT_FMT_SPDIF(fmt))
-            {
-                passthrough = var_InheritInteger(aout, "alsa-passthrough");
-                channels = 2;
-            }
-            if (AOUT_FMT_HDMI(fmt))
-            {
-                passthrough = var_InheritInteger(aout, "alsa-passthrough");
-                if (passthrough == PASSTHROUGH_SPDIF)
-                    passthrough = PASSTHROUGH_NONE; /* TODO? convert down */
-                channels = 8;
-            }
-
-            if (passthrough != PASSTHROUGH_NONE)
+                spdif = var_InheritBool (aout, "spdif");
+            if (spdif)
             {
                 fmt->i_format = VLC_CODEC_SPDIFL;
                 pcm_format = SND_PCM_FORMAT_S16;
@@ -720,14 +330,14 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
 
     const char *device = sys->device;
 
-    /* Choose the device for passthrough output */
+    /* Choose the IEC device for S/PDIF output */
     char sep = '\0';
-    if (passthrough != PASSTHROUGH_NONE)
+    if (spdif)
     {
         const char *opt = NULL;
 
         if (!strcmp (device, "default"))
-            device = (passthrough == PASSTHROUGH_HDMI) ? "hdmi" : "iec958";
+            device = "iec958"; /* TODO: hdmi */
 
         if (!strncmp (device, "iec958", 6))
             opt = device + 6;
@@ -745,7 +355,6 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     char *devbuf = NULL;
     if (sep != '\0')
     {
-#ifdef IEC958_AES3_CON_FS_22050
         unsigned aes3;
 
         switch (fmt->i_rate)
@@ -769,17 +378,12 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
                       0, aes3) == -1)
             return VLC_ENOMEM;
         device = devbuf;
-#else
-       /* SALSA-lib lacks many AES definitions, but it does not matter much,
-        * as it does note support parametric device names either. */
-       return VLC_ENOTSUP;
-#endif
     }
 
     /* Open the device */
     snd_pcm_t *pcm;
     /* VLC always has a resampler. No need for ALSA's. */
-    const int mode = SND_PCM_NO_AUTO_RESAMPLE | SND_PCM_NONBLOCK;
+    const int mode = SND_PCM_NO_AUTO_RESAMPLE;
 
     int val = snd_pcm_open (&pcm, device, SND_PCM_STREAM_PLAYBACK, mode);
     if (val != 0)
@@ -797,7 +401,7 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     /* Print some potentially useful debug */
     msg_Dbg (aout, "using ALSA device: %s", device);
     free (devbuf);
-    DumpDevice(log, pcm);
+    DumpDevice (VLC_OBJECT(aout), pcm);
 
     /* Get Initial hardware parameters */
     snd_pcm_hw_params_t *hw;
@@ -805,7 +409,7 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
 
     snd_pcm_hw_params_alloca (&hw);
     snd_pcm_hw_params_any (pcm, hw);
-    Dump(log, "initial hardware setup:\n", snd_pcm_hw_params_dump, hw);
+    Dump (aout, "initial hardware setup:\n", snd_pcm_hw_params_dump, hw);
 
     val = snd_pcm_hw_params_set_rate_resample(pcm, hw, 0);
     if (val)
@@ -857,17 +461,21 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     }
 
     /* Set channels count */
-    if (passthrough == PASSTHROUGH_NONE)
+    unsigned channels;
+    if (!spdif)
     {
         uint16_t map = var_InheritInteger (aout, "alsa-audio-channels");
 
         sys->chans_to_reorder = SetupChannels (VLC_OBJECT(aout), pcm, &map,
                                                sys->chans_table);
         fmt->i_physical_channels = map;
-        channels = vlc_popcount (map);
+        channels = popcount (map);
     }
     else
+    {
         sys->chans_to_reorder = 0;
+        channels = 2;
+    }
 
     /* By default, ALSA plug will pad missing channels with zeroes, which is
      * usually fine. However, it will also discard extraneous channels, which
@@ -932,14 +540,14 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
                  snd_strerror (val));
         goto error;
     }
-    Dump(log, "final HW setup:\n", snd_pcm_hw_params_dump, hw);
+    Dump (aout, "final HW setup:\n", snd_pcm_hw_params_dump, hw);
 
     /* Get Initial software parameters */
     snd_pcm_sw_params_t *sw;
 
     snd_pcm_sw_params_alloca (&sw);
     snd_pcm_sw_params_current (pcm, sw);
-    Dump(log, "initial software parameters:\n", snd_pcm_sw_params_dump, sw);
+    Dump (aout, "initial software parameters:\n", snd_pcm_sw_params_dump, sw);
 
     /* START REVISIT */
     //snd_pcm_sw_params_set_avail_min( pcm, sw, i_period_size );
@@ -961,7 +569,7 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
                  snd_strerror (val));
         goto error;
     }
-    Dump(log, "final software parameters:\n", snd_pcm_sw_params_dump, sw);
+    Dump (aout, "final software parameters:\n", snd_pcm_sw_params_dump, sw);
 
     val = snd_pcm_prepare (pcm);
     if (val)
@@ -971,14 +579,16 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     }
 
     /* Setup audio_output_t */
-    if (passthrough != PASSTHROUGH_NONE)
+    if (spdif)
     {
-        fmt->i_bytes_per_frame = AOUT_SPDIF_SIZE * (channels / 2);
+        fmt->i_bytes_per_frame = AOUT_SPDIF_SIZE;
         fmt->i_frame_length = A52_FRAME_NB;
     }
     fmt->channel_type = AUDIO_CHANNEL_TYPE_BITMAP;
     sys->format = fmt->i_format;
 
+    aout->time_get = TimeGet;
+    aout->play = Play;
     if (snd_pcm_hw_params_can_pause (hw))
         aout->pause = Pause;
     else
@@ -986,23 +596,8 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
         aout->pause = PauseDummy;
         msg_Warn (aout, "device cannot be paused");
     }
-
+    aout->flush = Flush;
     aout_SoftVolumeStart (aout);
-
-    sys->queued_samples = 0;
-    sys->started = true;
-    sys->draining = false;
-    sys->state = PLAYING;
-    sys->unrecoverable_error = false;
-    if (vlc_clone(&sys->thread, InjectionThread, aout))
-        goto error;
-
-    vlc_sem_wait(&sys->init_sem);
-    if (sys->unrecoverable_error)
-    {
-        vlc_join(sys->thread, NULL);
-        goto error;
-    }
     return 0;
 
 error:
@@ -1010,14 +605,126 @@ error:
     return VLC_EGENERIC;
 }
 
+static int TimeGet (audio_output_t *aout, vlc_tick_t *restrict delay)
+{
+    aout_sys_t *sys = aout->sys;
+    snd_pcm_sframes_t frames;
+
+    int val = snd_pcm_delay (sys->pcm, &frames);
+    if (val)
+    {
+        msg_Err (aout, "cannot estimate delay: %s", snd_strerror (val));
+        return -1;
+    }
+    *delay = frames * CLOCK_FREQ / sys->rate;
+    return 0;
+}
+
+/**
+ * Queues one audio buffer to the hardware.
+ */
+static void Play (audio_output_t *aout, block_t *block)
+{
+    aout_sys_t *sys = aout->sys;
+
+    if (sys->chans_to_reorder != 0)
+        aout_ChannelReorder(block->p_buffer, block->i_buffer,
+                           sys->chans_to_reorder, sys->chans_table, sys->format);
+
+    snd_pcm_t *pcm = sys->pcm;
+
+    /* TODO: better overflow handling */
+    /* TODO: no period wake ups */
+
+    while (block->i_nb_samples > 0)
+    {
+        snd_pcm_sframes_t frames;
+
+        frames = snd_pcm_writei (pcm, block->p_buffer, block->i_nb_samples);
+        if (frames >= 0)
+        {
+            size_t bytes = snd_pcm_frames_to_bytes (pcm, frames);
+            block->i_nb_samples -= frames;
+            block->p_buffer += bytes;
+            block->i_buffer -= bytes;
+            // pts, length
+        }
+        else
+        {
+            int val = snd_pcm_recover (pcm, frames, 1);
+            if (val)
+            {
+                msg_Err (aout, "cannot recover playback stream: %s",
+                         snd_strerror (val));
+                DumpDeviceStatus (aout, pcm);
+                break;
+            }
+            msg_Warn (aout, "cannot write samples: %s", snd_strerror (frames));
+        }
+    }
+    block_Release (block);
+}
+
+/**
+ * Pauses/resumes the audio playback.
+ */
+static void Pause (audio_output_t *aout, bool pause, vlc_tick_t date)
+{
+    snd_pcm_t *pcm = aout->sys->pcm;
+
+    int val = snd_pcm_pause (pcm, pause);
+    if (unlikely(val))
+        PauseDummy (aout, pause, date);
+}
+
+static void PauseDummy (audio_output_t *aout, bool pause, vlc_tick_t date)
+{
+    snd_pcm_t *pcm = aout->sys->pcm;
+
+    /* Stupid device cannot pause. Discard samples. */
+    if (pause)
+        snd_pcm_drop (pcm);
+    else
+        snd_pcm_prepare (pcm);
+    (void) date;
+}
+
+/**
+ * Flushes/drains the audio playback buffer.
+ */
+static void Flush (audio_output_t *aout, bool wait)
+{
+    snd_pcm_t *pcm = aout->sys->pcm;
+
+    if (wait)
+        snd_pcm_drain (pcm);
+    else
+        snd_pcm_drop (pcm);
+    snd_pcm_prepare (pcm);
+}
+
+
+/**
+ * Releases the audio output.
+ */
+static void Stop (audio_output_t *aout)
+{
+    aout_sys_t *sys = aout->sys;
+    snd_pcm_t *pcm = sys->pcm;
+
+    snd_pcm_drop (pcm);
+    snd_pcm_close (pcm);
+}
+
 /**
  * Enumerates ALSA output devices.
  */
-static int EnumDevices(char const *varname,
+static int EnumDevices(vlc_object_t *obj, char const *varname,
                        char ***restrict idp, char ***restrict namep)
 {
     void **hints;
 
+    msg_Dbg (obj, "Available ALSA PCM devices:");
     if (snd_device_name_hint(-1, "pcm", &hints) < 0)
         return -1;
 
@@ -1038,6 +745,7 @@ static int EnumDevices(char const *varname,
             desc = xstrdup (name);
         for (char *lf = strchr(desc, '\n'); lf; lf = strchr(lf, '\n'))
             *lf = ' ';
+        msg_Dbg (obj, "%s (%s)", (desc != NULL) ? desc : name, name);
 
         ids = xrealloc (ids, (n + 1) * sizeof (*ids));
         names = xrealloc (names, (n + 1) * sizeof (*names));
@@ -1066,8 +774,6 @@ static int EnumDevices(char const *varname,
     return n;
 }
 
-VLC_CONFIG_STRING_ENUM(EnumDevices)
-
 static int DeviceSelect (audio_output_t *aout, const char *id)
 {
     aout_sys_t *sys = aout->sys;
@@ -1090,20 +796,6 @@ static int Open(vlc_object_t *obj)
 
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
-
-#ifdef HAVE_EVENTFD
-    sys->wakefd[0] = eventfd(0, EFD_CLOEXEC);
-    sys->wakefd[1] = sys->wakefd[0];
-    if (sys->wakefd[0] < 0)
-      goto error;
-#else
-    if (vlc_pipe(sys->wakefd))
-    {
-      sys->wakefd[0] = sys->wakefd[1] = -1;
-      goto error;
-    }
-#endif
-
     sys->device = var_InheritString (aout, "alsa-audio-device");
     if (unlikely(sys->device == NULL))
         goto error;
@@ -1117,14 +809,11 @@ static int Open(vlc_object_t *obj)
 
     /* ALSA does not support hot-plug events so list devices at startup */
     char **ids, **names;
-    int count = EnumDevices(NULL, &ids, &names);
+    int count = EnumDevices (VLC_OBJECT(aout), NULL, &ids, &names);
     if (count >= 0)
     {
-        msg_Dbg (obj, "Available ALSA PCM devices:");
-
         for (int i = 0; i < count; i++)
         {
-            msg_Dbg(obj, "%s: %s", ids[i], names[i]);
             aout_HotplugReport (aout, ids[i], names[i]);
             free (names[i]);
             free (ids[i]);
@@ -1133,25 +822,8 @@ static int Open(vlc_object_t *obj)
         free (ids);
     }
 
-    sys->state = IDLE;
-    vlc_mutex_init(&sys->lock);
-    sys->frame_chain = NULL;
-    sys->frame_last = &sys->frame_chain;
-    vlc_sem_init(&sys->init_sem, 0);
-
-    aout->time_get = TimeGet;
-    aout->play = Play;
-    aout->flush = Flush;
-    aout->drain = Drain;
-
     return VLC_SUCCESS;
 error:
-    if (sys->wakefd[0] >= 0)
-    {
-      if (sys->wakefd[1] != sys->wakefd[0])
-        vlc_close(sys->wakefd[1]);
-      vlc_close(sys->wakefd[0]);
-    }
     free (sys);
     return VLC_ENOMEM;
 }
@@ -1162,49 +834,5 @@ static void Close(vlc_object_t *obj)
     aout_sys_t *sys = aout->sys;
 
     free (sys->device);
-    if (sys->wakefd[1] != sys->wakefd[0])
-      vlc_close(sys->wakefd[1]);
-    vlc_close(sys->wakefd[0]);
     free (sys);
 }
-
-#define AUDIO_DEV_TEXT N_("Audio output device")
-#define AUDIO_DEV_LONGTEXT N_("Audio output device (using ALSA syntax).")
-
-#define AUDIO_CHAN_TEXT N_("Audio output channels")
-#define AUDIO_CHAN_LONGTEXT N_("Channels available for audio output. " \
-    "If the input has more channels than the output, it will be down-mixed. " \
-    "This parameter is ignored when digital pass-through is active.")
-static const int channels[] = {
-    AOUT_CHAN_CENTER, AOUT_CHANS_STEREO, AOUT_CHANS_4_0, AOUT_CHANS_4_1,
-    AOUT_CHANS_5_0, AOUT_CHANS_5_1, AOUT_CHANS_7_1,
-};
-static const char *const channels_text[] = {
-    N_("Mono"), N_("Stereo"), N_("Surround 4.0"), N_("Surround 4.1"),
-    N_("Surround 5.0"), N_("Surround 5.1"), N_("Surround 7.1"),
-};
-
-#define PASSTHROUGH_TEXT N_("Audio passthrough mode")
-static const int passthrough_modes[] = {
-    PASSTHROUGH_NONE, PASSTHROUGH_SPDIF, PASSTHROUGH_HDMI,
-};
-static const char *const passthrough_modes_text[] = {
-    N_("None"), N_("S/PDIF"), N_("HDMI"),
-};
-
-vlc_module_begin()
-    set_shortname("ALSA")
-    set_description(N_("ALSA audio output"))
-    set_subcategory(SUBCAT_AUDIO_AOUT)
-    add_string("alsa-audio-device", "default",
-               AUDIO_DEV_TEXT, AUDIO_DEV_LONGTEXT)
-    add_integer("alsa-audio-channels", AOUT_CHANS_FRONT,
-                AUDIO_CHAN_TEXT, AUDIO_CHAN_LONGTEXT)
-        change_integer_list (channels, channels_text)
-    add_integer("alsa-passthrough", PASSTHROUGH_NONE, PASSTHROUGH_TEXT,
-                NULL)
-        change_integer_list(passthrough_modes, passthrough_modes_text)
-    add_sw_gain()
-    set_capability("audio output", 150)
-    set_callbacks(Open, Close)
-vlc_module_end()

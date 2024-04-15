@@ -49,8 +49,8 @@ namespace adaptive
                 virtual vlc_tick_t getPeriodDuration() const override;
                 virtual BasePlaylist *getPlaylist() const override;
 
-                Property<vlc_tick_t> duration;
-                Property<vlc_tick_t> startTime;
+                Property<mtime_t> duration;
+                Property<mtime_t> startTime;
 
             private:
                 std::vector<BaseAdaptationSet *>    adaptationSets;

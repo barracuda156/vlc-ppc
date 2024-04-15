@@ -54,12 +54,12 @@ char * json_dupstring(const json_value *node, const char *key)
 }
 
 static inline
-json_value * json_parse_document(vlc_object_t *p_obj, const char *psz_buffer, size_t i_buffer)
+json_value * json_parse_document(vlc_object_t *p_obj, const char *psz_buffer)
 {
     json_settings settings;
     char psz_error[128];
     memset (&settings, 0, sizeof (json_settings));
-    json_value *root = json_parse_ex(&settings, psz_buffer, i_buffer, psz_error);
+    json_value *root = json_parse_ex(&settings, psz_buffer, psz_error);
     if (root == NULL)
     {
         msg_Warn(p_obj, "Can't parse json data: %s", psz_error);
@@ -79,13 +79,13 @@ error:
 }
 
 static inline
-void * json_retrieve_document(vlc_object_t *p_obj, const char *psz_url, size_t *buf_size)
+void * json_retrieve_document(vlc_object_t *p_obj, const char *psz_url)
 {
-    bool saved_no_interact = p_obj->no_interact;
-    p_obj->no_interact = true;
+    int i_saved_flags = p_obj->obj.flags;
+    p_obj->obj.flags |= OBJECT_FLAGS_NOINTERACT;
     stream_t *p_stream = vlc_stream_NewURL(p_obj, psz_url);
 
-    p_obj->no_interact = saved_no_interact;
+    p_obj->obj.flags = i_saved_flags;
     if (p_stream == NULL)
         return NULL;
 
@@ -95,29 +95,31 @@ void * json_retrieve_document(vlc_object_t *p_obj, const char *psz_url, size_t *
 
     /* read answer */
     char *p_buffer = NULL;
-    *buf_size = 0;
+    int i_ret = 0;
     for(;;)
     {
         int i_read = 65536;
 
-        if(*buf_size >= (SIZE_MAX - i_read - 1))
+        if(i_ret >= INT_MAX - i_read)
             break;
 
-        p_buffer = realloc_or_free(p_buffer, 1 + *buf_size + i_read);
-        if(unlikely(p_buffer == NULL))
+        char *p_realloc = realloc(p_buffer, 1 + i_ret + i_read);
+        if(unlikely(p_realloc == NULL))
         {
+            free(p_buffer);
             vlc_stream_Delete(p_stream);
             return NULL;
         }
+        p_buffer = p_realloc;
 
-        i_read = vlc_stream_Read(p_stream, &p_buffer[*buf_size], i_read);
+        i_read = vlc_stream_Read(p_stream, &p_buffer[i_ret], i_read);
         if(i_read <= 0)
             break;
 
-        *buf_size += i_read;
+        i_ret += i_read;
     }
     vlc_stream_Delete(p_stream);
-    p_buffer[*buf_size++] = '\0';
+    p_buffer[i_ret] = 0;
 
     return p_buffer;
 }

@@ -29,7 +29,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#ifdef HAVE_POLL_H
+#ifdef HAVE_POLL
 # include <poll.h>
 #endif
 
@@ -56,14 +56,15 @@ static void Close(vlc_object_t *);
 vlc_module_begin()
     set_shortname(N_("NFS"))
     set_description(N_("NFS input"))
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACCESS)
-    add_bool("nfs-auto-guid", true, AUTO_GUID_TEXT, AUTO_GUID_LONGTEXT)
-    set_capability("access", 0)
+    add_bool("nfs-auto-guid", true, AUTO_GUID_TEXT, AUTO_GUID_LONGTEXT, true)
+    set_capability("access", 2)
     add_shortcut("nfs")
     set_callbacks(Open, Close)
 vlc_module_end()
 
-typedef struct
+struct access_sys_t
 {
     struct rpc_context *    p_mount; /* used to to get exports mount point */
     struct nfs_context *    p_nfs;
@@ -94,7 +95,7 @@ typedef struct
             bool b_done;
         } seek;
     } res;
-} access_sys_t;
+};
 
 static bool
 nfs_check_status(stream_t *p_access, int i_status, const char *psz_error,
@@ -292,8 +293,8 @@ FileControl(stream_t *p_access, int i_query, va_list args)
         }
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
-                    var_InheritInteger(p_access, "network-caching") );
+            *va_arg(args, int64_t *) = var_InheritInteger(p_access,
+                                                          "network-caching");
             break;
 
         case STREAM_SET_PAUSE_STATE:
@@ -362,16 +363,8 @@ DirRead(stream_t *p_access, input_item_node_t *p_node)
         default:
             i_type = ITEM_TYPE_UNKNOWN;
         }
-
-        input_item_t *p_item;
-
         i_ret = vlc_readdir_helper_additem(&rdh, psz_url, NULL, p_nfsdirent->name,
-                                           i_type, ITEM_NET, &p_item);
-        if (i_ret == VLC_SUCCESS && p_item && p_nfsdirent->mtime.tv_sec >= 0)
-        {
-            input_item_AddStat(p_item, "mtime", p_nfsdirent->mtime.tv_sec);
-            input_item_AddStat(p_item, "size", p_nfsdirent->size);
-        }
+                                           i_type, ITEM_NET);
         free(psz_url);
     }
 
@@ -401,7 +394,7 @@ MountRead(stream_t *p_access, input_item_node_t *p_node)
             break;
         }
         i_ret = vlc_readdir_helper_additem(&rdh, psz_url, NULL, psz_name,
-                                            ITEM_TYPE_DIRECTORY, ITEM_NET, NULL);
+                                            ITEM_TYPE_DIRECTORY, ITEM_NET);
         free(psz_url);
     }
 

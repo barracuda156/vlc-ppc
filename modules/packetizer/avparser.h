@@ -2,6 +2,7 @@
  * avparser.h
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
+ * $Id: 73f4a1afd6ea15207a67cc27ae7008e00fa47cad $
  *
  * Authors: Denis Charmet <typx@videolan.org>
  *
@@ -43,6 +44,7 @@ int  avparser_OpenPacketizer ( vlc_object_t * );
 void avparser_ClosePacketizer( vlc_object_t * );
 
 #define AVPARSER_MODULE \
+    set_category( CAT_SOUT )                            \
     set_subcategory( SUBCAT_SOUT_PACKETIZER )           \
     set_description( N_("avparser packetizer") )        \
     set_capability( "packetizer", 20 )                   \

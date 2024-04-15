@@ -8,10 +8,10 @@ fetch-npapi:
 	if test -d npapi-vlc; then \
 		cd npapi-vlc && \
 		git fetch origin && \
-		git reset --hard origin/master; \
+		git reset --hard origin/3.0.x; \
 		git submodule update; \
 	else \
-		git clone https://code.videolan.org/videolan/npapi-vlc.git npapi-vlc && \
+		git clone -b 3.0.x --single-branch https://code.videolan.org/videolan/npapi-vlc.git npapi-vlc && \
 		cd npapi-vlc && \
 		git submodule update --init; \
 	fi
@@ -31,7 +31,7 @@ npapi-vlc/configure: stamp-npapi
 	touch $@
 
 if ENABLE_PDB
-ENABLE_PDB_OPTION = --enable-pdb
+ENABLE_PDB_OPTION := --enable-pdb
 endif
 
 npapi-vlc/Makefile: npapi-vlc/configure
@@ -49,9 +49,9 @@ npapi-vlc/Makefile: npapi-vlc/configure
 		PKG_CONFIG="$(PKG_CONFIG)"
 	touch $@
 
-npapi-vlc/activex/axvlc.la: npapi-vlc/Makefile
+npapi-vlc/npapi/npvlc.la: npapi-vlc/Makefile
 	$(MAKE) -C npapi-vlc
 
-install-npapi: npapi-vlc/activex/axvlc.la
+install-npapi: npapi-vlc/npapi/npvlc.la
 	$(MAKE) -C npapi-vlc \
 		DESTDIR="$(abs_builddir)/npapi-vlc/installed" install

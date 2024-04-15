@@ -68,10 +68,7 @@ bool CommonEncryptionSession::start(SharedResources *res, const CommonEncryption
     if(ctx)
         close();
     encryption = enc;
-#ifndef HAVE_GCRYPT
-    /* We don't use the SharedResources */
-    VLC_UNUSED(res);
-#else
+#ifdef HAVE_GCRYPT
     if(encryption.method == CommonEncryption::Method::AES_128)
     {
         if(key.empty())

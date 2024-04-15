@@ -68,9 +68,7 @@ static void AndroidPrintMsg(void *opaque, int type, const vlc_log_t *p_item,
     free(format2);
 }
 
-static const struct vlc_logger_operations ops = { AndroidPrintMsg, NULL };
-
-static const struct vlc_logger_operations *Open(vlc_object_t *obj, void **sysp)
+static vlc_log_cb Open(vlc_object_t *obj, void **sysp)
 {
     int verbosity = var_InheritInteger(obj, "verbose");
 
@@ -80,13 +78,14 @@ static const struct vlc_logger_operations *Open(vlc_object_t *obj, void **sysp)
     verbosity += VLC_MSG_ERR;
     *sysp = (void *)(uintptr_t)verbosity;
 
-    return &ops;
+    return AndroidPrintMsg;
 }
 
 vlc_module_begin()
     set_shortname(N_("Android log"))
     set_description(N_("Android log using logcat"))
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_capability("logger", 30)
-    set_callback(Open)
+    set_callbacks(Open, NULL)
 vlc_module_end ()

@@ -93,7 +93,7 @@ local options = {
     int_os_password = 'Password',
     int_help_mess =[[
       Download subtitles from
-      <a href='https://www.opensubtitles.org/'>
+      <a href='http://www.opensubtitles.org/'>
       opensubtitles.org
       </a> and display them while watching a video.<br>
       <br>
@@ -130,7 +130,7 @@ local options = {
       they're important.<br>
       <br>
       Find more VLC extensions at
-      <a href='https://addons.videolan.org'>addons.videolan.org</a>.
+      <a href='http://addons.videolan.org'>addons.videolan.org</a>.
       ]],
     int_no_support_mess = [[
       <strong>VLSub is not working with VLC 2.1.x on
@@ -361,7 +361,7 @@ function descriptor()
     title = "VLsub 0.11.1",
     version = "0.11.1",
     author = "exebetche",
-    url = 'https://www.opensubtitles.org/',
+    url = 'http://www.opensubtitles.org/',
     shortdesc = "VLsub";
     description = options.translation.int_descr,
     capabilities = {"menu", "input-listener" }
@@ -376,7 +376,7 @@ function activate()
         return false
   end
 
-  if vlc.player.item() then
+  if vlc.input.item() then
     openSub.getFileInfo()
     openSub.getMovieInfo()
   end
@@ -957,7 +957,7 @@ function get_available_translations()
 -- causing error  with github https CA certficate on OS X an XP)
 -- https://github.com/exebetche/vlsub/tree/master/locale
 
-  local translations_url = "https://addons.videolan.org/CONTENT/"..
+  local translations_url = "http://addons.videolan.org/CONTENT/"..
     "content-files/148752-vlsub_translations.xml"
 
   if input_table['intLangBut']:get_text() == lang["int_search_transl"]
@@ -1041,7 +1041,7 @@ openSub = {
   itemStore = nil,
   actionLabel = "",
   conf = {
-    url = "https://api.opensubtitles.org/xml-rpc",
+    url = "http://api.opensubtitles.org/xml-rpc",
     path = nil,
     userAgentHTTP = "VLSub",
     useragent = "VLSub 0.11.1",
@@ -1249,7 +1249,7 @@ openSub = {
     }
   },
   getInputItem = function()
-    return vlc.item or vlc.player.item()
+    return vlc.item or vlc.input.item()
   end,
   getFileInfo = function()
   -- Get video file path, name, extension from input uri
@@ -1284,12 +1284,6 @@ openSub = {
   end,
   getMovieInfo = function()
   -- Clean video file name and check for season/episode pattern in title
-    local movie_info_patterns = {
-      "(.+)[sS](%d+)[eE](%d+).*",
-      "(.+)(%d+)[xX](%d%d).*",
-      "(.+)[%s%p]*[Ss]eason[%s%p]*(%d+)[%s%p]*[Ee]pisode[%s%p]*(%d+).*",
-      "(.+)[%s%p]*[Ss]eries[%s%p]*(%d+)[%s%p]*[Ee]pisode[%s%p]*(%d+).*"
-    }
     if not openSub.file.name then
       openSub.movie.title = ""
       openSub.movie.seasonNumber = ""
@@ -1297,21 +1291,14 @@ openSub = {
       return false
     end
 
-    local item = openSub.getInputItem()
-    -- try cleaned file name as well as meta information (e.g. from youtube)
-    local names = { openSub.file.cleanName, item:metas()['title'] }
+    local showName, seasonNumber, episodeNumber = string.match(
+      openSub.file.cleanName or "",
+      "(.+)[sS](%d%d)[eE](%d%d).*")
 
-    local showName, seasonNumber, episodeNumber
-    for _,name in ipairs(names) do
-      if name then 
-        -- try matching the pattern, stop if a match is found
-        for _,pattern in ipairs(movie_info_patterns) do
-          showName, seasonNumber, episodeNumber = string.match(name, pattern)
-          if showName then
-            break
-          end
-        end
-      end
+    if not showName then
+      showName, seasonNumber, episodeNumber = string.match(
+      openSub.file.cleanName or "",
+      "(.+)(%d)[xX](%d%d).*")
     end
 
     if showName then
@@ -1476,13 +1463,12 @@ function display_subtitles()
     lang["mess_no_res"])
 end
 
-function get_all_sel(list)
+function get_first_sel(list)
   local selection = list:get_selection()
-  local indexes = {}
   for index, name in pairs(selection) do
-    indexes[#indexes + 1] = index
+    return index
   end
-  return indexes
+  return 0
 end
 
 function find_subtitle_in_archive(archivePath, subfileExt)
@@ -1492,7 +1478,7 @@ function find_subtitle_in_archive(archivePath, subfileExt)
     return nil
   end
   subfileExt = "." .. subfileExt
-  for _, item in ipairs(items) do
+  for _, item in pairs(items) do
     if string.sub(item:uri(), -string.len(subfileExt)) == subfileExt then
       return item:uri()
     end
@@ -1501,9 +1487,9 @@ function find_subtitle_in_archive(archivePath, subfileExt)
 end
 
 function download_subtitles()
-  local indexes = get_all_sel(input_table["mainlist"])
+  local index = get_first_sel(input_table["mainlist"])
 
-  if #indexes == 0 then -- if no subtitles selected
+  if index == 0 then
     setMessage(lang["mess_no_selection"])
     return false
   end
@@ -1512,128 +1498,122 @@ function download_subtitles()
 
   display_subtitles() -- reset selection
 
-  for _, index in ipairs(indexes) do
-    local item = openSub.itemStore[index]
-  
-    if openSub.option.downloadBehaviour == 'manual'
-    or not openSub.file.hasInput then
-      local link = "<span style='color:#181'>"
-      link = link.."<b>"..lang["mess_dowload_link"]..":</b>"
-      link = link.."</span> &nbsp;"
-      link = link.."</span> &nbsp;<a href='"..
-        item.ZipDownloadLink.."'>"
-      link = link..item.MovieReleaseName.."</a>"
-  
-      setMessage(link)
-      return false
-    end
-  
-    local message = ""
-    local subfileName = openSub.file.name or ""
-  
-    if openSub.option.langExt then
-      subfileName = subfileName.."."..item.SubLanguageID
-    end
-  
-    subfileName = subfileName.."."..item.SubFormat
-    local tmp_dir = vlc.config.cachedir()
-    -- create the cache directory if it doesn't already exist
-    local separator = ""
-    local current_dir = ""
-    if package.config:sub(1, 1):match("/") then
-      -- unix based systems
-      separator = "/"
-      current_dir = "/"
+  local item = openSub.itemStore[index]
+
+  if openSub.option.downloadBehaviour == 'manual'
+  or not openSub.file.hasInput then
+    local link = "<span style='color:#181'>"
+    link = link.."<b>"..lang["mess_dowload_link"]..":</b>"
+    link = link.."</span> &nbsp;"
+    link = link.."</span> &nbsp;<a href='"..
+      item.ZipDownloadLink.."'>"
+    link = link..item.MovieReleaseName.."</a>"
+
+    setMessage(link)
+    return false
+  end
+
+  local message = ""
+  local subfileName = openSub.file.name or ""
+
+  if openSub.option.langExt then
+    subfileName = subfileName.."."..item.SubLanguageID
+  end
+
+  subfileName = subfileName.."."..item.SubFormat
+  local tmp_dir = vlc.config.cachedir()
+  -- create the cache directory if it doesn't already exist
+  local separator = ""
+  local current_dir = ""
+  if package.config:sub(1, 1):match("/") then
+    -- unix based systems
+    separator = "/"
+    current_dir = "/"
+  else
+    -- windows systems
+    separator = "\\"
+  end
+  for dir in tmp_dir:gmatch("[^"..separator.."]+") do
+    current_dir = current_dir..dir..separator
+    local vars = vlc.io.mkdir(current_dir, "0700")
+  end
+
+  local file_target_access = true
+
+  local tmpFileName = dump_zip(
+    item.ZipDownloadLink,
+    tmp_dir,
+    item.SubFileName)
+
+  if not tmpFileName then
+    setError(lang["mess_save_fail"].." &nbsp;"..
+    "<a href='"..item.ZipDownloadLink.."'>"..
+    lang["mess_click_link"].."</a>")
+    return false
+  end
+  vlc.msg.dbg("[VLsub] tmpFileName: "..tmpFileName)
+
+  local subtitleMrl = find_subtitle_in_archive(tmpFileName, item.SubFormat)
+
+  if not subtitleMrl then
+    setMessage( lang['mess_not_load'] )
+    return false
+  end
+
+  -- Determine if the path to the video file is accessible for writing
+
+  local target
+  if openSub.file.dir then
+    target = openSub.file.dir..subfileName
+  end
+
+  if not target or not file_touch(target) then
+    if openSub.conf.dirPath then
+      target =  openSub.conf.dirPath..slash..subfileName
+      message = "<br>"..
+        warn_tag(lang["mess_save_warn"].." &nbsp;"..
+        "<a href='"..vlc.strings.make_uri(
+          openSub.conf.dirPath).."'>"..
+          lang["mess_click_link"].."</a>")
     else
-      -- windows systems
-      separator = "\\"
-    end
-    for dir in tmp_dir:gmatch("[^"..separator.."]+") do
-      current_dir = current_dir..dir..separator
-      local vars = vlc.io.mkdir(current_dir, "0700")
-    end
-  
-    local file_target_access = true
-  
-    local tmpFileName = dump_zip(
-      item.ZipDownloadLink,
-      tmp_dir,
-      item.SubFileName)
-  
-    if not tmpFileName then
       setError(lang["mess_save_fail"].." &nbsp;"..
       "<a href='"..item.ZipDownloadLink.."'>"..
       lang["mess_click_link"].."</a>")
       return false
     end
-    vlc.msg.dbg("[VLsub] tmpFileName: "..tmpFileName)
-  
-    local subtitleMrl = find_subtitle_in_archive(tmpFileName, item.SubFormat)
-  
-    if not subtitleMrl then
-      setMessage( lang['mess_not_load'] )
-      return false
-    end
-  
-    -- Determine if the path to the video file is accessible for writing
-  
-    local target
-    if openSub.file.dir then
-      target = openSub.file.dir..subfileName
-    end
-  
-    if not target or not file_touch(target) then
-      if openSub.conf.dirPath then
-        target =  openSub.conf.dirPath..slash..subfileName
-        -- If the file still can't be written to, use tmp placeholder
-        if not file_touch(target) then
-          target = openSub.conf.dirPath..slash.."vlcsub."..item.SubFormat
-        end
-        message = "<br>"..
-          warn_tag(lang["mess_save_warn"].." &nbsp;"..
-          "<a href='"..vlc.strings.make_uri(
-            openSub.conf.dirPath).."'>"..
-            lang["mess_click_link"].."</a>")
-      else
-        setError(lang["mess_save_fail"].." &nbsp;"..
-        "<a href='"..item.ZipDownloadLink.."'>"..
-        lang["mess_click_link"].."</a>")
-        return false
-      end
-    end
-  
-    vlc.msg.dbg("[VLsub] Subtitles files: "..target)
-  
-    -- Unzipped data into file target
-  
-    local stream = vlc.stream(subtitleMrl)
-    local data = ""
-    local subfile = vlc.io.open(target, "wb")
-  
-    while data do
-      subfile:write(data)
-      data = stream:read(65536)
-    end
-  
-    subfile:flush()
-    subfile:close()
-  
-    stream = nil
-    collectgarbage()
-  
-    if not vlc.io.unlink(tmpFileName) then
-      vlc.msg.err("[VLsub] Unable to remove temp: "..tmpFileName)
-    end
-  
-    -- load subtitles
-    if add_sub(target) then
-      message = success_tag(lang["mess_loaded"]) .. message
-    else
-      message = error_tag(lang["mess_not_load"]) .. message
-    end
-  
-    setMessage(message)
   end
+
+  vlc.msg.dbg("[VLsub] Subtitles files: "..target)
+
+  -- Unzipped data into file target
+
+  local stream = vlc.stream(subtitleMrl)
+  local data = ""
+  local subfile = vlc.io.open(target, "wb")
+
+  while data do
+    subfile:write(data)
+    data = stream:read(65536)
+  end
+
+  subfile:flush()
+  subfile:close()
+
+  stream = nil
+  collectgarbage()
+
+  if not vlc.io.unlink(tmpFileName) then
+    vlc.msg.err("[VLsub] Unable to remove temp: "..tmpFileName)
+  end
+
+  -- load subtitles
+  if add_sub(target) then
+    message = success_tag(lang["mess_loaded"]) .. message
+  else
+    message = error_tag(lang["mess_not_load"]) .. message
+  end
+
+  setMessage(message)
 end
 
 function dump_zip(url, dir, subfileName)
@@ -1661,9 +1641,9 @@ function dump_zip(url, dir, subfileName)
 end
 
 function add_sub(subPath)
-  if vlc.item or vlc.player.item() then
+  if vlc.item or vlc.input.item() then
     vlc.msg.dbg("[VLsub] Adding subtitle :" .. subPath)
-    return vlc.player.add_subtitle(subPath, true)
+    return vlc.input.add_subtitle(subPath, true)
   end
   return false
 end

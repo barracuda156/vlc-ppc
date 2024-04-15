@@ -29,12 +29,6 @@ typedef struct csa_t csa_t;
 
 #define TS_PSI_PAT_PID 0x00
 
-_Static_assert (VLC_TICK_INVALID + 1 == VLC_TICK_0,
-                "can't define TS_UNKNOWN reference");
-#define TS_TICK_UNKNOWN (VLC_TICK_INVALID - 1)
-
-#define SETANDVALID(a) (a != TS_TICK_UNKNOWN && a != VLC_TICK_INVALID)
-
 typedef enum ts_standards_e
 {
     TS_STANDARD_AUTO = 0,
@@ -55,10 +49,6 @@ struct demux_sys_t
     stream_t   *stream;
     bool        b_canseek;
     bool        b_canfastseek;
-    bool        b_lowdelay;
-    int         current_title;
-    int         current_seekpoint;
-    unsigned    updates;
     vlc_mutex_t     csa_lock;
 
     /* TS packet size (188, 192, 204) */
@@ -75,12 +65,13 @@ struct demux_sys_t
 
     ts_standards_e standard;
 
-#ifdef HAVE_ARIBB24
     struct
     {
+#ifdef HAVE_ARIBB24
         arib_instance_t *p_instance;
-    } arib;
 #endif
+        stream_t     *b25stream;
+    } arib;
 
     /* All pid */
     ts_pid_list_t pids;
@@ -105,7 +96,6 @@ struct demux_sys_t
 
     bool        b_trust_pcr;
     bool        b_check_pcr_offset;
-    unsigned    i_generated_pcr_dpb_offset;
 
     /* */
     bool        b_access_control;
@@ -128,9 +118,8 @@ struct demux_sys_t
 
     struct
     {
-        stime_t i_first_dts;     /* first dts encountered for the stream */
+        vlc_tick_t i_first_dts;     /* first dts encountered for the stream */
         int     i_timesourcepid; /* which pid we saved the dts from */
-        bool    b_pcrhasnopcrfield;
         enum { PAT_WAITING = 0, PAT_MISSING, PAT_FIXTRIED } status; /* set if we haven't seen PAT within MIN_PAT_INTERVAL */
     } patfix;
 
@@ -141,7 +130,6 @@ struct demux_sys_t
 
     /* */
     bool        b_start_record;
-    char        *record_dir_path;
 };
 
 void TsChangeStandard( demux_sys_t *, ts_standards_e );

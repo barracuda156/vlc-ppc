@@ -2,6 +2,7 @@
  * generic_bitmap.cpp
  *****************************************************************************
  * Copyright (C) 2004 the VideoLAN team
+ * $Id: 30c7ea92ab73882eab109edccb52c141284c7f76 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *
@@ -57,14 +58,8 @@ BitmapImpl::BitmapImpl( intf_thread_t *pIntf, int width, int height,
     GenericBitmap( pIntf, nbFrames, fps, nbLoops ), m_width( width ),
     m_height( height ), m_pData( NULL )
 {
-    unsigned size;
-
-    if (mul_overflow((unsigned)width, (unsigned)height, &size)
-     || mul_overflow(size, 4, &size))
-        throw std::bad_alloc();
-
-    m_pData = new uint8_t[size];
-    memset(m_pData, 0, size);
+    m_pData = new uint8_t[width * height * 4];
+    memset( m_pData, 0, width * height * 4 );
 }
 
 

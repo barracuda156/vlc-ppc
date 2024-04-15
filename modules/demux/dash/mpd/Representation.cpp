@@ -30,6 +30,7 @@
 #include "Representation.h"
 #include "AdaptationSet.h"
 #include "MPD.h"
+#include "TrickModeType.h"
 #include "../../adaptive/playlist/SegmentTemplate.h"
 #include "../../adaptive/playlist/SegmentTimeline.h"
 #include "TemplatedUri.hpp"
@@ -37,12 +38,15 @@
 using namespace dash::mpd;
 
 Representation::Representation  ( AdaptationSet *set ) :
-                BaseRepresentation( set )
+                BaseRepresentation( set ),
+                qualityRanking  ( -1 ),
+                trickModeType   ( NULL )
 {
 }
 
 Representation::~Representation ()
 {
+    delete(this->trickModeType);
 }
 
 StreamFormat Representation::getStreamFormat() const
@@ -50,12 +54,45 @@ StreamFormat Representation::getStreamFormat() const
     return StreamFormat(getMimeType());
 }
 
+TrickModeType*      Representation::getTrickModeType        () const
+{
+    return this->trickModeType;
+}
+
+void                Representation::setTrickMode        (TrickModeType *trickModeType)
+{
+    this->trickModeType = trickModeType;
+}
+
+int Representation::getQualityRanking() const
+{
+    return this->qualityRanking;
+}
+
+void Representation::setQualityRanking( int qualityRanking )
+{
+    if ( qualityRanking > 0 )
+        this->qualityRanking = qualityRanking;
+}
+
+const std::list<const Representation*>&     Representation::getDependencies() const
+{
+    return this->dependencies;
+}
+
+void Representation::addDependency(const Representation *dep)
+{
+    if ( dep != NULL )
+        this->dependencies.push_back( dep );
+}
+
 std::string Representation::contextualize(size_t number, const std::string &component,
                                           const SegmentTemplate *templ) const
 {
-    std::string str(component);
     if(!templ)
-        return str;
+        return component;
+
+    std::string str(component);
 
     std::string::size_type pos = 0;
     while(pos < str.length())
@@ -100,7 +137,7 @@ std::string Representation::contextualize(size_t number, const std::string &comp
 
 stime_t Representation::getScaledTimeBySegmentNumber(uint64_t index, const SegmentTemplate *templ) const
 {
-    stime_t time = 0;
+    vlc_tick_t time = 0;
     const SegmentTimeline *tl = templ->inheritSegmentTimeline();
     if(tl)
     {

@@ -2,6 +2,7 @@
  * x11_factory.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 6e7c671884d6765939a2e80b6864772d8e39c5d4 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -25,6 +26,7 @@
 
 #include <errno.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xinerama.h>
 
@@ -43,8 +45,7 @@
 #include <vlc_xlib.h>
 
 X11Factory::X11Factory( intf_thread_t *pIntf ): OSFactory( pIntf ),
-    m_pDisplay( NULL ), m_pTimerLoop( NULL ), m_dirSep( "/" ),
-    mPointerWindow( None ), mVoutWindow( None ), mEmptyCursor( None )
+    m_pDisplay( NULL ), m_pTimerLoop( NULL ), m_dirSep( "/" )
 {
     // see init()
 }
@@ -52,8 +53,6 @@ X11Factory::X11Factory( intf_thread_t *pIntf ): OSFactory( pIntf ),
 
 X11Factory::~X11Factory()
 {
-    if( mEmptyCursor != None )
-        XFreeCursor( m_pDisplay->getDisplay(), mEmptyCursor );
     delete m_pTimerLoop;
     delete m_pDisplay;
 }
@@ -84,19 +83,13 @@ bool X11Factory::init()
                                      ConnectionNumber( pDisplay ) );
 
     // Initialize the resource path
-    char *datadir = config_GetUserDir( VLC_USERDATA_DIR );
-    if (likely(datadir != nullptr))
-    {
-        m_resourcePath.push_back( (std::string)datadir + "/skins2" );
-        free( datadir );
-    }
+    char *datadir = config_GetUserDir( VLC_DATA_DIR );
+    m_resourcePath.push_back( (std::string)datadir + "/skins2" );
+    free( datadir );
     m_resourcePath.push_back( (std::string)"share/skins2" );
-    datadir = config_GetSysPath(VLC_PKG_DATA_DIR, "skins2");
-    if (likely(datadir != nullptr))
-    {
-        m_resourcePath.push_back( (std::string)datadir );
-        free( datadir );
-    }
+    datadir = config_GetDataDir();
+    m_resourcePath.push_back( (std::string)datadir + "/skins2" );
+    free( datadir );
 
     // Determine the monitor geometry
     getDefaultGeometry( &m_screenWidth, &m_screenHeight );
@@ -113,9 +106,6 @@ bool X11Factory::init()
                                 info[i].x_org, info[i].y_org );
         XFree( info );
     }
-
-    // init cursors
-    initCursors();
 
     return true;
 }
@@ -208,11 +198,10 @@ int X11Factory::getScreenHeight() const
 }
 
 
-void X11Factory::getMonitorInfo( OSWindow *pWindow,
+void X11Factory::getMonitorInfo( const GenericWindow &rWindow,
                                  int* p_x, int* p_y,
                                  int* p_width, int* p_height ) const
 {
-    X11Window *pWin = (X11Window*)pWindow;
     // initialize to default geometry
     *p_x = 0;
     *p_y = 0;
@@ -222,7 +211,7 @@ void X11Factory::getMonitorInfo( OSWindow *pWindow,
     // Use Xinerama to determine the monitor where the video
     // mostly resides (biggest surface)
     Display *pDisplay = m_pDisplay->getDisplay();
-    Window wnd = pWin->getDrawable();
+    Window wnd = (Window)rWindow.getOSHandle();
     Window root = DefaultRootWindow( pDisplay );
     Window child_wnd;
 
@@ -331,35 +320,8 @@ void X11Factory::getDefaultGeometry( int* p_width, int* p_height ) const
 
 SkinsRect X11Factory::getWorkArea() const
 {
-    // query Work Area if available from Window Manager
-    // otherwise, default to the whole screen
-    int x = 0, y = 0;
-    int w = getScreenWidth(), h = getScreenHeight();
-    if( m_pDisplay->m_net_workarea != None )
-    {
-        Atom ret;
-        int i_format;
-        unsigned long i_items, i_bytesafter;
-        long *values;
-        if( XGetWindowProperty( m_pDisplay->getDisplay(),
-                                DefaultRootWindow( m_pDisplay->getDisplay() ),
-                                m_pDisplay->m_net_workarea,
-                                0, 16384, False, XA_CARDINAL,
-                                &ret, &i_format, &i_items, &i_bytesafter,
-                                (unsigned char **)&values ) == Success )
-        {
-            if( values )
-            {
-                x = values[0];
-                y = values[1];
-                w = values[2];
-                h = values[3];
-                XFree( values );
-            }
-        }
-    }
-    msg_Dbg( getIntf(),"WorkArea: %ix%i at +%i+%i", w, h, x, y );
-    return SkinsRect( x, y, x + w, y + h );
+    // XXX
+    return SkinsRect( 0, 0, getScreenWidth(), getScreenHeight() );
 }
 
 
@@ -378,16 +340,16 @@ void X11Factory::getMousePos( int &rXPos, int &rYPos ) const
 
 void X11Factory::rmDir( const std::string &rPath )
 {
-    const char *file;
-    vlc_DIR *dir;
+    struct dirent *file;
+    DIR *dir;
 
-    dir = vlc_opendir( rPath.c_str() );
+    dir = opendir( rPath.c_str() );
     if( !dir ) return;
 
     // Parse the directory and remove everything it contains
-    while( (file = vlc_readdir( dir )) )
+    while( (file = readdir( dir )) )
     {
-        std::string filename = file;
+        std::string filename = file->d_name;
 
         // Skip "." and ".."
         if( filename == "." || filename == ".." )
@@ -402,56 +364,10 @@ void X11Factory::rmDir( const std::string &rPath )
     }
 
     // Close the directory
-    vlc_closedir( dir );
+    closedir( dir );
 
     // And delete it
     rmdir( rPath.c_str() );
 }
 
-
-void X11Factory::changeCursor( CursorType_t type ) const
-{
-    Cursor cursor = mCursors[type];
-    Window win = (type == OSFactory::kNoCursor) ? mVoutWindow : mPointerWindow;
-
-    if( win != None )
-        XDefineCursor( m_pDisplay->getDisplay(), win, cursor );
-}
-
-void X11Factory::initCursors( )
-{
-    Display *display = m_pDisplay->getDisplay();
-    static const struct {
-        CursorType_t type;
-        const char *name;
-    } cursors[] = {
-        { kDefaultArrow, "left_ptr" },
-        { kResizeNWSE, "bottom_right_corner" },
-        { kResizeNS, "bottom_side" },
-        { kResizeWE, "right_side" },
-        { kResizeNESW, "bottom_left_corner" },
-    };
-    // retrieve cursors from default theme
-    for( unsigned i = 0; i < sizeof(cursors) / sizeof(cursors[0]); i++ )
-        mCursors[cursors[i].type] =
-            XcursorLibraryLoadCursor( display, cursors[i].name );
-
-    // build an additional empty cursor
-    XColor color;
-    const char data[] = { 0 };
-    Window root = DefaultRootWindow( display );
-    Pixmap pix = XCreateBitmapFromData( display, root, data, 1, 1 );
-    mEmptyCursor = XCreatePixmapCursor( display, pix, pix, &color, &color, 0, 0 );
-    XFreePixmap( display, pix );
-    mCursors[kNoCursor] = mEmptyCursor;
-}
-
-
-void X11Factory::setPointerWindow( Window win )
-{
-    GenericWindow *pWin = m_windowMap[win];
-    if( pWin->getType() == GenericWindow::VoutWindow )
-        mVoutWindow = win;
-    mPointerWindow = win;
-}
 #endif

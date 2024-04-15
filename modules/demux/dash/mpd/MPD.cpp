@@ -25,10 +25,12 @@
 # include "config.h"
 #endif
 
+#include <vlc_fixups.h>
 #include <cinttypes>
 
 #include "MPD.h"
 #include "ProgramInformation.h"
+#include "../../adaptive/playlist/BasePeriod.h"
 
 #include <vlc_common.h>
 #include <vlc_stream.h>
@@ -79,8 +81,8 @@ void MPD::debug() const
     msg_Dbg(p_object, "MPD profile=%s mediaPresentationDuration=%" PRId64
             " minBufferTime=%" PRId64,
             static_cast<std::string>(getProfile()).c_str(),
-            SEC_FROM_VLC_TICK(duration.Get()),
-            minBufferTime);
+            duration.Get() / CLOCK_FREQ,
+            minBufferTime / CLOCK_FREQ);
     msg_Dbg(p_object, "BaseUrl=%s", getUrlSegment().toString().c_str());
 
     BasePlaylist::debug();

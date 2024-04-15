@@ -122,7 +122,7 @@ MainWindow::MainWindow(const wxString& title) : wxFrame(NULL, wxID_ANY, title, w
     vlc_inst = libvlc_new(0, NULL);
     media_player = libvlc_media_player_new(vlc_inst);
     vlc_evt_man = libvlc_media_player_event_manager(media_player);
-    libvlc_event_attach(vlc_evt_man, libvlc_MediaPlayerStopped, ::OnEndReached_VLC, NULL);
+    libvlc_event_attach(vlc_evt_man, libvlc_MediaPlayerEndReached, ::OnEndReached_VLC, NULL);
     libvlc_event_attach(vlc_evt_man, libvlc_MediaPlayerPositionChanged, ::OnPositionChanged_VLC, NULL);
     Connect(wxID_ANY, vlcEVT_END, wxCommandEventHandler(MainWindow::OnEndReached_VLC));
     Connect(wxID_ANY, vlcEVT_POS, wxCommandEventHandler(MainWindow::OnPositionChanged_VLC));
@@ -154,7 +154,7 @@ void MainWindow::OnOpen(wxCommandEvent& event) {
         libvlc_media_t *media;
         wxFileName filename = wxFileName::FileName(openFileDialog.GetPath());
         filename.MakeRelativeTo();
-        media = libvlc_media_new_path(filename.GetFullPath().mb_str());
+        media = libvlc_media_new_path(vlc_inst, filename.GetFullPath().mb_str());
         libvlc_media_player_set_media(media_player, media);
         play();
         libvlc_media_release(media);
@@ -222,7 +222,7 @@ void MainWindow::pause() {
 
 void MainWindow::stop() {
     pause();
-    libvlc_media_player_stop_async(media_player);
+    libvlc_media_player_stop(media_player);
     stop_button->Enable(false);
     setTimeline(0.0);
     timeline->Enable(false);

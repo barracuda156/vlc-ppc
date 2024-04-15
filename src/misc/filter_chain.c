@@ -38,22 +38,27 @@ typedef struct chained_filter_t
     filter_t filter;
     /* Private filter chain data (shhhh!) */
     struct chained_filter_t *prev, *next;
-    vlc_mouse_t mouse;
-    vlc_picture_chain_t pending;
+    vlc_mouse_t *mouse;
+    picture_t *pending;
 } chained_filter_t;
+
+/* Only use this with filter objects from _this_ C module */
+static inline chained_filter_t *chained(filter_t *filter)
+{
+    return container_of(filter, chained_filter_t, filter);
+}
 
 /* */
 struct filter_chain_t
 {
-    vlc_object_t *obj;
-    filter_owner_t parent_video_owner; /**< Owner (downstream) callbacks */
+    filter_owner_t callbacks; /**< Inner callbacks */
+    filter_owner_t owner; /**< Owner (downstream) callbacks */
 
     chained_filter_t *first, *last; /**< List of filters */
 
     es_format_t fmt_in; /**< Chain input format (constant) */
-    vlc_video_context *vctx_in; /**< Chain input video context (set on Reset) */
-    es_format_t fmt_out; /**< Chain output format (constant) */
-    bool b_allow_fmt_out_change; /**< Each filter can change the output */
+    es_format_t fmt_out; /**< Chain current output format */
+    bool b_allow_fmt_out_change; /**< Can the output format be changed? */
     const char *filter_cap; /**< Filter modules capability */
     const char *conv_cap; /**< Converter modules capability */
 };
@@ -61,24 +66,25 @@ struct filter_chain_t
 /**
  * Local prototypes
  */
-static void FilterDeletePictures( vlc_picture_chain_t * );
+static void FilterDeletePictures( picture_t * );
 
-static filter_chain_t *filter_chain_NewInner( vlc_object_t *obj,
+static filter_chain_t *filter_chain_NewInner( const filter_owner_t *callbacks,
     const char *cap, const char *conv_cap, bool fmt_out_change,
-    enum es_format_category_e cat )
+    const filter_owner_t *owner, enum es_format_category_e cat )
 {
-    assert( obj != NULL );
+    assert( callbacks != NULL && callbacks->sys != NULL );
     assert( cap != NULL );
 
     filter_chain_t *chain = malloc( sizeof (*chain) );
     if( unlikely(chain == NULL) )
         return NULL;
 
-    chain->obj = obj;
+    chain->callbacks = *callbacks;
+    if( owner != NULL )
+        chain->owner = *owner;
     chain->first = NULL;
     chain->last = NULL;
     es_format_Init( &chain->fmt_in, cat, 0 );
-    chain->vctx_in = NULL;
     es_format_Init( &chain->fmt_out, cat, 0 );
     chain->b_allow_fmt_out_change = fmt_out_change;
     chain->filter_cap = cap;
@@ -86,86 +92,55 @@ static filter_chain_t *filter_chain_NewInner( vlc_object_t *obj,
     return chain;
 }
 
-#undef filter_chain_NewSPU
+#undef filter_chain_New
 /**
  * Filter chain initialisation
  */
-filter_chain_t *filter_chain_NewSPU( vlc_object_t *obj, const char *cap )
+filter_chain_t *filter_chain_New( vlc_object_t *obj, const char *cap,
+                                  enum es_format_category_e cat )
 {
-    return filter_chain_NewInner( obj, cap, NULL, false, SPU_ES );
+    filter_owner_t callbacks = {
+        .sys = obj,
+    };
+
+    return filter_chain_NewInner( &callbacks, cap, NULL, false, NULL, cat );
 }
 
 /** Chained filter picture allocator function */
 static picture_t *filter_chain_VideoBufferNew( filter_t *filter )
 {
-    picture_t *pic;
-    chained_filter_t *chained = container_of(filter, chained_filter_t, filter);
-    if( chained->next != NULL )
+    if( chained(filter)->next != NULL )
     {
-        // HACK as intermediate filters may not have the same video format as
-        // the last one handled by the owner
-        filter_owner_t saved_owner = filter->owner;
-        filter->owner = (filter_owner_t) {0};
-        pic = filter_NewPicture( filter );
-        filter->owner = saved_owner;
+        picture_t *pic = picture_NewFromFormat( &filter->fmt_out.video );
         if( pic == NULL )
             msg_Err( filter, "Failed to allocate picture" );
+        return pic;
     }
     else
     {
         filter_chain_t *chain = filter->owner.sys;
 
-        // the owner of the chain requires pictures from the last filter to be grabbed from its callback
         /* XXX ugly */
-        filter_owner_t saved_owner = filter->owner;
-        filter->owner = chain->parent_video_owner;
-        pic = filter_NewPicture( filter );
-        filter->owner = saved_owner;
+        filter->owner.sys = chain->owner.sys;
+        picture_t *pic = chain->owner.video.buffer_new( filter );
+        filter->owner.sys = chain;
+        return pic;
     }
-    return pic;
 }
-
-static vlc_decoder_device * filter_chain_HoldDecoderDevice(vlc_object_t *o, void *sys)
-{
-    filter_chain_t *chain = sys;
-
-    if (chain->parent_video_owner.video == NULL ||
-        chain->parent_video_owner.video->hold_device == NULL)
-        return NULL;
-
-    return chain->parent_video_owner.video->hold_device(o, chain->parent_video_owner.sys);
-}
-
-static const struct filter_video_callbacks filter_chain_video_cbs =
-{
-    filter_chain_VideoBufferNew, filter_chain_HoldDecoderDevice,
-};
 
 #undef filter_chain_NewVideo
 filter_chain_t *filter_chain_NewVideo( vlc_object_t *obj, bool allow_change,
                                        const filter_owner_t *restrict owner )
 {
-    filter_chain_t *chain =
-        filter_chain_NewInner( obj, "video filter",
-                                  "video converter", allow_change, VIDEO_ES );
-    if (unlikely(chain == NULL))
-        return NULL;
+    filter_owner_t callbacks = {
+        .sys = obj,
+        .video = {
+            .buffer_new = filter_chain_VideoBufferNew,
+        },
+    };
 
-    if( owner != NULL && owner->video != NULL )
-    {
-        // keep this to get pictures for the last filter in the chain
-        assert( owner->video->buffer_new != NULL );
-        chain->parent_video_owner = *owner;
-    }
-    else
-        chain->parent_video_owner = (filter_owner_t){0};
-    return chain;
-}
-
-void filter_chain_Clear( filter_chain_t *p_chain )
-{
-    while( p_chain->first != NULL )
-        filter_chain_DeleteFilter( p_chain, &p_chain->first->filter );
+    return filter_chain_NewInner( &callbacks, "video filter",
+                                  "video converter", allow_change, owner, VIDEO_ES );
 }
 
 /**
@@ -173,11 +148,10 @@ void filter_chain_Clear( filter_chain_t *p_chain )
  */
 void filter_chain_Delete( filter_chain_t *p_chain )
 {
-    filter_chain_Clear( p_chain );
+    while( p_chain->first != NULL )
+        filter_chain_DeleteFilter( p_chain, &p_chain->first->filter );
 
     es_format_Clean( &p_chain->fmt_in );
-    if ( p_chain->vctx_in )
-        vlc_video_context_Release( p_chain->vctx_in );
     es_format_Clean( &p_chain->fmt_out );
 
     free( p_chain );
@@ -185,68 +159,58 @@ void filter_chain_Delete( filter_chain_t *p_chain )
 /**
  * Filter chain reinitialisation
  */
-void filter_chain_Reset( filter_chain_t *p_chain,
-                         const es_format_t *p_fmt_in, vlc_video_context *vctx_in,
+void filter_chain_Reset( filter_chain_t *p_chain, const es_format_t *p_fmt_in,
                          const es_format_t *p_fmt_out )
 {
-    filter_chain_Clear( p_chain );
+    while( p_chain->first != NULL )
+        filter_chain_DeleteFilter( p_chain, &p_chain->first->filter );
 
-    assert(p_fmt_in != NULL);
-    es_format_Clean( &p_chain->fmt_in );
-    es_format_Copy( &p_chain->fmt_in, p_fmt_in );
-    if ( p_chain->vctx_in )
-        vlc_video_context_Release( p_chain->vctx_in );
-    p_chain->vctx_in = vctx_in ? vlc_video_context_Hold(vctx_in) : NULL;
-
-    assert(p_fmt_out != NULL);
-    es_format_Clean( &p_chain->fmt_out );
-    es_format_Copy( &p_chain->fmt_out, p_fmt_out );
+    if( p_fmt_in )
+    {
+        es_format_Clean( &p_chain->fmt_in );
+        es_format_Copy( &p_chain->fmt_in, p_fmt_in );
+    }
+    if( p_fmt_out )
+    {
+        es_format_Clean( &p_chain->fmt_out );
+        es_format_Copy( &p_chain->fmt_out, p_fmt_out );
+    }
 }
 
 static filter_t *filter_chain_AppendInner( filter_chain_t *chain,
-    const char *name, const char *capability, const config_chain_t *cfg,
-    const es_format_t *fmt_out )
+    const char *name, const char *capability, config_chain_t *cfg,
+    const es_format_t *fmt_in, const es_format_t *fmt_out )
 {
+    vlc_object_t *parent = chain->callbacks.sys;
     chained_filter_t *chained =
-        vlc_custom_create( chain->obj, sizeof(*chained), "filter" );
+        vlc_custom_create( parent, sizeof(*chained), "filter" );
     if( unlikely(chained == NULL) )
         return NULL;
 
     filter_t *filter = &chained->filter;
 
-    const es_format_t *fmt_in;
-    vlc_video_context *vctx_in;
-    if( chain->last != NULL )
+    if( fmt_in == NULL )
     {
-        fmt_in = &chain->last->filter.fmt_out;
-        vctx_in = chain->last->filter.vctx_out;
-    }
-    else
-    {
-        fmt_in = &chain->fmt_in;
-        vctx_in = chain->vctx_in;
+        if( chain->last != NULL )
+            fmt_in = &chain->last->filter.fmt_out;
+        else
+            fmt_in = &chain->fmt_in;
     }
 
     if( fmt_out == NULL )
         fmt_out = &chain->fmt_out;
 
     es_format_Copy( &filter->fmt_in, fmt_in );
-    filter->vctx_in = vctx_in;
     es_format_Copy( &filter->fmt_out, fmt_out );
     filter->b_allow_fmt_out_change = chain->b_allow_fmt_out_change;
     filter->p_cfg = cfg;
     filter->psz_name = name;
 
-    if (fmt_in->i_cat == VIDEO_ES)
-    {
-        filter->owner.video = &filter_chain_video_cbs;
-        filter->owner.sys = chain;
-    }
-    else
-        filter->owner.sub = NULL;
+    filter->owner = chain->callbacks;
+    filter->owner.sys = chain;
 
     assert( capability != NULL );
-    if( name != NULL && chain->b_allow_fmt_out_change )
+    if( name != NULL && filter->b_allow_fmt_out_change )
     {
         /* Append the "chain" video filter to the current list.
          * This filter will be used if the requested filter fails to load.
@@ -260,7 +224,12 @@ static filter_t *filter_chain_AppendInner( filter_chain_t *chain,
 
     if( filter->p_module == NULL )
         goto error;
-    assert( filter->ops != NULL );
+
+    if( filter->b_allow_fmt_out_change )
+    {
+        es_format_Clean( &chain->fmt_out );
+        es_format_Copy( &chain->fmt_out, &filter->fmt_out );
+    }
 
     if( chain->last == NULL )
     {
@@ -273,42 +242,46 @@ static filter_t *filter_chain_AppendInner( filter_chain_t *chain,
     chain->last = chained;
     chained->next = NULL;
 
-    vlc_mouse_Init( &chained->mouse );
-    vlc_picture_chain_Init( &chained->pending );
+    vlc_mouse_t *mouse = malloc( sizeof(*mouse) );
+    if( likely(mouse != NULL) )
+        vlc_mouse_Init( mouse );
+    chained->mouse = mouse;
+    chained->pending = NULL;
 
-    msg_Dbg( chain->obj, "Filter '%s' (%p) appended to chain",
-             (name != NULL) ? name : module_GetShortName(filter->p_module),
+    msg_Dbg( parent, "Filter '%s' (%p) appended to chain",
+             (name != NULL) ? name : module_get_name(filter->p_module, false),
              (void *)filter );
     return filter;
 
 error:
     if( name != NULL )
-        msg_Err( chain->obj, "Failed to create %s '%s'", capability, name );
+        msg_Err( parent, "Failed to create %s '%s'", capability, name );
     else
-        msg_Err( chain->obj, "Failed to create %s", capability );
+        msg_Err( parent, "Failed to create %s", capability );
     es_format_Clean( &filter->fmt_out );
     es_format_Clean( &filter->fmt_in );
-    vlc_object_delete(filter);
+    vlc_object_release( filter );
     return NULL;
 }
 
 filter_t *filter_chain_AppendFilter( filter_chain_t *chain,
-    const char *name, const config_chain_t *cfg,
-    const es_format_t *fmt_out )
+    const char *name, config_chain_t *cfg,
+    const es_format_t *fmt_in, const es_format_t *fmt_out )
 {
     return filter_chain_AppendInner( chain, name, chain->filter_cap, cfg,
-                                     fmt_out );
+                                     fmt_in, fmt_out );
 }
 
 int filter_chain_AppendConverter( filter_chain_t *chain,
-    const es_format_t *fmt_out )
+    const es_format_t *fmt_in, const es_format_t *fmt_out )
 {
     return filter_chain_AppendInner( chain, NULL, chain->conv_cap, NULL,
-                                     fmt_out ) != NULL ? 0 : -1;
+                                     fmt_in, fmt_out ) != NULL ? 0 : -1;
 }
 
 void filter_chain_DeleteFilter( filter_chain_t *chain, filter_t *filter )
 {
+    vlc_object_t *obj = chain->callbacks.sys;
     chained_filter_t *chained = (chained_filter_t *)filter;
 
     /* Remove it from the chain */
@@ -328,22 +301,23 @@ void filter_chain_DeleteFilter( filter_chain_t *chain, filter_t *filter )
         chain->last = chained->prev;
     }
 
-    filter_Close( filter );
     module_unneed( filter, filter->p_module );
 
-    msg_Dbg( chain->obj, "Filter %p removed from chain", (void *)filter );
-    FilterDeletePictures( &chained->pending );
+    msg_Dbg( obj, "Filter %p removed from chain", (void *)filter );
+    FilterDeletePictures( chained->pending );
 
+    free( chained->mouse );
     es_format_Clean( &filter->fmt_out );
     es_format_Clean( &filter->fmt_in );
 
-    vlc_object_delete(filter);
-    /* FIXME: check fmt_in/fmt_out consistency */
+    vlc_object_release( filter );
+    /* FIXME: check fmt_in/fmt_out consitency */
 }
 
 
 int filter_chain_AppendFromString( filter_chain_t *chain, const char *str )
 {
+    vlc_object_t *obj = chain->callbacks.sys;
     char *buf = NULL;
     int ret = 0;
 
@@ -358,13 +332,14 @@ int filter_chain_AppendFromString( filter_chain_t *chain, const char *str )
         free( buf );
         buf = next;
 
-        filter_t *filter = filter_chain_AppendFilter( chain, name, cfg, NULL );
+        filter_t *filter = filter_chain_AppendFilter( chain, name, cfg,
+                                                      NULL, NULL );
         if( cfg )
             config_ChainDestroy( cfg );
 
         if( filter == NULL )
         {
-            msg_Err( chain->obj, "Failed to append '%s' to chain", name );
+            msg_Err( obj, "Failed to append '%s' to chain", name );
             free( name );
             goto error;
         }
@@ -403,8 +378,12 @@ bool filter_chain_IsEmpty(const filter_chain_t *chain)
     return chain->first == NULL;
 }
 
-const es_format_t *filter_chain_GetFmtOut( const filter_chain_t *p_chain )
+const es_format_t *filter_chain_GetFmtOut( filter_chain_t *p_chain )
 {
+
+    if( p_chain->b_allow_fmt_out_change )
+        return &p_chain->fmt_out;
+
     if( p_chain->last != NULL )
         return &p_chain->last->filter.fmt_out;
 
@@ -412,30 +391,21 @@ const es_format_t *filter_chain_GetFmtOut( const filter_chain_t *p_chain )
     return &p_chain->fmt_out;
 }
 
-vlc_video_context *filter_chain_GetVideoCtxOut(const filter_chain_t *p_chain)
-{
-    if( p_chain->last != NULL )
-        return p_chain->last->filter.vctx_out;
-
-    /* No filter was added, the filter chain has no effect, make sure the chromas are compatible */
-    assert(p_chain->fmt_in.video.i_chroma == p_chain->fmt_out.video.i_chroma);
-    return p_chain->vctx_in;
-}
-
 static picture_t *FilterChainVideoFilter( chained_filter_t *f, picture_t *p_pic )
 {
     for( ; f != NULL; f = f->next )
     {
         filter_t *p_filter = &f->filter;
-        p_pic = p_filter->ops->filter_video( p_filter, p_pic );
+        p_pic = p_filter->pf_video_filter( p_filter, p_pic );
         if( !p_pic )
             break;
-        if( !vlc_picture_chain_IsEmpty( &f->pending ) )
+        if( f->pending )
         {
             msg_Warn( p_filter, "dropping pictures" );
-            FilterDeletePictures( &f->pending );
+            FilterDeletePictures( f->pending );
         }
-        f->pending = picture_GetAndResetChain( p_pic );
+        f->pending = p_pic->p_next;
+        p_pic->p_next = NULL;
     }
     return p_pic;
 }
@@ -450,9 +420,11 @@ picture_t *filter_chain_VideoFilter( filter_chain_t *p_chain, picture_t *p_pic )
     }
     for( chained_filter_t *b = p_chain->last; b != NULL; b = b->prev )
     {
-        if( vlc_picture_chain_IsEmpty( &b->pending ) )
+        p_pic = b->pending;
+        if( !p_pic )
             continue;
-        p_pic = vlc_picture_chain_PopFront( &b->pending );
+        b->pending = p_pic->p_next;
+        p_pic->p_next = NULL;
 
         p_pic = FilterChainVideoFilter( b->next, p_pic );
         if( p_pic )
@@ -467,7 +439,8 @@ void filter_chain_VideoFlush( filter_chain_t *p_chain )
     {
         filter_t *p_filter = &f->filter;
 
-        FilterDeletePictures( &f->pending );
+        FilterDeletePictures( f->pending );
+        f->pending = NULL;
 
         filter_Flush( p_filter );
     }
@@ -479,7 +452,7 @@ void filter_chain_SubSource( filter_chain_t *p_chain, spu_t *spu,
     for( chained_filter_t *f = p_chain->first; f != NULL; f = f->next )
     {
         filter_t *p_filter = &f->filter;
-        subpicture_t *p_subpic = p_filter->ops->source_sub( p_filter, display_date );
+        subpicture_t *p_subpic = p_filter->pf_sub_source( p_filter, display_date );
         if( p_subpic )
             spu_PutSubpicture( spu, p_subpic );
     }
@@ -491,7 +464,7 @@ subpicture_t *filter_chain_SubFilter( filter_chain_t *p_chain, subpicture_t *p_s
     {
         filter_t *p_filter = &f->filter;
 
-        p_subpic = p_filter->ops->filter_sub( p_filter, p_subpic );
+        p_subpic = p_filter->pf_sub_filter( p_filter, p_subpic );
 
         if( !p_subpic )
             break;
@@ -506,14 +479,15 @@ int filter_chain_MouseFilter( filter_chain_t *p_chain, vlc_mouse_t *p_dst, const
     for( chained_filter_t *f = p_chain->last; f != NULL; f = f->prev )
     {
         filter_t *p_filter = &f->filter;
+        vlc_mouse_t *p_mouse = f->mouse;
 
-        if( p_filter->ops->video_mouse )
+        if( p_filter->pf_video_mouse && p_mouse )
         {
-            vlc_mouse_t old = f->mouse;
-            vlc_mouse_t filtered = current;
+            vlc_mouse_t old = *p_mouse;
+            vlc_mouse_t filtered;
 
-            f->mouse = current;
-            if( p_filter->ops->video_mouse( p_filter, &filtered, &old) )
+            *p_mouse = current;
+            if( p_filter->pf_video_mouse( p_filter, &filtered, &old, &current ) )
                 return VLC_EGENERIC;
             current = filtered;
         }
@@ -523,12 +497,33 @@ int filter_chain_MouseFilter( filter_chain_t *p_chain, vlc_mouse_t *p_dst, const
     return VLC_SUCCESS;
 }
 
-/* Helpers */
-static void FilterDeletePictures( vlc_picture_chain_t *pictures )
+int filter_chain_MouseEvent( filter_chain_t *p_chain,
+                             const vlc_mouse_t *p_mouse,
+                             const video_format_t *p_fmt )
 {
-    while( !vlc_picture_chain_IsEmpty( pictures ) )
+    for( chained_filter_t *f = p_chain->first; f != NULL; f = f->next )
     {
-        picture_t *next = vlc_picture_chain_PopFront( pictures );
-        picture_Release( next );
+        filter_t *p_filter = &f->filter;
+
+        if( p_filter->pf_sub_mouse )
+        {
+            vlc_mouse_t old = *f->mouse;
+            *f->mouse = *p_mouse;
+            if( p_filter->pf_sub_mouse( p_filter, &old, p_mouse, p_fmt ) )
+                return VLC_EGENERIC;
+        }
+    }
+
+    return VLC_SUCCESS;
+}
+
+/* Helpers */
+static void FilterDeletePictures( picture_t *picture )
+{
+    while( picture )
+    {
+        picture_t *next = picture->p_next;
+        picture_Release( picture );
+        picture = next;
     }
 }

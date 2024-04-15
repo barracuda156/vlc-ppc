@@ -153,7 +153,8 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
             psz_expected = "DVB-T";
         }
 
-        if( !strncmp( psz_access, "atsc", 4 ) &&
+        if( (!strncmp( psz_access, "usdigital", 9 ) ||
+             !strncmp( psz_access, "atsc", 4 ) ) &&
              (p_frontend->info.type != FE_ATSC) )
         {
             psz_expected = "ATSC";
@@ -183,7 +184,8 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
         else if( !strncmp( psz_access, "terrestrial", 11 ) ||
                  !strncmp( psz_access, "dvb-t", 5 ) )
             p_frontend->info.type = FE_OFDM;
-        else if( !strncmp( psz_access, "atsc", 4 ) )
+        else if( !strncmp( psz_access, "usdigital", 9 ) ||
+                 !strncmp( psz_access, "atsc", 4 ) )
             p_frontend->info.type = FE_ATSC;
     }
 
@@ -379,9 +381,9 @@ static int ScanParametersDvbS( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_pa
     char *psz_name = var_InheritString( p_access, "dvb-satellite" );
     if( psz_name )
     {
-        char *data_dir = config_GetSysPath(VLC_SYSDATA_DIR, "dvb/dvb-s");
+        char *data_dir = config_GetDataDir();
         if( !data_dir || -1 ==  asprintf( &p_scan->psz_scanlist_file,
-            "%s/%s", data_dir, psz_name ) )
+            "%s" DIR_SEP "dvb" DIR_SEP "dvb-s" DIR_SEP "%s", data_dir, psz_name ) )
         {
             p_scan->psz_scanlist_file = NULL;
         }
@@ -683,7 +685,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
     }
 
     /* Wait for at least 15 ms. */
-    vlc_tick_sleep(VLC_TICK_FROM_MS(15));
+    msleep(15000);
 
     i_val = var_GetInteger( p_access, "dvb-satno" );
     if( i_val > 0 && i_val < 5 )
@@ -711,7 +713,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
             return VLC_EGENERIC;
         }
 
-        vlc_tick_sleep(VLC_TICK_FROM_MS(15 + cmd.wait));
+        msleep(15000 + cmd.wait * 1000);
 
         /* A or B simple diseqc ("diseqc-compatible") */
         if( ioctl( p_sys->i_frontend_handle, FE_DISEQC_SEND_BURST,
@@ -722,7 +724,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
             return VLC_EGENERIC;
         }
 
-        vlc_tick_sleep(VLC_TICK_FROM_MS(15));
+        msleep(15000);
     }
 
     if( ioctl( p_sys->i_frontend_handle, FE_SET_TONE, fe_tone ) )
@@ -733,7 +735,7 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
         return VLC_EGENERIC;
     }
 
-    vlc_tick_sleep(VLC_TICK_FROM_MS(50));
+    msleep(50000);
     return 0;
 }
 

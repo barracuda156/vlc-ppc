@@ -2,6 +2,7 @@
  * directory.c : Use access readdir to output folder content to playlist
  *****************************************************************************
  * Copyright (C) 2014 VLC authors and VideoLAN
+ * $Id: 31a7cb7ecee5bea98580630a2ad31f7979d2567e $
  *
  * Authors: Julien 'Lta' BALLET <contact # lta . io >
  *
@@ -26,22 +27,41 @@
 
 #include <vlc_common.h>
 #include <vlc_demux.h>
-#include <vlc_input_item.h>
+#include <vlc_input.h>
 #include <vlc_plugin.h>
 
-static int ReadDir(demux_t *demux, input_item_node_t *node)
+static int Demux( demux_t *p_demux )
 {
-    return vlc_stream_ReadDir(demux->s, node);
+    input_item_t *p_input = input_GetItem( p_demux->p_input );
+    input_item_node_t *p_node = input_item_node_Create( p_input );
+
+    if( vlc_stream_ReadDir( p_demux->s, p_node ) )
+    {
+        msg_Warn( p_demux, "unable to read directory" );
+        input_item_node_Delete( p_node );
+        return VLC_EGENERIC;
+    }
+
+    if (es_out_Control(p_demux->out, ES_OUT_POST_SUBNODE, p_node))
+        input_item_node_Delete(p_node);
+
+    return VLC_SUCCESS;
 }
 
 static int Control(demux_t *demux, int query, va_list args)
 {
+    (void) demux;
     switch( query )
     {
-        case DEMUX_GET_META:
-        case DEMUX_GET_TYPE:
+        case DEMUX_IS_PLAYLIST:
         {
-            return vlc_stream_vaControl(demux->s, query, args);
+            bool *pb_bool = va_arg( args, bool * );
+            *pb_bool = true;
+            return VLC_SUCCESS;
+        }
+        case DEMUX_GET_META:
+        {
+            return vlc_stream_vaControl(demux->s, STREAM_GET_META, args);
         }
         case DEMUX_HAS_UNSUPPORTED_META:
         {
@@ -56,23 +76,23 @@ static int Import_Dir( vlc_object_t *p_this )
 {
     demux_t *p_demux = (demux_t *)p_this;
 
-    if( p_demux->s->pf_readdir == NULL )
+    if( vlc_stream_Control( p_demux->s, STREAM_IS_DIRECTORY ) )
         return VLC_EGENERIC;
-    if( p_demux->p_input_item == NULL )
+    if( p_demux->p_input == NULL )
         return VLC_ETIMEOUT;
 
-    p_demux->pf_readdir = ReadDir;
+    p_demux->pf_demux = Demux;
     p_demux->pf_control = Control;
-    assert(p_demux->pf_demux == NULL);
 
     return VLC_SUCCESS;
 }
 
 vlc_module_begin()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_DEMUX )
     set_shortname( N_("Directory") )
     set_description( N_("Directory import") )
     add_shortcut( "directory" )
     set_capability( "demux", 10 )
-    set_callback( Import_Dir )
+    set_callbacks( Import_Dir, NULL )
 vlc_module_end()

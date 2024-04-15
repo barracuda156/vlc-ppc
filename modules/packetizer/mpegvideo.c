@@ -2,6 +2,7 @@
  * mpegvideo.c: parse and packetize an MPEG1/2 video stream
  *****************************************************************************
  * Copyright (C) 2001-2006 VLC authors and VideoLAN
+ * $Id: 00b292a8361f91ea9deb74524bad58e7daef755e $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Eric Petit <titer@videolan.org>
@@ -50,11 +51,9 @@
 #include <vlc_block.h>
 #include <vlc_codec.h>
 #include <vlc_block_helper.h>
-#include "mpegvideo.h"
 #include "../codec/cc.h"
 #include "packetizer_helper.h"
 #include "startcode_helper.h"
-#include "iso_color_tables.h"
 
 #include <limits.h>
 
@@ -70,6 +69,7 @@ static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
 vlc_module_begin ()
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_PACKETIZER )
     set_description( N_("MPEG-I/II video packetizer") )
     set_shortname( N_("MPEG Video") )
@@ -77,7 +77,7 @@ vlc_module_begin ()
     set_callbacks( Open, Close )
 
     add_bool( "packetizer-mpegvideo-sync-iframe", false, SYNC_INTRAFRAME_TEXT,
-              SYNC_INTRAFRAME_LONGTEXT )
+              SYNC_INTRAFRAME_LONGTEXT, true )
 vlc_module_end ()
 
 enum mpeg_startcode_e
@@ -113,7 +113,7 @@ enum extension_start_code_identifier_e
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Input properties
@@ -136,19 +136,12 @@ typedef struct
     date_t  prev_iframe_dts;
 
     /* Sequence properties */
-    uint16_t i_h_size_value;
-    uint16_t i_v_size_value;
-    uint8_t  i_aspect_ratio_info;
-    uint8_t  i_frame_rate_value;
-    uint32_t i_bitratelower18;
-    /* Extended Sequence properties (MPEG2) */
-    uint8_t  i_h_size_ext;
-    uint8_t  i_v_size_ext;
-    uint16_t i_bitrateupper12;
+    unsigned    i_frame_rate;
+    unsigned    i_frame_rate_base;
     bool  b_seq_progressive;
     bool  b_low_delay;
-    uint8_t i_frame_rate_ext_n;
-    uint8_t i_frame_rate_ext_d;
+    int         i_aspect_ratio_info;
+    bool  b_inited;
 
     /* Picture properties */
     int i_temporal_ref;
@@ -180,7 +173,7 @@ typedef struct
     vlc_tick_t i_cc_pts;
     vlc_tick_t i_cc_dts;
     cc_data_t cc;
-} decoder_sys_t;
+};
 
 static block_t *Packetize( decoder_t *, block_t ** );
 static void PacketizeFlush( decoder_t * );
@@ -203,8 +196,7 @@ static int Open( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_MPGV &&
-        p_dec->fmt_in->i_codec != VLC_CODEC_MP2V )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_MPGV )
         return VLC_EGENERIC;
 
     p_dec->p_sys = p_sys = malloc( sizeof( decoder_sys_t ) );
@@ -213,7 +205,7 @@ static int Open( vlc_object_t *p_this )
     memset( p_dec->p_sys, 0, sizeof( decoder_sys_t ) );
 
     p_dec->fmt_out.i_codec = VLC_CODEC_MPGV;
-    p_dec->fmt_out.i_original_fourcc = p_dec->fmt_in->i_original_fourcc;
+    p_dec->fmt_out.i_original_fourcc = p_dec->fmt_in.i_original_fourcc;
 
     /* Misc init */
     packetizer_Init( &p_sys->packetizer,
@@ -230,33 +222,15 @@ static int Open( vlc_object_t *p_this )
 
     p_sys->i_dts =
     p_sys->i_pts = VLC_TICK_INVALID;
+    date_Init( &p_sys->dts, 30000, 1001 );
+    date_Set( &p_sys->dts, VLC_TICK_INVALID );
+    date_Init( &p_sys->prev_iframe_dts, 30000, 1001 );
+    date_Set( &p_sys->prev_iframe_dts, VLC_TICK_INVALID );
 
-    unsigned num, den;
-    if( p_dec->fmt_in->video.i_frame_rate && p_dec->fmt_in->video.i_frame_rate_base )
-    {
-        num = p_dec->fmt_in->video.i_frame_rate;
-        den = p_dec->fmt_in->video.i_frame_rate_base;
-    }
-    else
-    {
-        num = 30000;
-        den = 1001;
-    }
-    date_Init( &p_sys->dts, 2 * num, den ); /* fields / den */
-    date_Init( &p_sys->prev_iframe_dts, 2 * num, den );
-
-    p_sys->i_h_size_value = 0;
-    p_sys->i_v_size_value = 0;
-    p_sys->i_aspect_ratio_info = 0;
-    p_sys->i_frame_rate_value = 0;
-    p_sys->i_bitratelower18 = 0;
-    p_sys->i_bitrateupper12 = 0;
-    p_sys->i_h_size_ext = 0;
-    p_sys->i_v_size_ext = 0;
+    p_sys->i_frame_rate = 2 * 30000;
+    p_sys->i_frame_rate_base = 1001;
     p_sys->b_seq_progressive = true;
-    p_sys->b_low_delay = false;
-    p_sys->i_frame_rate_ext_n = 0;
-    p_sys->i_frame_rate_ext_d = 0;
+    p_sys->b_low_delay = true;
     p_sys->i_seq_old = 0;
 
     p_sys->i_temporal_ref = 0;
@@ -266,6 +240,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->i_top_field_first = 0;
     p_sys->i_repeat_first_field = 0;
     p_sys->i_progressive_frame = 0;
+    p_sys->b_inited = 0;
 
     p_sys->i_last_ref_pts = VLC_TICK_INVALID;
     p_sys->b_second_field = 0;
@@ -364,77 +339,6 @@ static block_t *GetCc( decoder_t *p_dec, decoder_cc_desc_t *p_desc )
 }
 
 /*****************************************************************************
- * ProcessSequenceParameters
- *****************************************************************************/
-static void ProcessSequenceParameters( decoder_t *p_dec )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-    video_format_t *fmt = &p_dec->fmt_out.video;
-
-    /* Picture size */
-    fmt->i_visible_width = p_sys->i_h_size_value + (p_sys->i_h_size_ext << 14);
-    fmt->i_width = (fmt->i_visible_width + 0x0F) & ~0x0F;
-    fmt->i_visible_height = p_sys->i_v_size_value + (p_sys->i_v_size_ext << 14);
-    if( p_sys->b_seq_progressive )
-        fmt->i_height = (fmt->i_visible_height + 0x0F) & ~0x0F;
-    else
-        fmt->i_height = (fmt->i_visible_height + 0x1F) & ~0x1F;
-
-    /* Bitrate */
-    if( p_dec->fmt_out.i_bitrate == 0 )
-        p_dec->fmt_out.i_bitrate = ((p_sys->i_bitrateupper12 << 18) |
-                                    p_sys->i_bitratelower18) * 400;
-
-    /* Frame Rate */
-
-    /* Only of not specified by container */
-    if ( !p_dec->fmt_in->video.i_frame_rate ||
-         !p_dec->fmt_in->video.i_frame_rate_base )
-    {
-        static const int code_to_frame_rate[16][2] =
-        {
-            { 1, 1 },  /* invalid */
-            { 24000, 1001 }, { 24, 1 }, { 25, 1 },       { 30000, 1001 },
-            { 30, 1 },       { 50, 1 }, { 60000, 1001 }, { 60, 1 },
-            /* Unofficial 15fps from Xing*/
-            { 15, 1 },
-            /* Unofficial economy rates from libmpeg3 */
-            { 5, 1 }, { 10, 1 }, { 12, 1 }, { 15, 1 },
-            { 1, 1 },  { 1, 1 }  /* invalid */
-        };
-
-        /* frames / den */
-        unsigned num = code_to_frame_rate[p_sys->i_frame_rate_value][0] << 1;
-        unsigned den = code_to_frame_rate[p_sys->i_frame_rate_value][1];
-        if( p_sys->i_frame_rate_ext_n || p_sys->i_frame_rate_ext_d )
-        {
-            vlc_ureduce( &num, &den,
-                         num * (1 + p_sys->i_frame_rate_ext_n),
-                         den * (1 + p_sys->i_frame_rate_ext_d),
-                         CLOCK_FREQ );
-        }
-
-        if( num && den ) /* fields / den */
-        {
-            date_Change( &p_sys->dts, num, den );
-            date_Change( &p_sys->prev_iframe_dts, num, den );
-        }
-    }
-
-    if( fmt->i_frame_rate != (p_sys->dts.i_divider_num >> 1) ||
-        fmt->i_frame_rate_base != p_sys->dts.i_divider_den )
-    {
-        fmt->i_frame_rate = p_sys->dts.i_divider_num >> 1;
-        fmt->i_frame_rate_base = p_sys->dts.i_divider_den;
-
-        msg_Dbg( p_dec, "size %ux%u/%ux%u fps %u:%u",
-             fmt->i_visible_width, fmt->i_visible_height,
-             fmt->i_width, fmt->i_height,
-             fmt->i_frame_rate, fmt->i_frame_rate_base);
-    }
-}
-
-/*****************************************************************************
  * OutputFrame: assemble and tag frame
  *****************************************************************************/
 static block_t *OutputFrame( decoder_t *p_dec )
@@ -444,8 +348,6 @@ static block_t *OutputFrame( decoder_t *p_dec )
 
     if( !p_sys->p_frame )
         return NULL;
-
-    ProcessSequenceParameters( p_dec );
 
     p_pic = block_ChainGather( p_sys->p_frame );
     if( p_pic == NULL )
@@ -519,7 +421,7 @@ static block_t *OutputFrame( decoder_t *p_dec )
      * and only use first dts as it does not monotonically increase
      * This will NOT work with frame repeats and such, as we would need to fully
      * fill the DPB to get accurate pts timings. */
-    if( unlikely( p_dec->fmt_in->i_original_fourcc == VLC_FOURCC( 'D','V','R',' ') ) )
+    if( unlikely( p_dec->fmt_in.i_original_fourcc == VLC_FOURCC( 'D','V','R',' ') ) )
     {
         const bool b_first_xmited = (p_sys->i_prev_temporal_ref != p_sys->i_temporal_ref );
 
@@ -617,8 +519,8 @@ static block_t *OutputFrame( decoder_t *p_dec )
     }
 
 #if 0
-    msg_Dbg( p_dec, "pic: type=%d struct=%d ref=%d nf=%d tff=%d dts=%"PRId64" ptsdiff=%"PRId64" len=%"PRId64,
-             p_sys->i_picture_type, p_sys->i_picture_structure, p_sys->i_temporal_ref, i_num_fields,
+    msg_Dbg( p_dec, "pic: type=%d ref=%d nf=%d tff=%d dts=%"PRId64" ptsdiff=%"PRId64" len=%"PRId64,
+             p_sys->i_picture_structure, p_sys->i_temporal_ref, i_num_fields,
              p_sys->i_top_field_first,
              p_pic->i_dts , (p_pic->i_pts != VLC_TICK_INVALID) ? p_pic->i_pts - p_pic->i_dts : 0, p_pic->i_length );
 #endif
@@ -650,9 +552,9 @@ static block_t *OutputFrame( decoder_t *p_dec )
 /*****************************************************************************
  * Helpers:
  *****************************************************************************/
-static void PacketizeReset( void *p_private, bool b_flush )
+static void PacketizeReset( void *p_private, bool b_broken )
 {
-    VLC_UNUSED(b_flush);
+    VLC_UNUSED(b_broken);
     decoder_t *p_dec = p_private;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -687,8 +589,6 @@ static block_t *PacketizeParse( void *p_private, bool *pb_ts_used, block_t *p_bl
         p_block->i_flags |= p_sys->i_next_block_flags;
         p_sys->i_next_block_flags = 0;
     }
-    else *pb_ts_used = false; /* only clear up if output */
-
     return p_block;
 }
 
@@ -728,8 +628,8 @@ static int PacketizeValidate( void *p_private, block_t *p_au )
 
     /* We've just started the stream, wait for the first PTS.
      * We discard here so we can still get the sequence header. */
-    if( unlikely( p_sys->i_dts == VLC_TICK_INVALID && p_sys->i_pts == VLC_TICK_INVALID &&
-        date_Get( &p_sys->dts ) == VLC_TICK_INVALID ))
+    if( unlikely( p_sys->i_dts <= VLC_TICK_INVALID && p_sys->i_pts <= VLC_TICK_INVALID &&
+        date_Get( &p_sys->dts ) <= VLC_TICK_INVALID ))
     {
         msg_Dbg( p_dec, "need a starting pts/dts" );
         return VLC_EGENERIC;
@@ -737,7 +637,7 @@ static int PacketizeValidate( void *p_private, block_t *p_au )
 
     /* When starting the stream we can have the first frame with
      * an invalid DTS (i_interpolated_pts is initialized to VLC_TICK_INVALID) */
-    if( unlikely( p_au->i_dts == VLC_TICK_INVALID ) )
+    if( unlikely( p_au->i_dts <= VLC_TICK_INVALID ) )
         p_au->i_dts = p_au->i_pts;
 
     return VLC_SUCCESS;
@@ -798,25 +698,34 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
     if( startcode == GROUP_STARTCODE )
     {
         /* Group start code */
-        unsigned i_fps = p_sys->dts.i_divider_num / (p_sys->dts.i_divider_den << 1);
-        if( p_sys->p_seq && p_sys->i_seq_old > i_fps )
+        if( p_sys->p_seq &&
+            p_sys->i_seq_old > p_sys->i_frame_rate/p_sys->i_frame_rate_base )
         {
             /* Useful for mpeg1: repeat sequence header every second */
-            const block_t * params[2] = { p_sys->p_seq, p_sys->p_ext };
-            for( int i=0; i<2; i++ )
+            block_ChainLastAppend( &p_sys->pp_last, block_Duplicate( p_sys->p_seq ) );
+            if( p_sys->p_ext )
             {
-                if( params[i] == NULL )
-                    break;
-                block_t *p_dup = block_Duplicate( params[i] );
-                if( p_dup )
-                    block_ChainLastAppend( &p_sys->pp_last, p_dup );
+                block_ChainLastAppend( &p_sys->pp_last, block_Duplicate( p_sys->p_ext ) );
             }
+
             p_sys->i_seq_old = 0;
         }
     }
-    else if( startcode == SEQUENCE_HEADER_STARTCODE && p_frag->i_buffer >= 11 )
+    else if( startcode == SEQUENCE_HEADER_STARTCODE && p_frag->i_buffer >= 8 )
     {
         /* Sequence header code */
+        static const int code_to_frame_rate[16][2] =
+        {
+            { 1, 1 },  /* invalid */
+            { 24000, 1001 }, { 24, 1 }, { 25, 1 },       { 30000, 1001 },
+            { 30, 1 },       { 50, 1 }, { 60000, 1001 }, { 60, 1 },
+            /* Unofficial 15fps from Xing*/
+            { 15, 1001 },
+            /* Unofficial economy rates from libmpeg3 */
+            { 5000, 1001 }, { 1000, 1001 }, { 12000, 1001 }, { 15000, 1001 },
+            { 1, 1 },  { 1, 1 }  /* invalid */
+        };
+
         if( p_sys->p_seq ) block_Release( p_sys->p_seq );
         if( p_sys->p_ext ) block_Release( p_sys->p_ext );
 
@@ -824,17 +733,45 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
         p_sys->i_seq_old = 0;
         p_sys->p_ext = NULL;
 
-        p_sys->i_h_size_value = ( p_frag->p_buffer[4] << 4)|(p_frag->p_buffer[5] >> 4 );
-        p_sys->i_v_size_value = ( (p_frag->p_buffer[5]&0x0f) << 8 )|p_frag->p_buffer[6];
+        p_dec->fmt_out.video.i_visible_width =
+            ( p_frag->p_buffer[4] << 4)|(p_frag->p_buffer[5] >> 4 );
+        p_dec->fmt_out.video.i_width = (p_dec->fmt_out.video.i_visible_width + 0x0F) & ~0x0F;
+        p_dec->fmt_out.video.i_visible_height =
+            ( (p_frag->p_buffer[5]&0x0f) << 8 )|p_frag->p_buffer[6];
+        if( p_sys->b_seq_progressive )
+            p_dec->fmt_out.video.i_height = (p_dec->fmt_out.video.i_visible_height + 0x0F) & ~0x0F;
+        else
+            p_dec->fmt_out.video.i_height = (p_dec->fmt_out.video.i_visible_height + 0x1F) & ~0x1F;
         p_sys->i_aspect_ratio_info = p_frag->p_buffer[7] >> 4;
 
         /* TODO: MPEG1 aspect ratio */
 
-        p_sys->i_frame_rate_value = p_frag->p_buffer[7] & 0x0f;
+        p_sys->i_frame_rate = code_to_frame_rate[p_frag->p_buffer[7]&0x0f][0];
+        p_sys->i_frame_rate_base =
+            code_to_frame_rate[p_frag->p_buffer[7]&0x0f][1];
 
-        p_sys->i_bitratelower18 = (p_frag->p_buffer[ 8] << 12) |
-                                  (p_frag->p_buffer[ 9] <<  4) |
-                                  (p_frag->p_buffer[10] & 0x0F);
+        if( ( p_sys->i_frame_rate != p_dec->fmt_out.video.i_frame_rate ||
+              p_dec->fmt_out.video.i_frame_rate_base != p_sys->i_frame_rate_base ) &&
+            p_sys->i_frame_rate && p_sys->i_frame_rate_base && p_sys->i_frame_rate <= UINT_MAX/2 )
+        {
+            date_Change( &p_sys->dts, 2 * p_sys->i_frame_rate, p_sys->i_frame_rate_base );
+            date_Change( &p_sys->prev_iframe_dts, 2 * p_sys->i_frame_rate, p_sys->i_frame_rate_base );
+        }
+        p_dec->fmt_out.video.i_frame_rate = p_sys->i_frame_rate;
+        p_dec->fmt_out.video.i_frame_rate_base = p_sys->i_frame_rate_base;
+
+        p_sys->b_seq_progressive = true;
+        p_sys->b_low_delay = true;
+
+
+        if ( !p_sys->b_inited )
+        {
+            msg_Dbg( p_dec, "size %dx%d/%dx%d fps=%.3f",
+                 p_dec->fmt_out.video.i_visible_width, p_dec->fmt_out.video.i_visible_height,
+                 p_dec->fmt_out.video.i_width, p_dec->fmt_out.video.i_height,
+                 p_sys->i_frame_rate / (float)(p_sys->i_frame_rate_base ? p_sys->i_frame_rate_base : 1) );
+            p_sys->b_inited = 1;
+        }
     }
     else if( startcode == EXTENSION_STARTCODE && p_frag->i_buffer > 4 )
     {
@@ -852,70 +789,17 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
                 {0,1}, {0,1}
             };
 #endif
+
             /* sequence extension */
             if( p_sys->p_ext) block_Release( p_sys->p_ext );
             p_sys->p_ext = block_Duplicate( p_frag );
 
             if( p_frag->i_buffer >= 10 )
             {
-                /* profile and level indication */
-                if( p_dec->fmt_out.i_profile == -1 )
-                {
-                    const uint16_t profilelevel = ((p_frag->p_buffer[4] << 4) |
-                                                   (p_frag->p_buffer[5] >> 4)) & 0xFF;
-                    int i_profile = -1;
-                    int i_level = -1;
-                    switch( profilelevel )
-                    {
-                        case 0x82:
-                            i_profile = PROFILE_MPEG2_422;
-                            i_level = LEVEL_MPEG2_HIGH;
-                            break;
-                        case 0x85:
-                            i_profile = PROFILE_MPEG2_422;
-                            i_level = LEVEL_MPEG2_MAIN;
-                            break;
-                        case 0x8A:
-                            i_profile = PROFILE_MPEG2_MULTIVIEW;
-                            i_level = LEVEL_MPEG2_HIGH;
-                            break;
-                        case 0x8B:
-                            i_profile = PROFILE_MPEG2_MULTIVIEW;
-                            i_level = LEVEL_MPEG2_HIGH_1440;
-                            break;
-                        case 0x8D:
-                            i_profile = PROFILE_MPEG2_MULTIVIEW;
-                            i_level = LEVEL_MPEG2_MAIN;
-                            break;
-                        case 0x8E:
-                            i_profile = PROFILE_MPEG2_MULTIVIEW;
-                            i_level = LEVEL_MPEG2_LOW;
-                            break;
-                        default:
-                            if( (profilelevel & 0x80) == 0 ) /* escape bit */
-                            {
-                                i_profile = (profilelevel >> 4) & 0x07;
-                                i_level = profilelevel & 0x0F;
-                            }
-                            break;
-                    }
-                    p_dec->fmt_out.i_profile = i_profile;
-                    p_dec->fmt_out.i_level = i_level;
-                }
-
                 p_sys->b_seq_progressive =
                     p_frag->p_buffer[5]&0x08 ? true : false;
-
-                p_sys->i_h_size_ext = ((p_frag->p_buffer[5] & 0x01) << 1) | (p_frag->p_buffer[6] >> 7);
-                p_sys->i_v_size_ext = (p_frag->p_buffer[6] >> 5) & 0x03;
-
-                p_sys->i_bitrateupper12 = ((p_frag->p_buffer[6] & 0x1F) << 8) | (p_frag->p_buffer[7] >> 1);
-
                 p_sys->b_low_delay =
                     p_frag->p_buffer[9]&0x80 ? true : false;
-
-                p_sys->i_frame_rate_ext_n = (p_frag->p_buffer[9] >> 5) & 0x03;
-                p_sys->i_frame_rate_ext_d = p_frag->p_buffer[9] & 0x1F;
             }
 
             /* Do not set aspect ratio : in case we're transcoding,
@@ -950,12 +834,56 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
 
             if( contains_color_description && p_frag->i_buffer > 11 )
             {
-                p_dec->fmt_out.video.primaries =
-                        iso_23001_8_cp_to_vlc_primaries( p_frag->p_buffer[5] );
-                p_dec->fmt_out.video.transfer =
-                        iso_23001_8_tc_to_vlc_xfer( p_frag->p_buffer[6] );
-                p_dec->fmt_out.video.space =
-                        iso_23001_8_mc_to_vlc_coeffs( p_frag->p_buffer[7] );
+                uint8_t color_primaries = p_frag->p_buffer[5];
+                uint8_t color_transfer  = p_frag->p_buffer[6];
+                uint8_t color_matrix    = p_frag->p_buffer[7];
+                switch( color_primaries )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT709;
+                        break;
+                    case 4: /* BT.470M    */
+                    case 5: /* BT.470BG   */
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT601_625;
+                        break;
+                    case 6: /* SMPTE 170M */
+                    case 7: /* SMPTE 240M */
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT601_525;
+                        break;
+                    default:
+                        break;
+                }
+                switch( color_transfer )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_BT709;
+                        break;
+                    case 4: /* BT.470M assumed gamma 2.2  */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_SRGB;
+                        break;
+                    case 5: /* BT.470BG */
+                    case 6: /* SMPTE 170M */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_BT2020;
+                        break;
+                    case 8: /* Linear */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_LINEAR;
+                        break;
+                    default:
+                        break;
+                }
+                switch( color_matrix )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.space = COLOR_SPACE_BT709;
+                        break;
+                    case 5: /* BT.470BG */
+                    case 6: /* SMPTE 170 M */
+                    case 7: /* SMPTE 240 M */
+                        p_dec->fmt_out.video.space = COLOR_SPACE_BT601;
+                        break;
+                    default:
+                        break;
+                }
             }
 
         }
@@ -965,7 +893,7 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
         /* Frame Packing extension identifier as H262 2012 Amd4 Annex L */
         if( !memcmp( &p_frag->p_buffer[4], "JP3D", 4 ) &&
             p_frag->i_buffer > 11 && p_frag->p_buffer[8] == 0x03 &&
-            p_dec->fmt_in->video.multiview_mode == MULTIVIEW_2D )
+            p_dec->fmt_in.video.multiview_mode == MULTIVIEW_2D )
         {
             video_multiview_mode_t mode;
             switch( p_frag->p_buffer[9] & 0x7F )
@@ -994,18 +922,6 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
             p_sys->i_temporal_ref =
                 ( p_frag->p_buffer[4] << 2 )|(p_frag->p_buffer[5] >> 6);
             p_sys->i_picture_type = ( p_frag->p_buffer[5] >> 3 ) & 0x03;
-        }
-
-        /* Check if we can use timestamps */
-        if(p_frag->i_dts != VLC_TICK_INVALID &&
-           p_frag->i_dts <= p_sys->i_dts)
-        {
-            date_t next = p_sys->dts;
-            date_Set(&next, p_frag->i_dts);
-            /* Because the prev timestamp could have been repeated though
-             * helper, clear up if we are within 2 frames backward */
-            if(date_Increment(&next, 4) >= p_sys->i_dts)
-                p_frag->i_dts = p_frag->i_pts = VLC_TICK_INVALID; /* do not reuse */
         }
 
         p_sys->i_dts = p_frag->i_dts;

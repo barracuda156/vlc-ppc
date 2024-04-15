@@ -1,34 +1,23 @@
 # libplacebo
 
-PLACEBO_VERSION := 5.229.1
-PLACEBO_ARCHIVE = libplacebo-v$(PLACEBO_VERSION).tar.gz
-PLACEBO_URL := https://code.videolan.org/videolan/libplacebo/-/archive/v$(PLACEBO_VERSION)/$(PLACEBO_ARCHIVE)
+PLACEBO_VERSION := 0.2.1
+PLACEBO_URL := https://github.com/haasn/libplacebo/archive/v$(PLACEBO_VERSION).tar.gz
+PLACEBO_ARCHIVE = libplacebo-$(PLACEBO_VERSION).tar.gz
 
-PLACEBOCONF := -Dpython-path=$(PYTHON_VENV)/bin/python3 \
-	-Dvulkan-registry=${PREFIX}/share/vulkan/registry/vk.xml \
-	-Dglslang=enabled \
-	-Dshaderc=disabled \
-	-Ddemos=false \
-	-Dtests=false
-
-DEPS_libplacebo = glad $(DEPS_glad) jinja $(DEPS_jinja) glslang $(DEPS_glslang) vulkan-headers $(DEPS_vulkan-headers)
-ifndef HAVE_WINSTORE
-PKGS += libplacebo
+LIBPLACEBO_CFLAGS   := $(CFLAGS)
+LIBPLACEBO_CXXFLAGS := $(CXXFLAGS)
+ifdef HAVE_WIN32
+LIBPLACEBO_WIN32 = HAVE_WIN32=1
 endif
-ifeq ($(call need_pkg,"libplacebo >= 4.157"),)
+
+PKGS += libplacebo
+ifeq ($(call need_pkg,"libplacebo"),)
 PKGS_FOUND += libplacebo
 endif
 
-ifdef HAVE_WIN32
-DEPS_libplacebo += winpthreads $(DEPS_winpthreads)
-endif
-
-# We don't want vulkan on darwin for now
-ifndef HAVE_DARWIN_OS
-ifndef HAVE_EMSCRIPTEN
-DEPS_libplacebo += vulkan-loader $(DEPS_vulkan-loader)
-endif
-endif
+PLACEBOCONF := --prefix="$(PREFIX)" \
+	--libdir lib \
+	--default-library static
 
 $(TARBALLS)/$(PLACEBO_ARCHIVE):
 	$(call download_pkg,$(PLACEBO_URL),libplacebo)
@@ -37,15 +26,13 @@ $(TARBALLS)/$(PLACEBO_ARCHIVE):
 
 libplacebo: $(PLACEBO_ARCHIVE) .sum-libplacebo
 	$(UNPACK)
-	$(APPLY) $(SRC)/libplacebo/0001-vulkan-meson-add-the-clang-gcc-C-runtime.patch
-	$(APPLY) $(SRC)/libplacebo/0001-meson-allow-overriding-python3-path.patch
+	$(APPLY) $(SRC)/libplacebo/0001-build-use-a-Makefile.patch
 	$(MOVE)
 
-.libplacebo: libplacebo crossfile.meson .python-venv
-	$(MESONCLEAN)
-	$(HOSTVARS_MESON) $(MESON) $(PLACEBOCONF)
-	+$(MESONBUILD)
-# Work-around for full paths to static libraries, which libtool does not like
-# See https://github.com/mesonbuild/meson/issues/5479
-	(cd $(UNPACK_DIR) && $(SRC_BUILT)/pkg-rewrite-absolute.py -i "$(PREFIX)/lib/pkgconfig/libplacebo.pc")
+.libplacebo: libplacebo
+	cd $< && rm -rf ./build
+# we don't want to depend on meson/ninja for VLC 3.0
+#cd $< && $(HOSTVARS) meson $(PLACEBOCONF) build
+#cd $< && cd build && ninja install
+	cd $< && $(HOSTVARS_PIC) PREFIX=$(PREFIX) $(LIBPLACEBO_WIN32) CFLAGS="$(LIBPLACEBO_CFLAGS)" CXXFLAGS="$(LIBPLACEBO_CXXFLAGS)" make install
 	touch $@

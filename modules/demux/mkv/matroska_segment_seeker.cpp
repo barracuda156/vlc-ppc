@@ -2,6 +2,7 @@
  * matroska_segment.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id$
  *
  * Authors: Filip Roséen <filip@videolabs.io>
  *
@@ -48,8 +49,6 @@ namespace {
     template<class It> It next_( It it ) { return ++it; }
 }
 
-namespace mkv {
-
 SegmentSeeker::cluster_positions_t::iterator
 SegmentSeeker::add_cluster_position( fptr_t fpos )
 {
@@ -67,7 +66,7 @@ SegmentSeeker::add_cluster( KaxCluster * const p_cluster )
 {
     Cluster cinfo = {
         /* fpos     */ p_cluster->GetElementPosition(),
-        /* pts      */ vlc_tick_t( VLC_TICK_FROM_NS( p_cluster->GlobalTimecode() ) ),
+        /* pts      */ vlc_tick_t( p_cluster->GlobalTimecode() / INT64_C( 1000 ) ),
         /* duration */ vlc_tick_t( -1 ),
         /* size     */ p_cluster->IsFiniteSize()
             ? p_cluster->GetEndPosition() - p_cluster->GetElementPosition()
@@ -118,14 +117,7 @@ SegmentSeeker::add_seekpoint( track_id_t track_id, Seekpoint sp )
     seekpoints_t&  seekpoints = _tracks_seekpoints[ track_id ];
     seekpoints_t::iterator it = std::lower_bound( seekpoints.begin(), seekpoints.end(), sp );
 
-    if( it != seekpoints.end() && it->fpos == sp.fpos )
-    {
-        if (sp.trust_level <= it->trust_level)
-            return;
-
-        *it = sp;
-    }
-    else if( it != seekpoints.end() && it->pts == sp.pts )
+    if( it != seekpoints.end() && it->pts == sp.pts )
     {
         if (sp.trust_level <= it->trust_level)
             return;
@@ -279,12 +271,16 @@ SegmentSeeker::get_seekpoints_around( vlc_tick_t target_pts, track_ids_t const& 
 
             if( cluster.fpos > points.first.fpos )
             {
-                points.first = Seekpoint( cluster.fpos, cluster.pts );
+                points.first.fpos = cluster.fpos;
+                points.first.pts  = cluster.pts;
 
                 // do we need to update the max point? //
 
                 if( points.second.fpos < points.first.fpos )
-                    points.second = Seekpoint( cluster.fpos + cluster.size, cluster.pts + cluster.duration );
+                {
+                    points.second.fpos = cluster.fpos + cluster.size;
+                    points.second.pts  = cluster.pts  + cluster.duration;
+                }
             }
         }
     }
@@ -318,15 +314,18 @@ SegmentSeeker::get_seekpoints( matroska_segment_c& ms, vlc_tick_t target_pts,
         if ( start.fpos == std::numeric_limits<fptr_t>::max() )
             return tracks_seekpoint_t();
 
-        if ( (end.fpos != std::numeric_limits<fptr_t>::max() || !ms.b_cues) &&
-             (needle_pts != start.pts || start.trust_level < Seekpoint::TRUSTED))
+        if ( end.fpos != std::numeric_limits<fptr_t>::max() || !ms.b_cues )
             // do not read the whole (infinite?) file to get seek indexes
-            // do not generate an index if we already have the correct seekpoint
             index_range( ms, Range( start.fpos, end.fpos ), needle_pts );
 
         tracks_seekpoint_t tpoints = find_greatest_seekpoints_in_range( start.fpos, target_pts, filter_tracks );
 
         if( contains_all_of_t() ( tpoints, priority_tracks ) )
+            return tpoints;
+
+        // Avoid busyloop, don't iterate on the same seekpoint
+        if( needle_pts == start.pts - 1 )
+            // we found the same needle twice, stop looking
             return tpoints;
 
         needle_pts = start.pts - 1;
@@ -369,13 +368,16 @@ SegmentSeeker::index_unsearched_range( matroska_segment_c& ms, Range search_area
                          &b_key_picture, &b_discardable_picture, &i_block_duration ) )
             break;
 
-        KaxInternalBlock& internal_block = simpleblock
-            ? static_cast<KaxInternalBlock&>( *simpleblock )
-            : static_cast<KaxInternalBlock&>( *block );
-
-        block_pos = internal_block.GetElementPosition();
-        block_pts = VLC_TICK_FROM_NS(internal_block.GlobalTimecode());
-        track_id  = internal_block.TrackNum();
+        if( simpleblock ) {
+            block_pos = simpleblock->GetElementPosition();
+            block_pts = simpleblock->GlobalTimecode() / 1000;
+            track_id  = simpleblock->TrackNum();
+        }
+        else {
+            block_pos = block->GetElementPosition();
+            block_pts = block->GlobalTimecode() / 1000;
+            track_id  = block->TrackNum();
+        }
 
         bool const b_valid_track = ms.FindTrackByBlock( block, simpleblock ) != NULL;
 
@@ -465,40 +467,32 @@ void
 SegmentSeeker::mkv_jump_to( matroska_segment_c& ms, fptr_t fpos )
 {
     fptr_t i_cluster_pos = -1;
+    ms.cluster = NULL;
 
-    if ( fpos != std::numeric_limits<SegmentSeeker::fptr_t>::max() )
+    if (!_cluster_positions.empty())
     {
-        ms.cluster = NULL;
-        if ( !_cluster_positions.empty() )
-        {
-            cluster_positions_t::iterator cluster_it = greatest_lower_bound(
-              _cluster_positions.begin(), _cluster_positions.end(), fpos
-            );
+        cluster_positions_t::iterator cluster_it = greatest_lower_bound(
+          _cluster_positions.begin(), _cluster_positions.end(), fpos
+        );
 
-            ms.es.I_O().setFilePointer( *cluster_it );
-            ms.ep.reconstruct( &ms.es, ms.segment, &ms.sys.demuxer );
-        }
-
-        while( ms.cluster == NULL || (
-              ms.cluster->IsFiniteSize() && ms.cluster->GetEndPosition() < fpos ) )
-        {
-            if( !( ms.cluster = static_cast<KaxCluster*>( ms.ep.Get() ) ) )
-            {
-                msg_Err( &ms.sys.demuxer, "unable to read KaxCluster during seek, giving up" );
-                return;
-            }
-
-            i_cluster_pos = ms.cluster->GetElementPosition();
-
-            add_cluster_position( i_cluster_pos );
-
-            mark_range_as_searched( Range( i_cluster_pos, ms.es.I_O().getFilePointer() ) );
-        }
+        ms.es.I_O().setFilePointer( *cluster_it );
+        ms.ep.reconstruct( &ms.es, ms.segment, &ms.sys.demuxer );
     }
-    else if (ms.cluster != NULL)
+
+    while( ms.cluster == NULL || (
+          ms.cluster->IsFiniteSize() && ms.cluster->GetEndPosition() < fpos ) )
     {
-        // make sure we start reading after the Cluster start
-        ms.es.I_O().setFilePointer(ms.cluster->GetDataStart());
+        if( !( ms.cluster = static_cast<KaxCluster*>( ms.ep.Get() ) ) )
+        {
+            msg_Err( &ms.sys.demuxer, "unable to read KaxCluster during seek, giving up" );
+            return;
+        }
+
+        i_cluster_pos = ms.cluster->GetElementPosition();
+
+        add_cluster_position( i_cluster_pos );
+
+        mark_range_as_searched( Range( i_cluster_pos, ms.es.I_O().getFilePointer() ) );
     }
 
     ms.ep.Down();
@@ -514,9 +508,9 @@ SegmentSeeker::mkv_jump_to( matroska_segment_c& ms, fptr_t fpos )
             add_cluster(ms.cluster);
             break;
         }
-        else if( MKV_CHECKED_PTR_DECL( crc, EbmlCrc32, el ) )
+        else if( MKV_CHECKED_PTR_DECL( p_tc, EbmlCrc32, el ) )
         {
-            crc->ReadData( ms.es.I_O(), SCOPE_ALL_DATA ); /* avoid a skip that may fail */
+            p_tc->ReadData( ms.es.I_O(), SCOPE_ALL_DATA ); /* avoid a skip that may fail */
         }
     }
 
@@ -526,8 +520,6 @@ SegmentSeeker::mkv_jump_to( matroska_segment_c& ms, fptr_t fpos )
 
     /* jump to desired position */
 
-    if ( fpos != std::numeric_limits<SegmentSeeker::fptr_t>::max() )
-        ms.es.I_O().setFilePointer( fpos );
+    ms.es.I_O().setFilePointer( fpos );
 }
 
-} // namespace

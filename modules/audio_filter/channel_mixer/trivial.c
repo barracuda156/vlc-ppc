@@ -36,18 +36,20 @@
 #include <vlc_filter.h>
 
 static int Create( vlc_object_t * );
+static void Destroy( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("Audio filter for trivial channel mixing") )
     set_capability( "audio converter", 1 )
-    set_subcategory( SUBCAT_AUDIO_AFILTER )
-    set_callback( Create )
+    set_category( CAT_AUDIO )
+    set_subcategory( SUBCAT_AUDIO_MISC )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
-typedef struct
+struct filter_sys_t
 {
     int channel_map[AOUT_CHAN_MAX];
-} filter_sys_t;
+};
 
 /**
  * Trivially upmixes
@@ -72,11 +74,9 @@ static block_t *Upmix( filter_t *p_filter, block_t *p_in_buf )
     p_out_buf->i_pts        = p_in_buf->i_pts;
     p_out_buf->i_length     = p_in_buf->i_length;
 
-    filter_sys_t *p_sys = p_filter->p_sys;
-
     float *p_dest = (float *)p_out_buf->p_buffer;
     const float *p_src = (float *)p_in_buf->p_buffer;
-    const int *channel_map = p_sys->channel_map;
+    const int *channel_map = p_filter->p_sys->channel_map;
 
     for( size_t i = 0; i < p_in_buf->i_nb_samples; i++ )
     {
@@ -101,11 +101,9 @@ static block_t *Downmix( filter_t *p_filter, block_t *p_buf )
 
     assert( i_input_nb >= i_output_nb );
 
-    filter_sys_t *p_sys = p_filter->p_sys;
-
     float *p_dest = (float *)p_buf->p_buffer;
     const float *p_src = p_dest;
-    const int *channel_map = p_sys->channel_map;
+    const int *channel_map = p_filter->p_sys->channel_map;
     /* Use an extra buffer to avoid overlapping */
     float buffer[i_output_nb];
 
@@ -172,18 +170,6 @@ static int Create( vlc_object_t *p_this )
     const audio_format_t *infmt = &p_filter->fmt_in.audio;
     const audio_format_t *outfmt = &p_filter->fmt_out.audio;
 
-    static const struct vlc_filter_operations equal_filter_ops =
-        { .filter_audio = Equals };
-
-    static const struct vlc_filter_operations extract_filter_ops =
-        { .filter_audio = Extract };
-
-    static const struct vlc_filter_operations upmix_filter_ops =
-        { .filter_audio = Upmix };
-
-    static const struct vlc_filter_operations downmix_filter_ops =
-        { .filter_audio = Downmix };
-
     if( infmt->i_physical_channels == 0 )
     {
         assert( infmt->i_channels > 0 );
@@ -191,7 +177,7 @@ static int Create( vlc_object_t *p_this )
             return VLC_EGENERIC;
         if( aout_FormatNbChannels( outfmt ) == infmt->i_channels )
         {
-            p_filter->ops = &equal_filter_ops;
+            p_filter->pf_audio_filter = Equals;
             return VLC_SUCCESS;
         }
         else
@@ -199,7 +185,7 @@ static int Create( vlc_object_t *p_this )
             if( infmt->i_channels > AOUT_CHAN_MAX )
                 msg_Info(p_filter, "%d channels will be dropped.",
                          infmt->i_channels - AOUT_CHAN_MAX);
-            p_filter->ops = &extract_filter_ops;
+            p_filter->pf_audio_filter = Extract;
             return VLC_SUCCESS;
         }
     }
@@ -221,7 +207,7 @@ static int Create( vlc_object_t *p_this )
     if ( aout_FormatNbChannels( outfmt ) == 1
       && aout_FormatNbChannels( infmt ) == 1 )
     {
-        p_filter->ops = &equal_filter_ops;
+        p_filter->pf_audio_filter = Equals;
         return VLC_SUCCESS;
     }
 
@@ -303,21 +289,26 @@ static int Create( vlc_object_t *p_this )
             }
         if( b_equals )
         {
-            p_filter->ops = &equal_filter_ops;
+            p_filter->pf_audio_filter = Equals;
             return VLC_SUCCESS;
         }
     }
 
-    filter_sys_t *p_sys = vlc_obj_malloc( VLC_OBJECT(p_filter), sizeof(*p_sys) );
-    if( unlikely(!p_sys) )
+    p_filter->p_sys = malloc( sizeof(*p_filter->p_sys) );
+    if(! p_filter->p_sys )
         return VLC_ENOMEM;
-    p_filter->p_sys = p_sys;
-    memcpy( p_sys->channel_map, channel_map, sizeof(channel_map) );
+    memcpy( p_filter->p_sys->channel_map, channel_map, sizeof(channel_map) );
 
     if( aout_FormatNbChannels( outfmt ) > aout_FormatNbChannels( infmt ) )
-        p_filter->ops = &upmix_filter_ops;
+        p_filter->pf_audio_filter = Upmix;
     else
-        p_filter->ops = &downmix_filter_ops;
+        p_filter->pf_audio_filter = Downmix;
 
     return VLC_SUCCESS;
+}
+
+static void Destroy( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t *)p_this;
+    free( p_filter->p_sys );
 }

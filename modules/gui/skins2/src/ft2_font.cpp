@@ -2,6 +2,7 @@
  * ft2_font.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: a2b148e402c45a91a02acdab4a1d38c81ad3bd59 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -161,10 +162,8 @@ GenericBitmap *FT2Font::drawString( const UString &rString, uint32_t color,
     {
         pFribidiString = new uint32_t[len+1];
         FriBidiCharType baseDir = FRIBIDI_TYPE_ON;
-        FriBidiLevel level = fribidi_log2vis(
-                        (FriBidiChar*)pString, len, &baseDir,
-                        (FriBidiChar*)pFribidiString, 0, 0, 0 );
-        (void)level;
+        fribidi_log2vis( (FriBidiChar*)pString, len, &baseDir,
+                         (FriBidiChar*)pFribidiString, 0, 0, 0 );
         pString = pFribidiString;
     }
 #endif
@@ -203,8 +202,8 @@ GenericBitmap *FT2Font::drawString( const UString &rString, uint32_t color,
 
         pos[n] = penX;
         width1 = penX + glyph.m_size.xMax - glyph.m_size.xMin;
-        yMin = std::min<int>( yMin, glyph.m_size.yMin );
-        yMax = std::max<int>( yMax, glyph.m_size.yMax );
+        yMin = __MIN( yMin, glyph.m_size.yMin );
+        yMax = __MAX( yMax, glyph.m_size.yMax );
 
         // Next position
         penX += glyph.m_advance;
@@ -254,11 +253,11 @@ GenericBitmap *FT2Font::drawString( const UString &rString, uint32_t color,
 #endif
 
     // Adjust the size for vertical padding
-    yMax = std::max<int>( yMax, m_ascender );
-    yMin = std::min<int>( yMin, m_descender );
+    yMax = __MAX( yMax, m_ascender );
+    yMin = __MIN( yMin, m_descender );
 
     // Create the bitmap
-    FT2Bitmap *pBmp = new FT2Bitmap( getIntf(), std::min( width1, width2 ),
+    FT2Bitmap *pBmp = new FT2Bitmap( getIntf(), __MIN( width1, width2 ),
                                      yMax - yMin );
 
     // Draw the glyphs on the bitmap
@@ -271,7 +270,7 @@ GenericBitmap *FT2Font::drawString( const UString &rString, uint32_t color,
     // Draw the trailing dots if the text is truncated
     if( maxIndex < len )
     {
-        penX = firstDotX;
+        int penX = firstDotX;
         FT_BitmapGlyphRec *pBmpGlyph = (FT_BitmapGlyphRec*)dotGlyph.m_glyph;
         for( n = 0; n < 3; n++ )
         {

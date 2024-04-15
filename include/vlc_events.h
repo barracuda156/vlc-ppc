@@ -3,6 +3,7 @@
  * Interface used to send events.
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: 4cca73e784d68444833a6c80c33adcd24845155a $
  *
  * Authors: Pierre d'Herbemont
  *
@@ -46,9 +47,9 @@
  * (see src/misc/variables.c).
  *
  * It has the following advantages over Variable based Callback:
- * - No need to implement the whole vlc_object_t in the object,
+ * - No need to implement the whole VLC_COMMON_MEMBERS in the object,
  * thus it reduce it size. This is especially true for input_item_t which
- * doesn't have vlc_object_t. This is the first reason of existence of
+ * doesn't have VLC_COMMON_MEMBERS. This is the first reason of existence of
  * this implementation.
  * - Libvlc can easily be based upon that.
  * - Existing event are clearly declared (in include/vlc_events.h)
@@ -56,7 +57,7 @@
  *
  **** Example usage
  *
- * (vlc_cool_object_t doesn't need to have the vlc_object_t.)
+ * (vlc_cool_object_t doesn't need to have the VLC_COMMON_MEMBERS.)
  *
  * struct vlc_cool_object_t
  * {
@@ -97,15 +98,14 @@
 typedef enum vlc_event_type_t {
     /* Input item events */
     vlc_InputItemMetaChanged,
+    vlc_InputItemSubItemTreeAdded,
     vlc_InputItemDurationChanged,
     vlc_InputItemPreparsedChanged,
     vlc_InputItemNameChanged,
     vlc_InputItemInfoChanged,
     vlc_InputItemErrorWhenReadingChanged,
-    vlc_InputItemAttachmentsFound,
+    vlc_InputItemPreparseEnded,
 } vlc_event_type_t;
-
-#define VLC_EVENT_TYPE_COUNT (vlc_InputItemAttachmentsFound + 1)
 
 typedef struct vlc_event_listeners_group_t
 {
@@ -117,7 +117,7 @@ typedef struct vlc_event_manager_t
 {
     void * p_obj;
     vlc_mutex_t lock;
-    vlc_event_listeners_group_t events[VLC_EVENT_TYPE_COUNT];
+    vlc_event_listeners_group_t events[vlc_InputItemPreparseEnded + 1];
 } vlc_event_manager_t;
 
 /* Event definition */
@@ -164,11 +164,6 @@ typedef struct vlc_event_t
         {
             int new_status;
         } input_item_preparse_ended;
-        struct input_item_attachments_found
-        {
-            input_attachment_t** attachments;
-            size_t count;
-        } input_item_attachments_found;
     } u;
 } vlc_event_t;
 

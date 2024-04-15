@@ -36,7 +36,6 @@
 #include <algorithm>
 
 using namespace adaptive::http;
-using vlc::threads::mutex_locker;
 
 AbstractChunkSource::AbstractChunkSource(ChunkType t, const BytesRange &range)
 {
@@ -153,6 +152,7 @@ HTTPChunkSource::HTTPChunkSource(const std::string& url, AbstractConnectionManag
     connManager  (manager),
     consumed     (0)
 {
+    vlc_mutex_init(&lock);
     prepared = false;
     eof = false;
     sourceid = id;
@@ -166,11 +166,12 @@ HTTPChunkSource::~HTTPChunkSource()
 {
     if(connection)
         connection->setUsed(false);
+    vlc_mutex_destroy(&lock);
 }
 
 bool HTTPChunkSource::init(const std::string &url)
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
     params = ConnectionParams(url);
     params.setUseAccess(usesAccess());
 
@@ -185,7 +186,7 @@ bool HTTPChunkSource::init(const std::string &url)
 
 bool HTTPChunkSource::hasMoreData() const
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
     if(eof)
         return false;
     else if(contentLength)
@@ -200,7 +201,7 @@ size_t HTTPChunkSource::getBytesRead() const
 
 block_t * HTTPChunkSource::read(size_t readsize)
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
     if(!prepare())
     {
         eof = true;
@@ -229,7 +230,7 @@ block_t * HTTPChunkSource::read(size_t readsize)
         block_Release(p_block);
         p_block = nullptr;
         eof = true;
-        downloadEndTime = vlc_tick_now();
+        downloadEndTime = mdate();
     }
     else
     {
@@ -238,7 +239,7 @@ block_t * HTTPChunkSource::read(size_t readsize)
         if((size_t)ret < readsize)
         {
             eof = true;
-            downloadEndTime = vlc_tick_now();
+            downloadEndTime = mdate();
         }
         if(ret && connection->getBytesRead() &&
            downloadEndTime > requestStartTime && type == ChunkType::Segment)
@@ -265,7 +266,7 @@ StorageID HTTPChunkSource::makeStorageID(const std::string &s, const BytesRange 
 
 std::string HTTPChunkSource::getContentType() const
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
     if(connection)
         return connection->getContentType();
     else
@@ -287,7 +288,7 @@ bool HTTPChunkSource::prepare()
 
     ConnectionParams connparams = params; /* can be changed on 301 */
 
-    requestStartTime = vlc_tick_now();
+    requestStartTime = mdate();
 
     unsigned int i_redirects = 0;
     while(i_redirects++ < http::MAX_REDIRECTS)
@@ -317,7 +318,7 @@ bool HTTPChunkSource::prepare()
                from content length */
         contentLength = connection->getContentLength();
         prepared = true;
-        responseTime = vlc_tick_now();
+        responseTime = mdate();
         return true;
     }
 
@@ -338,6 +339,7 @@ HTTPChunkBufferedSource::HTTPChunkBufferedSource(const std::string& url, Abstrac
     pp_tail    (&p_head),
     buffered     (0)
 {
+    vlc_cond_init(&avail);
     done = false;
     eof = false;
     held = false;
@@ -350,10 +352,10 @@ HTTPChunkBufferedSource::~HTTPChunkBufferedSource()
     /* cancel ourself if in queue */
     connManager->cancel(this);
 
-    mutex_locker locker {lock};
+    vlc_mutex_lock(&lock);
     done = true;
     while(held) /* wait release if not in queue but currently downloaded */
-        avail.wait(lock);
+        vlc_cond_wait(&avail, &lock);
 
     if(p_head)
     {
@@ -363,45 +365,49 @@ HTTPChunkBufferedSource::~HTTPChunkBufferedSource()
         pp_tail = &p_head;
     }
     buffered = 0;
+    vlc_mutex_unlock(&lock);
+
+    vlc_cond_destroy(&avail);
 }
 
 bool HTTPChunkBufferedSource::isDone() const
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker( &lock );
     return done;
 }
 
 void HTTPChunkBufferedSource::hold()
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker( &lock );
     held = true;
 }
 
 void HTTPChunkBufferedSource::release()
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker( &lock );
     held = false;
-    avail.signal();
+    vlc_cond_signal(&avail);
 }
 
 void HTTPChunkBufferedSource::bufferize(size_t readsize)
 {
+    vlc_mutex_lock(&lock);
+    if(!prepare())
     {
-        mutex_locker locker {lock};
-        if(!prepare())
-        {
-            done = true;
-            eof = true;
-            avail.signal();
-            return;
-        }
-
-        if(readsize < HTTPChunkSource::CHUNK_SIZE)
-            readsize = HTTPChunkSource::CHUNK_SIZE;
-
-        if(contentLength && readsize > contentLength - buffered)
-            readsize = contentLength - buffered;
+        done = true;
+        eof = true;
+        vlc_cond_signal(&avail);
+        vlc_mutex_unlock(&lock);
+        return;
     }
+
+    if(readsize < HTTPChunkSource::CHUNK_SIZE)
+        readsize = HTTPChunkSource::CHUNK_SIZE;
+
+    if(contentLength && readsize > contentLength - buffered)
+        readsize = contentLength - buffered;
+
+    vlc_mutex_unlock(&lock);
 
     block_t *p_block = block_Alloc(readsize);
     if(!p_block)
@@ -422,9 +428,9 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
     {
         block_Release(p_block);
         p_block = nullptr;
-        mutex_locker locker {lock};
+        vlc_mutex_locker locker( &lock );
         done = true;
-        downloadEndTime = vlc_tick_now();
+        downloadEndTime = mdate();
         rate.size = buffered;
         rate.time = downloadEndTime - requestStartTime;
         rate.latency = responseTime - requestStartTime;
@@ -432,7 +438,7 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
     else
     {
         p_block->i_buffer = (size_t) ret;
-        mutex_locker locker {lock};
+        vlc_mutex_locker locker( &lock );
         buffered += p_block->i_buffer;
         block_ChainLastAppend(&pp_tail, p_block);
         if(p_read == nullptr)
@@ -443,7 +449,7 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
         if((size_t) ret < readsize)
         {
             done = true;
-            downloadEndTime = vlc_tick_now();
+            downloadEndTime = mdate();
             rate.size = buffered;
             rate.time = downloadEndTime - requestStartTime;
             rate.latency = responseTime - requestStartTime;
@@ -456,12 +462,12 @@ void HTTPChunkBufferedSource::bufferize(size_t readsize)
                                         rate.time, rate.latency);
     }
 
-    avail.signal();
+    vlc_cond_signal(&avail);
 }
 
 bool HTTPChunkBufferedSource::hasMoreData() const
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker( &lock );
     return !eof;
 }
 
@@ -477,10 +483,10 @@ block_t * HTTPChunkBufferedSource::readBlock()
 {
     block_t *p_block = nullptr;
 
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
 
     while(!p_read && !done)
-        avail.wait(lock);
+        vlc_cond_wait(&avail, &lock);
 
     if(!p_read && done)
     {
@@ -491,7 +497,7 @@ block_t * HTTPChunkBufferedSource::readBlock()
     }
 
     /* dequeue */
-    p_block = block_Duplicate(p_read);
+    p_block = block_Duplicate(const_cast<block_t *>(p_read));
     consumed += p_block->i_buffer;
     p_read = p_read->p_next;
     inblockreadoffset = 0;
@@ -503,10 +509,10 @@ block_t * HTTPChunkBufferedSource::readBlock()
 
 block_t * HTTPChunkBufferedSource::read(size_t readsize)
 {
-    mutex_locker locker {lock};
+    vlc_mutex_locker locker(&lock);
 
     while(readsize > (buffered - consumed) && !done)
-        avail.wait(lock);
+        vlc_cond_wait(&avail, &lock);
 
     block_t *p_block = nullptr;
     if(!readsize || (buffered == consumed) || !(p_block = block_Alloc(readsize)) )

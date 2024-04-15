@@ -2,6 +2,7 @@
  * sepia.c : Sepia video plugin for vlc
  *****************************************************************************
  * Copyright (C) 2010 VLC authors and VideoLAN
+ * $Id: 2a00130fbfe19beefd163fd8c86ca584ac0d561c $
  *
  * Authors: Branko Kokanovic <branko.kokanovic@gmail.com>
  *
@@ -33,29 +34,30 @@
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include <vlc_cpu.h>
+#include <vlc_atomic.h>
 
-#include <stdatomic.h>
 #include <assert.h>
 #include "filter_picture.h"
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create      ( filter_t * );
+static int  Create      ( vlc_object_t * );
+static void Destroy     ( vlc_object_t * );
 
 static void RVSepia( picture_t *, picture_t *, int );
 static void PlanarI420Sepia( picture_t *, picture_t *, int);
 static void PackedYUVSepia( picture_t *, picture_t *, int);
+static picture_t *Filter( filter_t *, picture_t * );
 static const char *const ppsz_filter_options[] = {
     "intensity", NULL
 };
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 #define SEPIA_INTENSITY_TEXT N_("Sepia intensity")
-#define SEPIA_INTENSITY_LONGTEXT NULL
+#define SEPIA_INTENSITY_LONGTEXT N_("Intensity of sepia effect" )
 
 #define CFG_PREFIX "sepia-"
 
@@ -63,10 +65,13 @@ vlc_module_begin ()
     set_description( N_("Sepia video filter") )
     set_shortname( N_("Sepia" ) )
     set_help( N_("Gives video a warmer tone by applying sepia effect") )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
     add_integer_with_range( CFG_PREFIX "intensity", 120, 0, 255,
-                           SEPIA_INTENSITY_TEXT, SEPIA_INTENSITY_LONGTEXT )
-    set_callback_video_filter( Create )
+                           SEPIA_INTENSITY_TEXT, SEPIA_INTENSITY_LONGTEXT,
+                           false )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -95,19 +100,20 @@ static const struct
 /*****************************************************************************
  * filter_sys_t: adjust filter method descriptor
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     SepiaFunction pf_sepia;
     atomic_int i_intensity;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Create: allocates Sepia video thread output method
  *****************************************************************************
  * This function allocates and initializes a Sepia vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     /* Allocate structure */
@@ -138,7 +144,7 @@ static int Create( filter_t *p_filter )
              var_CreateGetIntegerCommand( p_filter, CFG_PREFIX "intensity" ) );
     var_AddCallback( p_filter, CFG_PREFIX "intensity", FilterCallback, NULL );
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     return VLC_SUCCESS;
 }
@@ -148,8 +154,10 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     var_DelCallback( p_filter, CFG_PREFIX "intensity", FilterCallback, NULL );
 
     free( p_filter->p_sys );
@@ -162,12 +170,26 @@ static void Destroy( filter_t *p_filter )
  * until it is displayed and switch the two rendering buffers, preparing next
  * frame.
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
+
+    if( !p_pic ) return NULL;
+
     filter_sys_t *p_sys = p_filter->p_sys;
     int intensity = atomic_load( &p_sys->i_intensity );
 
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        msg_Warn( p_filter, "can't get output picture" );
+        picture_Release( p_pic );
+        return NULL;
+    }
+
     p_sys->pf_sepia( p_pic, p_outpic, intensity );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 #if defined(CAN_COMPILE_SSE2)
@@ -180,22 +202,24 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
  *****************************************************************************/
 VLC_SSE
 static inline void Sepia8ySSE2(uint8_t * dst, const uint8_t * src,
-                         int i_intensity_shifted_pair)
+                         int i_intensity_spread)
 {
     __asm__ volatile (
         // y = y - y / 4 + i_intensity / 4
         "movq            (%1), %%xmm1\n"
-        "punpcklbw     %%xmm7, %%xmm1\n" // zero-extend bytes to words
-        "movdqa        %%xmm1, %%xmm2\n" // copy it
+        "punpcklbw     %%xmm7, %%xmm1\n"
+        "movq            (%1), %%xmm2\n" // store bytes as words with 0s in between
+        "punpcklbw     %%xmm7, %%xmm2\n"
         "movd              %2, %%xmm3\n"
         "pshufd    $0, %%xmm3, %%xmm3\n"
-        "psrlw             $2, %%xmm2\n" // get 1/4 of it
-        "psubusb       %%xmm2, %%xmm1\n"
-        "paddusb       %%xmm3, %%xmm1\n"
-        "packuswb      %%xmm1, %%xmm1\n" // pack back to bytes
-        "movq          %%xmm1, (%0)  \n"
+        "psrlw             $2, %%xmm2\n"    // rotate right 2
+        "psubusb       %%xmm1, %%xmm2\n"    // subtract
+        "psrlw             $2, %%xmm3\n"
+        "paddsb        %%xmm1, %%xmm3\n"    // add
+        "packuswb      %%xmm2, %%xmm1\n"    // pack back to bytes
+        "movq          %%xmm1, (%0)  \n"    // load to dest
         :
-        :"r" (dst), "r"(src), "r"(i_intensity_shifted_pair)
+        :"r" (dst), "r"(src), "r"(i_intensity_spread)
         :"memory", "xmm1", "xmm2", "xmm3");
 }
 
@@ -207,9 +231,11 @@ static void PlanarI420SepiaSSE( picture_t *p_pic, picture_t *p_outpic,
     const uint8_t filling_const_8u = 128 - i_intensity / 6;
     const uint8_t filling_const_8v = 128 + i_intensity / 14;
     /* prepared value for faster broadcasting in xmm register */
-    int i_intensity_shifted_pair = 0x10001 * (((uint8_t) i_intensity) >> 2);
+    int i_intensity_spread = 0x10001 * (uint8_t) i_intensity;
 
-    __asm__ volatile("pxor %%xmm7, %%xmm7\n" ::: "xmm7");
+    __asm__ volatile(
+        "pxor      %%xmm7, %%xmm7\n"
+        ::: "xmm7");
 
     /* iterate for every two visible line in the frame */
     for (int y = 0; y < p_pic->p[Y_PLANE].i_visible_lines - 1; y += 2)
@@ -225,16 +251,16 @@ static void PlanarI420SepiaSSE( picture_t *p_pic, picture_t *p_outpic,
             /* Compute yellow channel values with asm function */
             Sepia8ySSE2(&p_outpic->p[Y_PLANE].p_pixels[i_dy_line1_start + x],
                         &p_pic->p[Y_PLANE].p_pixels[i_dy_line1_start + x],
-                        i_intensity_shifted_pair );
+                        i_intensity_spread );
             Sepia8ySSE2(&p_outpic->p[Y_PLANE].p_pixels[i_dy_line2_start + x],
                         &p_pic->p[Y_PLANE].p_pixels[i_dy_line2_start + x],
-                        i_intensity_shifted_pair );
+                        i_intensity_spread );
             Sepia8ySSE2(&p_outpic->p[Y_PLANE].p_pixels[i_dy_line1_start + x + 8],
                         &p_pic->p[Y_PLANE].p_pixels[i_dy_line1_start + x + 8],
-                        i_intensity_shifted_pair );
+                        i_intensity_spread );
             Sepia8ySSE2(&p_outpic->p[Y_PLANE].p_pixels[i_dy_line2_start + x + 8],
                         &p_pic->p[Y_PLANE].p_pixels[i_dy_line2_start + x + 8],
-                        i_intensity_shifted_pair );
+                        i_intensity_spread );
             /* Copy precomputed values to destination memory location */
             memset(&p_outpic->p[U_PLANE].p_pixels[i_du_line_start + (x / 2)],
                    filling_const_8u, 8 );
@@ -338,7 +364,7 @@ static void PlanarI420Sepia( picture_t *p_pic, picture_t *p_outpic,
 /*****************************************************************************
  * PackedYUVSepia: Applies sepia to one frame of the packed YUV video
  *****************************************************************************
- * This function applies sepia effect to one frame of the video by iterating
+ * This function applies sepia effext to one frame of the video by iterating
  * through video lines. In every pass, we calculate new values for pixels
  * (UYVY, VYUY, YUYV and YVYU formats are supported)
  *****************************************************************************/

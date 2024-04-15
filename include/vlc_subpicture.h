@@ -2,6 +2,7 @@
  * vlc_subpicture.h: subpicture definitions
  *****************************************************************************
  * Copyright (C) 1999 - 2009 VLC authors and VideoLAN
+ * $Id: 6fd872d8cde8b15f9499746ae88ee113692b471f $
  *
  * Authors: Vincent Seguin <seguin@via.ecp.fr>
  *          Samuel Hocevar <sam@via.ecp.fr>
@@ -45,8 +46,6 @@
  * Video subtitle region spu core private
  */
 typedef struct subpicture_region_private_t subpicture_region_private_t;
-typedef struct vlc_spu_highlight_t vlc_spu_highlight_t;
-typedef struct filter_t vlc_blender_t;
 
 /**
  * Video subtitle region
@@ -74,20 +73,8 @@ struct subpicture_region_t
     int             i_max_width;     /** horizontal rendering/cropping target/limit */
     int             i_max_height;    /** vertical rendering/cropping target/limit */
 
-    vlc_rational_t  zoom_h;
-    vlc_rational_t  zoom_v;
-
     subpicture_region_t *p_next;                /**< next region in the list */
     subpicture_region_private_t *p_private;  /**< Private data for spu_t *only* */
-};
-
-struct vlc_spu_highlight_t
-{
-    int x_start;
-    int x_end;
-    int y_start;
-    int y_end;
-    video_palette_t palette;
 };
 
 /* Subpicture region position flags */
@@ -131,6 +118,7 @@ VLC_API subpicture_region_t *subpicture_region_Copy( subpicture_region_t *p_regi
 /**
  *
  */
+typedef struct subpicture_updater_sys_t subpicture_updater_sys_t;
 typedef struct
 {
     /** Optional pre update callback, usually useful on video format change.
@@ -149,7 +137,7 @@ typedef struct
                          vlc_tick_t );
     /** Optional callback for subpicture private data cleanup */
     void (*pf_destroy) ( subpicture_t * );
-    void *p_sys;
+    subpicture_updater_sys_t *p_sys;
 } subpicture_updater_t;
 
 typedef struct subpicture_private_t subpicture_private_t;
@@ -166,7 +154,7 @@ struct subpicture_t
 {
     /** \name Channel ID */
     /**@{*/
-    ssize_t         i_channel;                    /**< subpicture channel ID */
+    int             i_channel;                    /**< subpicture channel ID */
     /**@}*/
 
     /** \name Type and flags
@@ -242,8 +230,8 @@ VLC_API void subpicture_Update( subpicture_t *, const video_format_t *src, const
  *  - contains only picture (no text rendering).
  * \return the number of region(s) successfully blent
  */
-VLC_API unsigned picture_BlendSubpicture( picture_t *, vlc_blender_t *, subpicture_t * );
+VLC_API unsigned picture_BlendSubpicture( picture_t *, filter_t *p_blend, subpicture_t * );
 
 /**@}*/
 
-#endif /* _VLC_SUBPICTURE_H */
+#endif /* _VLC_VIDEO_H */

@@ -2,6 +2,7 @@
  * sgimb.c: a meta demux to parse sgimb referrer files
  *****************************************************************************
  * Copyright (C) 2004 VLC authors and VideoLAN
+ * $Id: f45e4c90b2b0a3a9b4dc9a21c80d3ff5f858efe0 $
  *
  * Authors: Derk-Jan Hartman <hartman at videolan dot org>
  *
@@ -110,7 +111,7 @@
  *****************************************************************************/
 #define MAX_LINE 1024
 
-typedef struct
+struct demux_sys_t
 {
     char        *psz_uri;       /* Stream= or sgiQTFileBegin rtsp link */
     char        *psz_server;    /* sgiNameServerHost= */
@@ -126,7 +127,7 @@ typedef struct
     int         i_sid;          /* sgiSid= */
     bool  b_concert;      /* DeliveryService=cds */
     bool  b_rtsp_kasenna; /* kasenna style RTSP */
-} demux_sys_t;
+};
 
 static int ReadDir( stream_t *, input_item_node_t * );
 
@@ -139,8 +140,9 @@ int Import_SGIMB( vlc_object_t * p_this )
     const uint8_t *p_peek;
     int i_size;
 
+    CHECK_FILE(p_demux);
     /* Lets check the content to see if this is a sgi mediabase file */
-    i_size = vlc_stream_Peek( p_demux->s, &p_peek, MAX_LINE );
+    i_size = vlc_stream_Peek( p_demux->p_source, &p_peek, MAX_LINE );
     i_size -= sizeof("sgiNameServerHost=") - 1;
     if ( i_size > 0 )
     {
@@ -158,7 +160,7 @@ int Import_SGIMB( vlc_object_t * p_this )
 
             msg_Dbg( p_demux, "using SGIMB playlist reader" );
             p_demux->pf_readdir = ReadDir;
-            p_demux->pf_control = PlaylistControl;
+            p_demux->pf_control = access_vaDirectoryControlHelper;
             p_demux->p_sys = p_sys;
             p_sys->psz_uri = NULL;
             p_sys->psz_server = NULL;
@@ -292,7 +294,7 @@ static int ParseLine ( stream_t *p_demux, char *psz_line )
     else if( !strncasecmp( psz_bol, "sgiDuration=", sizeof("sgiDuration=") - 1 ) )
     {
         psz_bol += sizeof("sgiDuration=") - 1;
-        p_sys->i_duration = VLC_TICK_FROM_US( strtol( psz_bol, NULL, 0 ) );
+        p_sys->i_duration = (vlc_tick_t) strtol( psz_bol, NULL, 0 );
     }
     else if( !strncasecmp( psz_bol, "sgiRtspPort=", sizeof("sgiRtspPort=") - 1 ) )
     {
@@ -322,7 +324,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *node )
     input_item_t    *p_child = NULL;
     char            *psz_line;
 
-    while( ( psz_line = vlc_stream_ReadLine( p_demux->s ) ) )
+    while( ( psz_line = vlc_stream_ReadLine( p_demux->p_source ) ) )
     {
         ParseLine( p_demux, psz_line );
         free( psz_line );

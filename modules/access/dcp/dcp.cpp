@@ -50,7 +50,6 @@
 #include <vlc_xml.h>
 #include <vlc_url.h>
 #include <vlc_aout.h>
-#include <vlc_fs.h>
 
 #ifdef _WIN32
 # define KM_WIN32
@@ -60,7 +59,6 @@
 #include <AS_DCP.h>
 
 #include <vector>
-#include <algorithm>
 
 #include "dcpparser.h"
 
@@ -79,13 +77,12 @@ vlc_module_begin()
     set_shortname( N_( "DCP" ) )
     add_shortcut( "dcp" )
     set_description( N_( "Digital Cinema Package module" ) )
-    set_capability( "access", 0 )
+    set_capability( "access_demux", 0 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
-    add_loadfile("kdm", "", KDM_HELP_TEXT, KDM_HELP_LONG_TEXT)
+    add_loadfile( "kdm", "", KDM_HELP_TEXT, KDM_HELP_LONG_TEXT, false )
     set_callbacks( Open, Close )
 vlc_module_end()
-
-namespace {
 
 //! Kind of MXF MEDIA TYPE
 typedef enum MxfMedia_t {
@@ -218,8 +215,6 @@ class demux_sys_t
     }
 };
 
-} // namespace
-
 /*TODO: basic correlation between SMPTE S428-3/S429-2
  * Real sound is more complex with case of left/right surround, ...
  * and hearing impaired/Narration channels */
@@ -311,7 +306,7 @@ static int Open( vlc_object_t *obj )
     es_format_t video_format, audio_format;
     int retval;
 
-    if( p_demux->out == NULL || p_demux->psz_filepath == NULL )
+    if( !p_demux->psz_file )
         return VLC_EGENERIC;
 
     p_sys = new ( nothrow ) demux_sys_t();
@@ -608,7 +603,7 @@ static inline void Close( vlc_object_t *obj )
  *****************************************************************************/
 static int Demux( demux_t *p_demux )
 {
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
+    demux_sys_t *p_sys = p_demux->p_sys;
     block_t *p_video_frame = NULL, *p_audio_frame = NULL;
 
     PCM::FrameBuffer   AudioFrameBuff( p_sys->i_audio_buffer);
@@ -704,8 +699,8 @@ static int Demux( demux_t *p_demux )
             goto error;
     }
 
-    p_video_frame->i_length = vlc_tick_from_samples(p_sys->frame_rate_denom, p_sys->frame_rate_num);
-    p_video_frame->i_pts = vlc_tick_from_samples(p_sys->frame_no * p_sys->frame_rate_denom, p_sys->frame_rate_num);
+    p_video_frame->i_length = CLOCK_FREQ * p_sys->frame_rate_denom / p_sys->frame_rate_num;
+    p_video_frame->i_pts = CLOCK_FREQ * p_sys->frame_no * p_sys->frame_rate_denom / p_sys->frame_rate_num;
 
     if( !p_sys->p_dcp->audio_reels.empty() )
     {
@@ -742,8 +737,8 @@ static int Demux( demux_t *p_demux )
                     p_sys->pi_chan_table, VLC_CODEC_S24L );
 
         p_audio_frame->i_buffer = AudioFrameBuff.Size();
-        p_audio_frame->i_length = vlc_tick_from_samples(p_sys->frame_rate_denom, p_sys->frame_rate_num);
-        p_audio_frame->i_pts = vlc_tick_from_samples(p_sys->frame_no * p_sys->frame_rate_denom, p_sys->frame_rate_num);
+        p_audio_frame->i_length = CLOCK_FREQ * p_sys->frame_rate_denom / p_sys->frame_rate_num;
+        p_audio_frame->i_pts = CLOCK_FREQ * p_sys->frame_no * p_sys->frame_rate_denom / p_sys->frame_rate_num;
         /* Video is the main pts */
         if ( p_audio_frame->i_pts != p_video_frame->i_pts ) {
             msg_Err( p_demux, "Audio and video frame pts are not in sync" );
@@ -778,7 +773,8 @@ static int Control( demux_t *p_demux, int query, va_list args )
 {
     double f,*pf;
     bool *pb;
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
+    int64_t *pi64, i64;
+    demux_sys_t *p_sys = p_demux->p_sys;
 
     switch ( query )
     {
@@ -815,24 +811,27 @@ static int Control( demux_t *p_demux, int query, va_list args )
             break;
 
         case DEMUX_GET_LENGTH:
-            *va_arg ( args, vlc_tick_t * ) =
-                vlc_tick_from_sec( p_sys->frames_total * p_sys->frame_rate_denom / p_sys->frame_rate_num );
+            pi64 = va_arg ( args, int64_t * );
+            *pi64 =  ( p_sys->frames_total * p_sys->frame_rate_denom / p_sys->frame_rate_num ) * CLOCK_FREQ;
             break;
 
         case DEMUX_GET_TIME:
-            *va_arg( args, vlc_tick_t * ) = std::max<vlc_tick_t>(p_sys->i_pts, 0);
+            pi64 = va_arg( args, int64_t * );
+            *pi64 = p_sys->i_pts >= 0 ? p_sys->i_pts : 0;
             break;
 
         case DEMUX_SET_TIME:
-            p_sys->i_pts = va_arg( args, vlc_tick_t );
+            i64 = va_arg( args, int64_t );
             msg_Warn( p_demux, "DEMUX_SET_TIME"  );
-            p_sys->frame_no = p_sys->i_pts * p_sys->frame_rate_num / ( CLOCK_FREQ * p_sys->frame_rate_denom );
+            p_sys->frame_no = i64 * p_sys->frame_rate_num / ( CLOCK_FREQ * p_sys->frame_rate_denom );
+            p_sys->i_pts= i64;
             es_out_SetPCR(p_demux->out, p_sys->i_pts);
-            es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, p_sys->i_pts );
+            es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, ( vlc_tick_t ) i64 );
             break;
         case DEMUX_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) =
-                VLC_TICK_FROM_MS(var_InheritInteger( p_demux, "file-caching" ));
+            pi64 = va_arg( args, int64_t * );
+            *pi64 =
+                INT64_C(1000) * var_InheritInteger( p_demux, "file-caching" );
             return VLC_SUCCESS;
 
 
@@ -874,7 +873,7 @@ static inline void fillVideoFmt( video_format_t * fmt, unsigned int width, unsig
 
 void CloseDcpAndMxf( demux_t *p_demux )
 {
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
+    demux_sys_t *p_sys = p_demux->p_sys;
     /* close the files */
     switch( p_sys->PictureEssType )
     {
@@ -928,10 +927,10 @@ int dcpInit ( demux_t *p_demux )
 {
     int retval;
 
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
+    demux_sys_t *p_sys = p_demux->p_sys;
     dcp_t *p_dcp = p_sys->p_dcp;
 
-    p_dcp->path = p_demux->psz_filepath;
+    p_dcp->path = p_demux->psz_file;
     /* Add a '/' in end of path if needed */
     if ( *(p_dcp->path).rbegin() != '/')
         p_dcp->path.append( "/" );
@@ -957,26 +956,25 @@ int dcpInit ( demux_t *p_demux )
  */
 static std::string assetmapPath( demux_t * p_demux )
 {
-    vlc_DIR *dir = NULL;
-    const char *ent = NULL;
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
-    dcp_t *p_dcp = p_sys->p_dcp;
+    DIR *dir = NULL;
+    struct dirent *ent = NULL;
+    dcp_t *p_dcp = p_demux->p_sys->p_dcp;
     std::string result;
 
-    if( ( dir = vlc_opendir (p_dcp->path.c_str() ) ) != NULL )
+    if( ( dir = opendir (p_dcp->path.c_str() ) ) != NULL )
     {
         /* print all the files and directories within directory */
-        while( ( ent = vlc_readdir ( dir ) ) != NULL )
+        while( ( ent = readdir ( dir ) ) != NULL )
         {
-            if( strcasecmp( "assetmap", ent ) == 0 || strcasecmp( "assetmap.xml", ent ) == 0 )
+            if( strcasecmp( "assetmap", ent->d_name ) == 0 || strcasecmp( "assetmap.xml", ent->d_name ) == 0 )
             {
                 /* copy of "path" in "res" */
                 result = p_dcp->path;
-                result.append( ent );
+                result.append( ent->d_name );
                 break;
             }
         }
-        vlc_closedir( dir );
+        closedir( dir );
     }
     else
         msg_Err( p_demux, "Could not open the directory: %s", p_dcp->path.c_str() );
@@ -996,7 +994,6 @@ static std::string assetmapPath( demux_t * p_demux )
  */
 int parseXML ( demux_t * p_demux )
 {
-    demux_sys_t *p_sys = (demux_sys_t *)p_demux->p_sys;
     int retval;
 
     std::string assetmap_path = assetmapPath( p_demux );
@@ -1006,7 +1003,7 @@ int parseXML ( demux_t * p_demux )
 
     /* We parse the ASSETMAP File in order to get CPL File path, PKL File path
      and to store UID/Path of all files in DCP directory (except ASSETMAP file) */
-    AssetMap *assetmap = new (nothrow) AssetMap( p_demux, assetmap_path, p_sys->p_dcp );
+    AssetMap *assetmap = new (nothrow) AssetMap( p_demux, assetmap_path, p_demux->p_sys->p_dcp );
     if( ( retval = assetmap->Parse() ) )
         return retval;
 

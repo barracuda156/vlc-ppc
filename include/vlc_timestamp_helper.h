@@ -2,6 +2,7 @@
  * vlc_timestamp_helper.h : timestamp handling helpers
  *****************************************************************************
  * Copyright (C) 2014 VLC authors and VideoLAN
+ * $Id: a13bee1e8448c47e35c45211724b3adceb47fcb0 $
  *
  * Authors: Felix Abecassis <felix.abecassis@gmail.com>
  *
@@ -38,15 +39,15 @@ typedef struct
     uint32_t          begin;
     uint32_t          size;
     uint32_t          capacity;
-    vlc_tick_t        *buffer;
+    int64_t           *buffer;
 } timestamp_fifo_t;
 
 static inline timestamp_fifo_t *timestamp_FifoNew(uint32_t capacity)
 {
-    timestamp_fifo_t *fifo = (timestamp_fifo_t *)calloc(1, sizeof(*fifo));
+    timestamp_fifo_t *fifo = calloc(1, sizeof(*fifo));
     if (!fifo)
         return NULL;
-    fifo->buffer = (vlc_tick_t*)vlc_alloc(capacity, sizeof(*fifo->buffer));
+    fifo->buffer = vlc_alloc(capacity, sizeof(*fifo->buffer));
     if (!fifo->buffer) {
         free(fifo);
         return NULL;
@@ -76,7 +77,7 @@ static inline void timestamp_FifoEmpty(timestamp_fifo_t *fifo)
     fifo->size = 0;
 }
 
-static inline void timestamp_FifoPut(timestamp_fifo_t *fifo, vlc_tick_t ts)
+static inline void timestamp_FifoPut(timestamp_fifo_t *fifo, int64_t ts)
 {
     uint32_t end = (fifo->begin + fifo->size) % fifo->capacity;
     fifo->buffer[end] = ts;
@@ -86,12 +87,12 @@ static inline void timestamp_FifoPut(timestamp_fifo_t *fifo, vlc_tick_t ts)
         fifo->begin = (fifo->begin + 1) % fifo->capacity;
 }
 
-static inline vlc_tick_t timestamp_FifoGet(timestamp_fifo_t *fifo)
+static inline int64_t timestamp_FifoGet(timestamp_fifo_t *fifo)
 {
     if (timestamp_FifoIsEmpty(fifo))
         return VLC_TICK_INVALID;
 
-    vlc_tick_t result = fifo->buffer[fifo->begin];
+    int64_t result = fifo->buffer[fifo->begin];
     fifo->begin = (fifo->begin + 1) % fifo->capacity;
     fifo->size -= 1;
     return result;

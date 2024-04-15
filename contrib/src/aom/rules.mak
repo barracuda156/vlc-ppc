@@ -1,5 +1,5 @@
 # aom
-AOM_VERSION := 3.6.0
+AOM_VERSION := 3.5.0
 AOM_URL := https://storage.googleapis.com/aom-releases/libaom-$(AOM_VERSION).tar.gz
 
 PKGS += aom
@@ -25,8 +25,10 @@ endif
 
 DEPS_aom =
 ifdef HAVE_WIN32
-DEPS_aom += winpthreads $(DEPS_winpthreads)
+DEPS_aom += pthreads $(DEPS_pthreads)
 endif
+
+AOM_LDFLAGS := $(LDFLAGS)
 
 AOM_CONF := \
 	-DCONFIG_RUNTIME_CPU_DETECT=1 \
@@ -36,9 +38,8 @@ AOM_CONF := \
 	-DENABLE_TOOLS=OFF \
 	-DENABLE_TESTS=OFF
 
-ifndef BUILD_ENCODERS
+# The aom module only supports decoding in 3.0.x
 AOM_CONF += -DCONFIG_AV1_ENCODER=0
-endif
 
 ifndef HAVE_WIN32
 AOM_CONF += -DCONFIG_PIC=1
@@ -51,7 +52,12 @@ AOM_CONF += -DCONFIG_RUNTIME_CPU_DETECT=0
 endif
 ifeq ($(ARCH),arm)
 # armv7, not just plain arm
+AOM_CONF += -DAOM_TARGET_CPU=armv7
 AOM_CONF += -DAOM_ADS2GAS_REQUIRED=1 -DAOM_ADS2GAS=../build/make/ads2gas.pl -DAOM_ADS2GAS_OPTS="-thumb;-noelf" -DAOM_GAS_EXT=S
+endif
+ifndef HAVE_WIN64
+AOM_CONF += -DENABLE_SSE2=0 -DENABLE_SSE3=0 -DENABLE_SSE=0 -DENABLE_SSSE3=0 -DENABLE_SSE4_1=0
+AOM_CONF += -DENABLE_SSE4_2=0 -DENABLE_AVX=0 -DENABLE_AVX2=0
 endif
 endif
 
@@ -60,26 +66,29 @@ ifneq ($(filter arm aarch64, $(ARCH)),)
 # These targets don't have runtime cpu detection.
 AOM_CONF += -DCONFIG_RUNTIME_CPU_DETECT=0
 endif
+ifeq ($(ARCH),arm)
+# armv7, not just plain arm
+AOM_CONF += -DAOM_TARGET_CPU=armv7
+endif
 endif
 
 # Force cpu detection
 ifdef HAVE_ANDROID
+ifeq ($(ARCH),arm)
+AOM_CONF += -DAOM_TARGET_CPU=armv7
+endif
 ifeq ($(ARCH),aarch64)
 AOM_CONF += -DAOM_TARGET_CPU=arm64
 endif
 endif
 
-ifeq ($(ARCH),arm)
-# armv7, not just plain arm
-AOM_CONF += -DAOM_TARGET_CPU=armv7
-endif
-
 # libaom doesn't allow in-tree builds
 .aom: aom toolchain.cmake
 	rm -rf $(PREFIX)/include/aom
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(AOM_CONF)
-	+$(CMAKEBUILD)
-	$(call pkg_static,"$(BUILD_DIRUNPACK)/aom.pc")
-	$(CMAKEINSTALL)
+	cd $< && rm -rf aom_build && mkdir -p aom_build
+	cd $< && mkdir -p aom_build
+	cd $</aom_build && LDFLAGS="$(AOM_LDFLAGS)" $(HOSTVARS) $(CMAKE) ../ $(AOM_CONF)
+	cd $< && $(CMAKEBUILD) aom_build
+	$(call pkg_static,"aom_build/aom.pc")
+	cd $</aom_build && $(CMAKEBUILD) . --target install
 	touch $@

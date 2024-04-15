@@ -2,6 +2,7 @@
  * algo_x.h : "X" algorithm for vlc deinterlacer
  *****************************************************************************
  * Copyright (C) 2000-2011 VLC authors and VideoLAN
+ * $Id: 3ac1b4289afd1ecca1ec6da520991b2e5ad4946d $
  *
  * Author: Laurent Aimar <fenrir@videolan.org>
  *
@@ -33,13 +34,13 @@ struct picture_t;
 /**
  * Interpolating deinterlace filter "X".
  *
- * The algorithm works on a 8x8 block basis; It copies the top field
+ * The algorithm works on a 8x8 block basic, it copies the top field
  * and applies a process to recreate the bottom field.
  *
  * If a 8x8 block is classified as :
  *   - progressive: it applies a small blend (1,6,1)
  *   - interlaced:
- *    * in the SIMD version: we do a ME between the 2 fields, if there is a
+ *    * in the MMX version: we do a ME between the 2 fields, if there is a
  *      good match we use MC to recreate the bottom field (with a small
  *      blend (1,6,1) )
  *    * otherwise: it recreates the bottom field by an edge oriented

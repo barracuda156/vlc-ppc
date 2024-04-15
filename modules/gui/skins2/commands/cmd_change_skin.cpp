@@ -2,6 +2,7 @@
  * cmd_change_skin.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: da59ec89eafe9a55618f072a809633d976d5bda2 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -36,7 +37,7 @@
 void CmdChangeSkin::execute()
 {
     // Save the old theme to restore it in case of problem
-    auto pOldTheme = std::move(getIntf()->p_sys->p_theme);
+    Theme *pOldTheme = getIntf()->p_sys->p_theme;
 
     if( pOldTheme )
     {
@@ -52,7 +53,7 @@ void CmdChangeSkin::execute()
         // Everything went well
         msg_Info( getIntf(), "new theme successfully loaded (%s)",
                  m_file.c_str() );
-        pOldTheme.reset();
+        delete pOldTheme;
 
         // restore vout config
         VoutManager::instance( getIntf() )->restoreVoutConfig( true );
@@ -61,9 +62,9 @@ void CmdChangeSkin::execute()
     {
         msg_Warn( getIntf(), "a problem occurred when loading the new theme,"
                   " restoring the previous one" );
-        getIntf()->p_sys->p_theme = std::move(pOldTheme);
+        getIntf()->p_sys->p_theme = pOldTheme;
         VoutManager::instance( getIntf() )->restoreVoutConfig( false );
-        getIntf()->p_sys->p_theme->getWindowManager().restoreVisibility();
+        pOldTheme->getWindowManager().restoreVisibility();
     }
     else
     {

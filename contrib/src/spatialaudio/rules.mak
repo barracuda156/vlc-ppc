@@ -3,7 +3,7 @@
 SPATIALAUDIO_VERSION := 0.3.0
 SPATIALAUDIO_URL = $(GITHUB)/videolabs/libspatialaudio/releases/download/$(SPATIALAUDIO_VERSION)/spatialaudio-$(SPATIALAUDIO_VERSION).tar.bz2
 
-DEPS_spatialaudio = zlib $(DEPS_zlib) mysofa $(DEPS_mysofa)
+DEPS_spatialaudio = zlib mysofa
 
 PKGS += spatialaudio
 
@@ -20,11 +20,8 @@ spatialaudio: spatialaudio-$(SPATIALAUDIO_VERSION).tar.bz2 .sum-spatialaudio
 	$(UNPACK)
 	$(MOVE)
 
-SPATIALAUDIO_CONF := -DMYSOFA_ROOT_DIR=$(PREFIX) -DHAVE_MIT_HRTF=OFF
-
 .spatialaudio: spatialaudio toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(SPATIALAUDIO_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+	cd $< && rm -f CMakeCache.txt
+	cd $< && $(HOSTVARS) $(CMAKE) -DMYSOFA_ROOT_DIR=$(PREFIX) -DHAVE_MIT_HRTF=OFF
+	cd $< && $(CMAKEBUILD) . --target install
 	touch $@

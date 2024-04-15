@@ -2,6 +2,7 @@
  * theme_loader.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: d018b4e92eb389897b02f72888dd79e67726a3a9 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -111,7 +112,7 @@ bool ThemeLoader::load( const std::string &fileName )
     if( ! extract( fileName ) && ! parse( path, fileName ) )
         return false;
 
-    auto &pNewTheme = getIntf()->p_sys->p_theme;
+    Theme *pNewTheme = getIntf()->p_sys->p_theme;
     if( !pNewTheme )
         return false;
 
@@ -119,7 +120,7 @@ bool ThemeLoader::load( const std::string &fileName )
     getIntf()->p_sys->p_theme->loadConfig();
 
     // Retain new loaded skins in config
-    config_PutPsz( "skins2-last", fileName.c_str() );
+    config_PutPsz( getIntf(), "skins2-last", fileName.c_str() );
 
     return true;
 }
@@ -308,7 +309,7 @@ bool ThemeLoader::parse( const std::string &path, const std::string &xmlFile )
 
     // Build and store the theme
     Builder builder( getIntf(), parser.getData(), path );
-    getIntf()->p_sys->p_theme.reset(builder.build());
+    getIntf()->p_sys->p_theme = builder.build();
 
     return true;
 }
@@ -344,7 +345,7 @@ bool ThemeLoader::findFile( const std::string &rootDir, const std::string &rFile
     const char *pszDirContent;
 
     // Open the dir
-    vlc_DIR *pCurrDir = vlc_opendir( rootDir.c_str() );
+    DIR *pCurrDir = vlc_opendir( rootDir.c_str() );
 
     if( pCurrDir == NULL )
     {
@@ -376,7 +377,7 @@ bool ThemeLoader::findFile( const std::string &rootDir, const std::string &rFile
                 // Can we find the file in this subdirectory?
                 if( findFile( newURI, rFileName, themeFilePath ) )
                 {
-                    vlc_closedir( pCurrDir );
+                    closedir( pCurrDir );
                     return true;
                 }
             }
@@ -386,14 +387,14 @@ bool ThemeLoader::findFile( const std::string &rootDir, const std::string &rFile
                 if( rFileName == std::string( pszDirContent ) )
                 {
                     themeFilePath = newURI;
-                    vlc_closedir( pCurrDir );
+                    closedir( pCurrDir );
                     return true;
                 }
             }
         }
     }
 
-    vlc_closedir( pCurrDir );
+    closedir( pCurrDir );
     return false;
 }
 

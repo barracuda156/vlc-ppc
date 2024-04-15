@@ -26,13 +26,14 @@
 # include "config.h"
 #endif
 
+#include <vlc_fixups.h>
 #include <cinttypes>
 
 #include "DASHManager.h"
 #include "mpd/ProgramInformation.h"
 #include "mpd/IsoffMainParser.h"
-#include "../adaptive/xml/DOMParser.h"
-#include "../adaptive/xml/Node.h"
+#include "xml/DOMParser.h"
+#include "xml/Node.h"
 #include "../adaptive/SharedResources.hpp"
 #include "../adaptive/tools/Helper.h"
 #include "../adaptive/http/HTTPConnectionManager.h"
@@ -71,11 +72,12 @@ void DASHManager::scheduleNextUpdate()
     if(playlist->minUpdatePeriod.Get() > minbuffer)
         minbuffer = playlist->minUpdatePeriod.Get();
 
-    minbuffer = std::max(minbuffer, VLC_TICK_FROM_SEC(5));
+    if(minbuffer < 5 * CLOCK_FREQ)
+        minbuffer = 5 * CLOCK_FREQ;
 
-    nextPlaylistupdate = now + SEC_FROM_VLC_TICK(minbuffer);
+    nextPlaylistupdate = now + minbuffer / CLOCK_FREQ;
 
-    msg_Dbg(p_demux, "Updated MPD, next update in %" PRId64 "s", (int64_t) nextPlaylistupdate - now );
+    msg_Dbg(p_demux, "Updated MPD, next update in %" PRId64 "s", (vlc_tick_t) nextPlaylistupdate - now );
 }
 
 bool DASHManager::needsUpdate() const
@@ -91,7 +93,9 @@ bool DASHManager::updatePlaylist()
     /* do update */
     if(nextPlaylistupdate)
     {
-        std::string url(p_demux->psz_url);
+        std::string url(p_demux->psz_access);
+        url.append("://");
+        url.append(p_demux->psz_location);
 
         block_t *p_block = Retrieve::HTTP(resources, ChunkType::Playlist, url);
         if(!p_block)

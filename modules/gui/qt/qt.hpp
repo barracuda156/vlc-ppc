@@ -2,6 +2,7 @@
  * qt.hpp : Qt interface
  ****************************************************************************
  * Copyright (C) 2006-2009 the VideoLAN team
+ * $Id: e59583ab712116f8590fa6465206e6505c0b51fc $
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *          Jean-Baptiste Kempf <jb@videolan.org>
@@ -28,31 +29,32 @@
 # include "config.h"
 #endif
 
-#include <vlc_common.h>
-#include <vlc_player.h>
+#include <vlc_common.h>    /* VLC_COMMON_MEMBERS for vlc_interface.h */
+#include <vlc_interface.h> /* intf_thread_t */
+#include <vlc_playlist.h>  /* playlist_t */
 
 #include <qconfig.h>
 
-#define QT_NO_CAST_TO_ASCII
-#include <QString>
-
-static_assert (QT_VERSION >= QT_VERSION_CHECK(5, 11, 0),
-               "Update your Qt version to at least 5.11.0");
-
-#if ( QT_VERSION < QT_VERSION_CHECK(5, 15, 0) )
-# define QSIGNALMAPPER_MAPPEDINT_SIGNAL QOverload<int>::of(&QSignalMapper::mapped)
-# define QSIGNALMAPPER_MAPPEDSTR_SIGNAL QOverload<const QString &>::of(&QSignalMapper::mapped)
-# define QSIGNALMAPPER_MAPPEDOBJ_SIGNAL QOverload<QObject *>::of(&QSignalMapper::mapped)
-#else
-# define QSIGNALMAPPER_MAPPEDINT_SIGNAL &QSignalMapper::mappedInt
-# define QSIGNALMAPPER_MAPPEDSTR_SIGNAL &QSignalMapper::mappedString
-# define QSIGNALMAPPER_MAPPEDOBJ_SIGNAL &QSignalMapper::mappedObject
+#ifdef QT_STATIC
+#define QT_STATICPLUGIN
 #endif
 
+#define QT_NO_CAST_TO_ASCII
+#include <QString>
+#include <QUrl>
+
+#if ( QT_VERSION < 0x050500 )
+# error Update your Qt version to at least 5.5.0
+#endif
+
+#define HAS_QT56 ( QT_VERSION >= 0x050600 )
+#define HAS_QT510 ( QT_VERSION >= 0x051000 )
 
 enum {
-    IMEventTypeOffset     = 0,
-    MsgEventTypeOffset    = 100
+    DialogEventTypeOffset = 0,
+    IMEventTypeOffset     = 100,
+    PLEventTypeOffset     = 200,
+    MsgEventTypeOffset    = 300,
 };
 
 enum{
@@ -61,102 +63,85 @@ enum{
     NOTIFICATION_ALWAYS = 2,
 };
 
-///// forward declaration
-
-extern "C" {
-typedef struct intf_dialog_args_t intf_dialog_args_t;
-typedef struct vlc_playlist vlc_playlist_t;
-typedef struct intf_thread_t intf_thread_t;
-}
-
-namespace vlc {
-class Compositor;
-
-namespace playlist {
-class PlaylistControllerModel;
-}
-
-}
-class PlayerController;
-
-///// module internal
-
-struct qt_intf_t
+struct intf_sys_t
 {
-    struct vlc_object_t obj;
-
-    /** pointer to the actual intf module */
-    intf_thread_t* intf;
-
-    /** Specific for dialogs providers */
-    void ( *pf_show_dialog ) ( struct intf_thread_t *, int, int,
-                               intf_dialog_args_t * );
-
     vlc_thread_t thread;
 
     class QVLCApp *p_app;          /* Main Qt Application */
-    class MainCtx *p_mi;     /* Main Interface, NULL if DialogProvider Mode */
+    class MainInterface *p_mi;     /* Main Interface, NULL if DialogProvider Mode */
     class QSettings *mainSettings; /* Qt State settings not messing main VLC ones */
+    class PLModel *pl_model;
 
-    unsigned voutWindowType; /* Type of vlc_window_t provided */
+    QUrl filepath;        /* Last path used in dialogs */
+
+    unsigned voutWindowType; /* Type of vout_window_t provided */
     bool b_isDialogProvider; /* Qt mode or Skins mode */
-
-    vlc_playlist_t *p_playlist;  /* playlist */
-    vlc_player_t *p_player; /* player */
-    vlc::playlist::PlaylistControllerModel* p_mainPlaylistController;
-    PlayerController* p_mainPlayerController;
-    vlc::Compositor*  p_compositor;
-
+    playlist_t *p_playlist;  /* playlist */
 #ifdef _WIN32
     bool disable_volume_keys;
 #endif
-
-    int refCount;
-    bool isShuttingDown;
 };
+
+#define THEPL p_intf->p_sys->p_playlist
 
 /**
  * This class may be used for scope-bound locking/unlocking
- * of a player_t*. As hinted, the player is locked when
+ * of a playlist_t*. As hinted, the playlist is locked when
  * the object is created, and unlocked when the object is
  * destroyed.
  */
-struct vlc_player_locker {
-    vlc_player_locker( vlc_player_t* p_player )
-        : p_player( p_player )
+
+struct vlc_playlist_locker {
+    vlc_playlist_locker( playlist_t* p_playlist )
+        : p_playlist( p_playlist )
     {
-        vlc_player_Lock( p_player );
+        playlist_Lock( p_playlist );
     }
 
-    ~vlc_player_locker()
+    ~vlc_playlist_locker()
     {
-        vlc_player_Unlock( p_player );
+        playlist_Unlock( p_playlist );
     }
 
     private:
-        vlc_player_t* p_player;
+        playlist_t* p_playlist;
 };
 
 #define THEDP DialogsProvider::getInstance()
-#define THEMIM p_intf->p_mainPlayerController
-#define THEMPL p_intf->p_mainPlaylistController
+#define THEMIM MainInputManager::getInstance( p_intf )
+#define THEAM ActionsManager::getInstance( p_intf )
 
 #define qfu( i ) QString::fromUtf8( i )
 #define qfue( i ) QString::fromUtf8( i ).replace( "&", "&&" ) /* for actions/buttons */
-#define qfut( i ) QString::fromUtf8( vlc_gettext(i) )
+#define qtr( i ) QString::fromUtf8( vlc_gettext(i) )
 #define qtu( i ) ((i).toUtf8().constData())
 
-/* For marking translatable static strings (like `_()`) */
-#define qtr( i ) qfut( i )
+#define CONNECT( a, b, c, d ) \
+        connect( a, SIGNAL(b), c, SLOT(d) )
+#define DCONNECT( a, b, c, d ) \
+        connect( a, SIGNAL(b), c, SLOT(d), Qt::DirectConnection )
+#define BUTTONACT( b, a ) connect( b, SIGNAL(clicked()), this, SLOT(a) )
 
-#define BUTTONACT( b, a ) connect( b, &QAbstractButton::clicked, this, a )
+#define BUTTON_SET( button, text, tooltip )  \
+    button->setText( text );                 \
+    button->setToolTip( tooltip );
 
 #define BUTTON_SET_ACT( button, text, tooltip, thisslot ) \
-    button->setText( text );       \
-    button->setToolTip( tooltip ); \
+    BUTTON_SET( button, text, tooltip );                  \
     BUTTONACT( button, thisslot );
 
-#define getSettings() p_intf->mainSettings
+#define BUTTON_SET_IMG( button, text, image, tooltip )    \
+    BUTTON_SET( button, text, tooltip );                  \
+    button->setIcon( QIcon( ":/"#image ".svg") );
+
+#define BUTTON_SET_ACT_I( button, text, image, tooltip, thisslot ) \
+    BUTTON_SET_IMG( button, text, image, tooltip );                \
+    BUTTONACT( button, thisslot );
+
+/* for widgets which must not follow the RTL auto layout changes */
+#define RTL_UNAFFECTED_WIDGET setLayoutDirection( Qt::LeftToRight );
+
+#define getSettings() p_intf->p_sys->mainSettings
 
 static inline QString QVLCUserDir( vlc_userdir_t type )
 {
@@ -173,7 +158,5 @@ static inline QString QVLCUserDir( vlc_userdir_t type )
  * Note this icon doesn't represent an endorsment of Coca-Cola company.
  */
 #define QT_XMAS_JOKE_DAY 354
-
-#define QT_CLIENT_SIDE_DECORATION_AVAILABLE (QT_VERSION >= QT_VERSION_CHECK(5,15,0))
 
 #endif

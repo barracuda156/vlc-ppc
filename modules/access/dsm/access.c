@@ -43,15 +43,12 @@
 #ifdef HAVE_SYS_SOCKET_H
 # include <sys/socket.h>
 # include <netinet/in.h>
+# include <arpa/inet.h>
 # include <netdb.h>
-#endif
-#ifdef HAVE_ARPA_INET_H
-#include <arpa/inet.h>
 #endif
 
 #include <bdsm/bdsm.h>
 #include "../smb_common.h"
-#include "../cache.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -60,12 +57,13 @@ int bdsm_SdOpen( vlc_object_t * );
 void bdsm_SdClose( vlc_object_t * );
 int bdsm_sd_probe_Open( vlc_object_t * );
 
-#define SMB_FORCE_V1_TEXT N_("Force the SMBv1 protocol (At your own risk)")
+/* Not translated since added after the VLC 3.0 release */
+#define SMB_FORCE_V1_TEXT "Force the SMBv1 protocol (At your own risk)"
 #define SMB_FORCE_V1_LONGTEXT \
-    N_("Enable it, at your own risk, if you can't connect to Windows shares. " \
+    "Enable it, at your own risk, if you can't connect to Windows shares. " \
     "If this option is needed, you should consider updating your Windows / " \
     "Samba server and disabling the SMBv1 protocol as using this protocol " \
-    "has security implications.")
+    "has security implications."
 
 static int OpenNotForced( vlc_object_t * );
 static int OpenForced( vlc_object_t * );
@@ -79,11 +77,12 @@ vlc_module_begin ()
     set_shortname( "dsm" )
     set_description( N_("libdsm SMB input") )
     set_help(BDSM_HELP)
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
-    add_string( "smb-user", NULL, SMB_USER_TEXT, SMB_USER_LONGTEXT )
-    add_password("smb-pwd", NULL, SMB_PASS_TEXT, SMB_PASS_LONGTEXT)
-    add_string( "smb-domain", NULL, SMB_DOMAIN_TEXT, SMB_DOMAIN_LONGTEXT )
-    add_bool( "smb-force-v1", false, SMB_FORCE_V1_TEXT, SMB_FORCE_V1_LONGTEXT )
+    add_string( "smb-user", NULL, SMB_USER_TEXT, SMB_USER_LONGTEXT, false )
+    add_password( "smb-pwd", NULL, SMB_PASS_TEXT, SMB_PASS_LONGTEXT, false )
+    add_string( "smb-domain", NULL, SMB_DOMAIN_TEXT, SMB_DOMAIN_LONGTEXT, false )
+    add_bool( "smb-force-v1", false, SMB_FORCE_V1_TEXT, SMB_FORCE_V1_LONGTEXT, false )
     add_shortcut( "smb", "cifs" )
 
     set_capability( "access", 22 )
@@ -97,6 +96,7 @@ vlc_module_begin ()
     add_submodule()
         add_shortcut( "dsm-sd" )
         set_description( N_("libdsm NETBIOS discovery module") )
+        set_category( CAT_PLAYLIST )
         set_subcategory( SUBCAT_PLAYLIST_SD )
         set_capability( "services_discovery", 0 )
         set_callbacks( bdsm_SdOpen, bdsm_SdClose )
@@ -108,15 +108,6 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-
-struct dsm_cache_context
-{
-    smb_session *session;
-    smb_tid tid;
-};
-
-VLC_ACCESS_CACHE_REGISTER(dsm_cache);
-
 static ssize_t Read( stream_t *, void *, size_t );
 static int Seek( stream_t *, uint64_t );
 static int Control( stream_t *, int, va_list );
@@ -126,9 +117,9 @@ static int get_address( stream_t *p_access );
 static int login( stream_t *p_access );
 static bool get_path( stream_t *p_access );
 static int add_item( stream_t *p_access,  struct vlc_readdir_helper *p_rdh,
-                     const char *psz_name, int i_type, smb_stat *p_st );
+                     const char *psz_name, int i_type );
 
-typedef struct
+struct access_sys_t
 {
     smb_session        *p_session;          /**< bdsm SMB Session object */
 
@@ -142,9 +133,7 @@ typedef struct
 
     smb_fd              i_fd;               /**< SMB fd for the file we're reading */
     smb_tid             i_tid;              /**< SMB Tree ID we're connected to */
-
-    struct vlc_access_cache_entry *cache_entry;
-} access_sys_t;
+};
 
 #if BDSM_VERSION_CURRENT >= 5
 
@@ -314,7 +303,6 @@ static int OpenNotForced( vlc_object_t *p_this )
 /*****************************************************************************
  * Close: free unused data structures
  *****************************************************************************/
-
 static void Close( vlc_object_t *p_this )
 {
     stream_t     *p_access = (stream_t*)p_this;
@@ -322,13 +310,10 @@ static void Close( vlc_object_t *p_this )
 
     if( p_sys->i_fd )
         smb_fclose( p_sys->p_session, p_sys->i_fd );
+    if( p_sys->p_session )
+        smb_session_destroy( p_sys->p_session );
     vlc_UrlClean( &p_sys->url );
     free( p_sys->psz_fullpath );
-
-    if( p_sys->cache_entry )
-        vlc_access_cache_AddEntry( &dsm_cache, p_sys->cache_entry );
-    else if( p_sys->p_session != NULL )
-        smb_session_destroy( p_sys->p_session );
 
     free( p_sys );
 }
@@ -343,7 +328,7 @@ static int get_address( stream_t *p_access )
     access_sys_t *p_sys = p_access->p_sys;
 
     if( p_sys->url.psz_host != NULL &&
-        inet_pton( AF_INET, p_sys->url.psz_host, &p_sys->addr ) != 1 )
+        !inet_pton( AF_INET, p_sys->url.psz_host, &p_sys->addr ) )
     {
         /* This is not an ip address, let's try netbios/dns resolve */
         struct addrinfo *p_info = NULL;
@@ -451,14 +436,6 @@ error:
         == NT_STATUS_ACCESS_DENIED ? EACCES : ENOENT;
 }
 
-static void
-dsm_FreeContext(void *context_)
-{
-    struct dsm_cache_context *context = context_;
-    smb_session_destroy( context->session );
-    free( context );
-}
-
 /* Performs login with existing credentials and ask the user for new ones on
    failure */
 static int login( stream_t *p_access )
@@ -474,10 +451,8 @@ static int login( stream_t *p_access )
     psz_var_domain = var_InheritString( p_access, "smb-domain" );
     credential.psz_realm = psz_var_domain ? psz_var_domain : NULL;
 
-    if (vlc_credential_get( &credential, p_access, "smb-user", "smb-pwd",
-                            NULL, NULL ) == -EINTR )
-        goto error;
-
+    vlc_credential_get( &credential, p_access, "smb-user", "smb-pwd",
+                        NULL, NULL );
 
     if( !credential.psz_username )
     {
@@ -491,33 +466,6 @@ static int login( stream_t *p_access )
         psz_password = credential.psz_password;
     }
     psz_domain = credential.psz_realm ? credential.psz_realm : p_sys->netbios_name;
-
-    struct vlc_access_cache_entry *cache_entry =
-        vlc_access_cache_GetSmbEntry( &dsm_cache, p_sys->netbios_name, p_sys->psz_share,
-                                      credential.psz_username);
-
-    if( cache_entry != NULL )
-    {
-        struct dsm_cache_context *context = cache_entry->context;
-
-        smb_session_interrupt_register( p_sys );
-        int ret = smb_fopen( context->session, context->tid,
-                             p_sys->psz_path, SMB_MOD_RO, &p_sys->i_fd );
-        smb_session_interrupt_unregister();
-
-        if( ret == DSM_SUCCESS )
-        {
-            p_sys->cache_entry = cache_entry;
-
-            smb_session_destroy( p_sys->p_session );
-
-            p_sys->p_session = context->session;
-            p_sys->i_tid = context->tid;
-            i_ret = VLC_SUCCESS;
-            msg_Dbg( p_access, "re-using old dsm session" );
-            goto error;
-        }
-    }
 
     smb_session_interrupt_register( p_sys );
 
@@ -555,7 +503,7 @@ static int login( stream_t *p_access )
         while( connect_err == EACCES
             && vlc_credential_get( &credential, p_access, "smb-user", "smb-pwd",
                                    SMB1_LOGIN_DIALOG_TITLE,
-                                   SMB_LOGIN_DIALOG_TEXT, p_sys->netbios_name ) == 0 )
+                                   SMB_LOGIN_DIALOG_TEXT, p_sys->netbios_name ) )
         {
             b_guest = false;
             psz_login = credential.psz_username;
@@ -587,28 +535,6 @@ static int login( stream_t *p_access )
     if( !b_guest )
         vlc_credential_store( &credential, p_access );
 
-    if( p_sys->psz_share )
-    {
-        struct dsm_cache_context *context = malloc(sizeof(*context));
-        if( context )
-        {
-            context->session = p_sys->p_session;
-            context->tid = p_sys->i_tid;
-            p_sys->cache_entry =
-                vlc_access_cache_entry_NewSmb( context, p_sys->netbios_name,
-                                               p_sys->psz_share,
-                                               credential.psz_username,
-                                               dsm_FreeContext);
-        }
-        else
-            p_sys->cache_entry = NULL;
-
-        if( p_sys->cache_entry == NULL )
-        {
-            smb_session_destroy( p_sys->p_session );
-            goto error;
-        }
-    }
     i_ret = VLC_SUCCESS;
 error:
     vlc_credential_clean( &credential );
@@ -645,7 +571,7 @@ static bool get_path( stream_t *p_access )
     backslash_path( p_sys->psz_fullpath );
 
     /* Is path longer than just "/" ? */
-    if( strnlen( p_sys->psz_fullpath, 1+1 ) > 1 )
+    if( strlen( p_sys->psz_fullpath ) > 1 )
     {
         iter = p_sys->psz_fullpath;
         while( *iter == '\\' ) iter++; /* Handle smb://Host/////Share/ */
@@ -747,8 +673,8 @@ static int Control( stream_t *p_access, int i_query, va_list args )
         break;
     }
     case STREAM_GET_PTS_DELAY:
-        *va_arg( args, vlc_tick_t * ) = VLC_TICK_FROM_MS(
-            var_InheritInteger( p_access, "network-caching" ) );
+        *va_arg( args, int64_t * ) = INT64_C(1000)
+            * var_InheritInteger( p_access, "network-caching" );
         break;
 
     case STREAM_SET_PAUSE_STATE:
@@ -763,7 +689,7 @@ static int Control( stream_t *p_access, int i_query, va_list args )
 }
 
 static int add_item( stream_t *p_access, struct vlc_readdir_helper *p_rdh,
-                     const char *psz_name, int i_type, smb_stat *p_st )
+                     const char *psz_name, int i_type )
 {
     char         *psz_uri;
     int           i_ret;
@@ -780,16 +706,8 @@ static int add_item( stream_t *p_access, struct vlc_readdir_helper *p_rdh,
     if( i_ret == -1 )
         return VLC_ENOMEM;
 
-    input_item_t *p_item;
-    i_ret = vlc_readdir_helper_additem( p_rdh, psz_uri, NULL, psz_name, i_type,
-                                        ITEM_NET, &p_item );
-    if ( i_ret == VLC_SUCCESS && p_item && p_st )
-    {
-        input_item_AddStat( p_item, "mtime", smb_stat_get( *p_st, SMB_STAT_MTIME ));
-        input_item_AddStat( p_item, "size", smb_stat_get( *p_st, SMB_STAT_SIZE ));
-    }
-    free( psz_uri );
-    return i_ret;
+    return vlc_readdir_helper_additem( p_rdh, psz_uri, NULL, psz_name, i_type,
+                                       ITEM_NET );
 }
 
 static int BrowseShare( stream_t *p_access, input_item_node_t *p_node )
@@ -821,7 +739,7 @@ static int BrowseShare( stream_t *p_access, input_item_node_t *p_node )
         if( psz_name[strlen( psz_name ) - 1] == '$')
             continue;
 
-        i_ret = add_item( p_access, &rdh, psz_name, ITEM_TYPE_DIRECTORY, NULL );
+        i_ret = add_item( p_access, &rdh, psz_name, ITEM_TYPE_DIRECTORY );
     }
 
     vlc_readdir_helper_finish( &rdh, i_ret == VLC_SUCCESS );
@@ -879,7 +797,7 @@ static int BrowseDirectory( stream_t *p_access, input_item_node_t *p_node )
 
         i_type = smb_stat_get( st, SMB_STAT_ISDIR ) ?
                  ITEM_TYPE_DIRECTORY : ITEM_TYPE_FILE;
-        i_ret = add_item( p_access, &rdh, psz_name, i_type, &st );
+        i_ret = add_item( p_access, &rdh, psz_name, i_type );
     }
 
     vlc_readdir_helper_finish( &rdh, i_ret == VLC_SUCCESS );

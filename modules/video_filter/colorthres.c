@@ -2,6 +2,7 @@
  * colorthres.c: Threshold color based on similarity to reference color
  *****************************************************************************
  * Copyright (C) 2000-2009 VLC authors and VideoLAN
+ * $Id: 314ac80f4111ae4ae9599c76a43f83874d5414b3 $
  *
  * Authors: Sigmund Augdal <dnumgis@videolan.org>
  *          Antoine Cellerier <dionoea at videolan dot org>
@@ -30,11 +31,11 @@
 #endif
 
 #include <math.h>
-#include <stdatomic.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_sout.h>
+#include <vlc_atomic.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include "filter_picture.h"
@@ -42,10 +43,11 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static picture_t *FilterPacked( filter_t *, picture_t * );
-VIDEO_FILTER_WRAPPER_CLOSE( Filter, Destroy )
 
 /*****************************************************************************
  * Module descriptor
@@ -68,14 +70,17 @@ vlc_module_begin ()
     set_description( N_("Color threshold filter") )
     set_shortname( N_("Color threshold" ))
     set_help(COLOR_HELP)
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    add_rgb(CFG_PREFIX "color", 0x00FF0000, COLOR_TEXT, COLOR_LONGTEXT)
+    set_capability( "video filter", 0 )
+    add_rgb( CFG_PREFIX "color", 0x00FF0000, COLOR_TEXT,
+                 COLOR_LONGTEXT, false )
         change_integer_list( pi_color_values, ppsz_color_descriptions )
     add_integer( CFG_PREFIX "saturationthres", 20,
-                 N_("Saturation threshold"), "" )
+                 N_("Saturation threshold"), "", false )
     add_integer( CFG_PREFIX "similaritythres", 15,
-                 N_("Similarity threshold"), "" )
-    set_callback_video_filter( Create )
+                 N_("Similarity threshold"), "", false )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -92,16 +97,11 @@ static int FilterCallback( vlc_object_t *, char const *,
 /*****************************************************************************
  * filter_sys_t: adjust filter method descriptor
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     atomic_int i_simthres;
     atomic_int i_satthres;
     atomic_int i_color;
-} filter_sys_t;
-
-static const struct vlc_filter_operations packed_filter_ops =
-{
-    .filter_video = FilterPacked, .close = Destroy,
 };
 
 /*****************************************************************************
@@ -109,18 +109,19 @@ static const struct vlc_filter_operations packed_filter_ops =
  *****************************************************************************
  * This function allocates and initializes a adjust vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     switch( p_filter->fmt_in.video.i_chroma )
     {
         CASE_PLANAR_YUV
-            p_filter->ops = &Filter_ops;
+            p_filter->pf_video_filter = Filter;
             break;
 
         CASE_PACKED_YUV_422
-            p_filter->ops = &packed_filter_ops;
+            p_filter->pf_video_filter = FilterPacked;
             break;
 
         default:
@@ -161,7 +162,7 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method created by adjustCreateOutputMethod
  *****************************************************************************/
-static void Destroy( filter_t *p_this )
+static void Destroy( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
@@ -205,12 +206,22 @@ static bool IsSimilar( int u, int v,
  * waits until it is displayed and switch the two rendering buffers, preparing
  * next frame.
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
     filter_sys_t *p_sys = p_filter->p_sys;
     int i_simthres = atomic_load( &p_sys->i_simthres );
     int i_satthres = atomic_load( &p_sys->i_satthres );
     int i_color = atomic_load( &p_sys->i_color );
+
+    if( !p_pic ) return NULL;
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     /* Copy the Y plane */
     plane_CopyPixels( &p_outpic->p[Y_PLANE], &p_pic->p[Y_PLANE] );
@@ -247,6 +258,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
             p_src_v++;
         }
     }
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 static picture_t *FilterPacked( filter_t *p_filter, picture_t *p_pic )

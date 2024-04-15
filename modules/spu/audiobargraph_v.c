@@ -31,8 +31,6 @@
 #include <string.h>
 #include <math.h>
 
-#include "common.h"
-
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
@@ -43,6 +41,18 @@
  * Module descriptor
  *****************************************************************************/
 
+#define POSX_TEXT N_("X coordinate")
+#define POSX_LONGTEXT N_("X coordinate of the bargraph.")
+#define POSY_TEXT N_("Y coordinate")
+#define POSY_LONGTEXT N_("Y coordinate of the bargraph.")
+#define TRANS_TEXT N_("Transparency of the bargraph")
+#define TRANS_LONGTEXT N_("Bargraph transparency value " \
+  "(from 0 for full transparency to 255 for full opacity).")
+#define POS_TEXT N_("Bargraph position")
+#define POS_LONGTEXT N_(\
+  "Enforce the bargraph position on the video " \
+  "(0=center, 1=left, 2=right, 4=top, 8=bottom, you can " \
+  "also use combinations of these values, eg 6 = top-right).")
 #define BARWIDTH_TEXT N_("Bar width in pixel")
 #define BARWIDTH_LONGTEXT N_("Width in pixel of each bar in the BarGraph to be displayed." )
 #define BARHEIGHT_TEXT N_("Bar Height in pixel")
@@ -50,32 +60,41 @@
 
 #define CFG_PREFIX "audiobargraph_v-"
 
-static int  OpenSub  (filter_t *);
-static int  OpenVideo(filter_t *);
-static void Close    (filter_t *);
+static const int pi_pos_values[] = { 0, 1, 2, 4, 8, 5, 6, 9, 10 };
+static const char *const ppsz_pos_descriptions[] =
+{ N_("Center"), N_("Left"), N_("Right"), N_("Top"), N_("Bottom"),
+  N_("Top-Left"), N_("Top-Right"), N_("Bottom-Left"), N_("Bottom-Right") };
+
+static int  OpenSub  (vlc_object_t *);
+static int  OpenVideo(vlc_object_t *);
+static void Close    (vlc_object_t *);
 
 vlc_module_begin ()
 
+    set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_SUBPIC)
 
-    set_callback_sub_source(OpenSub, 0)
+    set_capability("sub source", 0)
+    set_callbacks(OpenSub, Close)
     set_description(N_("Audio Bar Graph Video sub source"))
     set_shortname(N_("Audio Bar Graph Video"))
     add_shortcut("audiobargraph_v")
 
-    add_integer(CFG_PREFIX "x", -1, POSX_TEXT, POSX_LONGTEXT)
-    add_integer(CFG_PREFIX "y", -1, POSY_TEXT, POSY_LONGTEXT)
-    add_obsolete_integer(CFG_PREFIX "transparency") /* since 4.0.0 */
-    add_integer_with_range(CFG_PREFIX "opacity", 255, 0, 255,
-        OPACITY_TEXT, OPACITY_LONGTEXT)
-    add_integer(CFG_PREFIX "position", -1, POS_TEXT, POS_LONGTEXT)
+    add_obsolete_string(CFG_PREFIX "i_values")
+    add_integer(CFG_PREFIX "x", 0, POSX_TEXT, POSX_LONGTEXT, true)
+    add_integer(CFG_PREFIX "y", 0, POSY_TEXT, POSY_LONGTEXT, true)
+    add_integer_with_range(CFG_PREFIX "transparency", 255, 0, 255,
+        TRANS_TEXT, TRANS_LONGTEXT, false)
+    add_integer(CFG_PREFIX "position", -1, POS_TEXT, POS_LONGTEXT, false)
         change_integer_list(pi_pos_values, ppsz_pos_descriptions)
-    add_integer(CFG_PREFIX "barWidth", 10, BARWIDTH_TEXT, BARWIDTH_LONGTEXT)
-    add_integer(CFG_PREFIX "barHeight", 400, BARHEIGHT_TEXT, BARHEIGHT_LONGTEXT)
+    add_obsolete_integer(CFG_PREFIX "alarm")
+    add_integer(CFG_PREFIX "barWidth", 10, BARWIDTH_TEXT, BARWIDTH_LONGTEXT, true)
+    add_integer(CFG_PREFIX "barHeight", 400, BARHEIGHT_TEXT, BARHEIGHT_LONGTEXT, true)
 
     /* video output filter submodule */
     add_submodule ()
-    set_callback_video_filter(OpenVideo)
+    set_capability("video filter", 0)
+    set_callbacks(OpenVideo, Close)
     set_description(N_("Audio Bar Graph Video sub source"))
     add_shortcut("audiobargraph_v")
 vlc_module_end ()
@@ -104,9 +123,9 @@ typedef struct
 /**
  * Private data holder
  */
-typedef struct
+struct filter_sys_t
 {
-    vlc_blender_t *p_blend;
+    filter_t *p_blend;
 
     vlc_mutex_t lock;
 
@@ -115,19 +134,20 @@ typedef struct
     int i_pos;
     int i_pos_x;
     int i_pos_y;
+    bool b_absolute;
 
     /* On the fly control variable */
     bool b_spu_update;
-} filter_sys_t;
+};
 
 static const char *const ppsz_filter_options[] = {
-    "x", "y", "opacity", "position", "barWidth", "barHeight", NULL
+    "x", "y", "transparency", "position", "barWidth", "barHeight", NULL
 };
 
 static const char *const ppsz_filter_callbacks[] = {
     "audiobargraph_v-x",
     "audiobargraph_v-y",
-    "audiobargraph_v-opacity",
+    "audiobargraph_v-transparency",
     "audiobargraph_v-position",
     "audiobargraph_v-barWidth",
     "audiobargraph_v-barHeight",
@@ -312,7 +332,7 @@ static int BarGraphCallback(vlc_object_t *p_this, char const *psz_var,
         p_sys->i_pos_y = newval.i_int;
     else if (!strcmp(psz_var, CFG_PREFIX "position"))
         p_sys->i_pos = newval.i_int;
-    else if (!strcmp(psz_var, CFG_PREFIX "opacity"))
+    else if (!strcmp(psz_var, CFG_PREFIX "transparency"))
         p_BarGraph->i_alpha = VLC_CLIP(newval.i_int, 0, 255);
     else if (!strcmp(psz_var, CFG_PREFIX "i_values")) {
         if (newval.psz_string)
@@ -361,6 +381,7 @@ static subpicture_t *FilterSub(filter_t *p_filter, vlc_tick_t date)
     if (!p_spu)
         goto exit;
 
+    p_spu->b_absolute = p_sys->b_absolute;
     p_spu->i_start = date;
     p_spu->i_stop = 0;
     p_spu->b_ephemer = true;
@@ -370,7 +391,8 @@ static subpicture_t *FilterSub(filter_t *p_filter, vlc_tick_t date)
         goto exit;
 
     /* Create new SPU region */
-    video_format_Init(&fmt, VLC_CODEC_YUVA);
+    memset(&fmt, 0, sizeof(video_format_t));
+    fmt.i_chroma = VLC_CODEC_YUVA;
     fmt.i_sar_num = fmt.i_sar_den = 1;
     fmt.i_width = fmt.i_visible_width = p_pic->p[Y_PLANE].i_visible_pitch;
     fmt.i_height = fmt.i_visible_height = p_pic->p[Y_PLANE].i_visible_lines;
@@ -388,15 +410,15 @@ static subpicture_t *FilterSub(filter_t *p_filter, vlc_tick_t date)
 
     /*  where to locate the bar graph: */
     if (p_sys->i_pos < 0) {   /*  set to an absolute xy */
-        p_region->i_align = SUBPICTURE_ALIGN_LEFT | SUBPICTURE_ALIGN_TOP;
+        p_region->i_align = SUBPICTURE_ALIGN_RIGHT | SUBPICTURE_ALIGN_TOP;
         p_spu->b_absolute = true;
     } else {   /* set to one of the 9 relative locations */
         p_region->i_align = p_sys->i_pos;
         p_spu->b_absolute = false;
     }
 
-    p_region->i_x = p_sys->i_pos_x > 0 ? p_sys->i_pos_x : 0;
-    p_region->i_y = p_sys->i_pos_y > 0 ? p_sys->i_pos_y : 0;
+    p_region->i_x = p_sys->i_pos_x;
+    p_region->i_y = p_sys->i_pos_y;
 
     p_spu->p_region = p_region;
 
@@ -436,30 +458,20 @@ static picture_t *FilterVideo(filter_t *p_filter, picture_t *p_src)
     const int i_dst_w = p_filter->fmt_out.video.i_visible_width;
     const int i_dst_h = p_filter->fmt_out.video.i_visible_height;
 
-    if (p_sys->i_pos >= 0) {
-        if (p_sys->i_pos & SUBPICTURE_ALIGN_TOP)
-            p_sys->i_pos_y = 0;
-        else if (p_sys->i_pos & SUBPICTURE_ALIGN_BOTTOM)
+    if (p_sys->i_pos) {
+        if (p_sys->i_pos & SUBPICTURE_ALIGN_BOTTOM)
             p_sys->i_pos_y = i_dst_h - p_fmt->i_visible_height;
-        else
+        else if (!(p_sys->i_pos & SUBPICTURE_ALIGN_TOP))
             p_sys->i_pos_y = (i_dst_h - p_fmt->i_visible_height) / 2;
-
-        if (p_sys->i_pos & SUBPICTURE_ALIGN_LEFT)
-            p_sys->i_pos_x = 0;
-        else if (p_sys->i_pos & SUBPICTURE_ALIGN_RIGHT)
-            p_sys->i_pos_x = i_dst_w - p_fmt->i_visible_width;
         else
-            p_sys->i_pos_x = (i_dst_w - p_fmt->i_visible_width) / 2;
-    }
+            p_sys->i_pos_y = 0;
 
-    if( p_sys->i_pos_x < 0 || p_sys->i_pos_y < 0 )
-    {
-        msg_Warn( p_filter,
-            "bargraph(%ix%i) doesn't fit into video(%ix%i)",
-            p_fmt->i_visible_width, p_fmt->i_visible_height,
-            i_dst_w,i_dst_h );
-        p_sys->i_pos_x = (p_sys->i_pos_x > 0) ? p_sys->i_pos_x : 0;
-        p_sys->i_pos_y = (p_sys->i_pos_y > 0) ? p_sys->i_pos_y : 0;
+        if (p_sys->i_pos & SUBPICTURE_ALIGN_RIGHT)
+            p_sys->i_pos_x = i_dst_w - p_fmt->i_visible_width;
+        else if (!(p_sys->i_pos & SUBPICTURE_ALIGN_LEFT))
+            p_sys->i_pos_x = (i_dst_w - p_fmt->i_visible_width) / 2;
+        else
+            p_sys->i_pos_x = 0;
     }
 
     /* */
@@ -476,19 +488,12 @@ out:
     return p_dst;
 }
 
-static const struct vlc_filter_operations filter_sub_ops = {
-    .source_sub = FilterSub, .close = Close
-};
-
-static const struct vlc_filter_operations filter_video_ops = {
-    .filter_video = FilterVideo, .close = Close,
-};
-
 /**
  * Common open function
  */
-static int OpenCommon(filter_t *p_filter, bool b_sub)
+static int OpenCommon(vlc_object_t *p_this, bool b_sub)
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     /* */
@@ -524,7 +529,7 @@ static int OpenCommon(filter_t *p_filter, bool b_sub)
     p_sys->i_pos_y = var_CreateGetInteger(p_filter, CFG_PREFIX "y");
     BarGraph_t *p_BarGraph = &p_sys->p_BarGraph;
     p_BarGraph->p_pic = NULL;
-    p_BarGraph->i_alpha = var_CreateGetInteger(p_filter, CFG_PREFIX "opacity");
+    p_BarGraph->i_alpha = var_CreateGetInteger(p_filter, CFG_PREFIX "transparency");
     p_BarGraph->i_alpha = VLC_CLIP(p_BarGraph->i_alpha, 0, 255);
     p_BarGraph->i_values = NULL;
     parse_i_values(p_BarGraph, &(char){ 0 });
@@ -535,28 +540,28 @@ static int OpenCommon(filter_t *p_filter, bool b_sub)
 
     /* Ignore alignment if a position is given for video filter */
     if (!b_sub && p_sys->i_pos_x >= 0 && p_sys->i_pos_y >= 0)
-        p_sys->i_pos = -1;
-
-    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_filter));
+        p_sys->i_pos = 0;
 
     vlc_mutex_init(&p_sys->lock);
-    var_Create(vlc, CFG_PREFIX "alarm", VLC_VAR_BOOL);
-    var_Create(vlc, CFG_PREFIX "i_values", VLC_VAR_STRING);
+    var_Create(p_filter->obj.libvlc, CFG_PREFIX "alarm", VLC_VAR_BOOL);
+    var_Create(p_filter->obj.libvlc, CFG_PREFIX "i_values", VLC_VAR_STRING);
 
-    var_AddCallback(vlc, CFG_PREFIX "alarm", BarGraphCallback, p_sys);
-    var_AddCallback(vlc, CFG_PREFIX "i_values", BarGraphCallback, p_sys);
+    var_AddCallback(p_filter->obj.libvlc, CFG_PREFIX "alarm",
+                    BarGraphCallback, p_sys);
+    var_AddCallback(p_filter->obj.libvlc, CFG_PREFIX "i_values",
+                    BarGraphCallback, p_sys);
 
-    var_TriggerCallback(vlc, CFG_PREFIX "alarm");
-    var_TriggerCallback(vlc, CFG_PREFIX "i_values");
+    var_TriggerCallback(p_filter->obj.libvlc, CFG_PREFIX "alarm");
+    var_TriggerCallback(p_filter->obj.libvlc, CFG_PREFIX "i_values");
 
     for (int i = 0; ppsz_filter_callbacks[i]; i++)
         var_AddCallback(p_filter, ppsz_filter_callbacks[i],
                          BarGraphCallback, p_sys);
 
     if (b_sub)
-        p_filter->ops = &filter_sub_ops;
+        p_filter->pf_sub_source = FilterSub;
     else
-        p_filter->ops = &filter_video_ops;
+        p_filter->pf_video_filter = FilterVideo;
 
     return VLC_SUCCESS;
 }
@@ -564,38 +569,42 @@ static int OpenCommon(filter_t *p_filter, bool b_sub)
 /**
  * Open the sub source
  */
-static int OpenSub(filter_t *p_filter)
+static int OpenSub(vlc_object_t *p_this)
 {
-    return OpenCommon(p_filter, true);
+    return OpenCommon(p_this, true);
 }
 
 /**
  * Open the video filter
  */
-static int OpenVideo(filter_t *p_filter)
+static int OpenVideo(vlc_object_t *p_this)
 {
-    return OpenCommon(p_filter, false);
+    return OpenCommon(p_this, false);
 }
 
 /**
  * Common close function
  */
-static void Close(filter_t *p_filter)
+static void Close(vlc_object_t *p_this)
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
-    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_filter));
 
     for (int i = 0; ppsz_filter_callbacks[i]; i++)
         var_DelCallback(p_filter, ppsz_filter_callbacks[i],
                          BarGraphCallback, p_sys);
 
-    var_DelCallback(vlc, CFG_PREFIX "i_values", BarGraphCallback, p_sys);
-    var_DelCallback(vlc, CFG_PREFIX "alarm", BarGraphCallback, p_sys);
-    var_Destroy(vlc, CFG_PREFIX "i_values");
-    var_Destroy(vlc, CFG_PREFIX "alarm");
+    var_DelCallback(p_filter->obj.libvlc, CFG_PREFIX "i_values",
+                    BarGraphCallback, p_sys);
+    var_DelCallback(p_filter->obj.libvlc, CFG_PREFIX "alarm",
+                    BarGraphCallback, p_sys);
+    var_Destroy(p_filter->obj.libvlc, CFG_PREFIX "i_values");
+    var_Destroy(p_filter->obj.libvlc, CFG_PREFIX "alarm");
 
     if (p_sys->p_blend)
         filter_DeleteBlend(p_sys->p_blend);
+
+    vlc_mutex_destroy(&p_sys->lock);
 
     if (p_sys->p_BarGraph.p_pic)
         picture_Release(p_sys->p_BarGraph.p_pic);

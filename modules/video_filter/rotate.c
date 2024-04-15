@@ -2,6 +2,7 @@
  * rotate.c : video rotation filter
  *****************************************************************************
  * Copyright (C) 2000-2008 VLC authors and VideoLAN
+ * $Id: 566a4e243eba1fdd40317a2b22ee644335e1baee $
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *
@@ -29,11 +30,11 @@
 #endif
 
 #include <math.h>                                            /* sin(), cos() */
-#include <stdatomic.h>
 
 #define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+#include <vlc_atomic.h>
 #include <vlc_filter.h>
 #include <vlc_mouse.h>
 #include <vlc_picture.h>
@@ -43,12 +44,13 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static int Mouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
-                  const vlc_mouse_t *p_old );
+                  const vlc_mouse_t *p_old, const vlc_mouse_t *p_new );
 static picture_t *FilterPacked( filter_t *, picture_t * );
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 static int RotateCallback( vlc_object_t *p_this, char const *psz_var,
                            vlc_value_t oldval, vlc_value_t newval,
@@ -68,52 +70,64 @@ static int RotateCallback( vlc_object_t *p_this, char const *psz_var,
 vlc_module_begin ()
     set_description( N_("Rotate video filter") )
     set_shortname( N_( "Rotate" ))
+    set_capability( "video filter", 0 )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
-    add_float( FILTER_PREFIX "angle", 30., ANGLE_TEXT, ANGLE_LONGTEXT )
+    add_float( FILTER_PREFIX "angle", 30., ANGLE_TEXT, ANGLE_LONGTEXT, false )
     add_bool( FILTER_PREFIX "use-motion", false, MOTION_TEXT,
-              MOTION_LONGTEXT )
+              MOTION_LONGTEXT, false )
 
     add_shortcut( "rotate" )
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
     "angle", "use-motion", NULL
 };
 
-typedef struct {
-    int16_t sin;
-    int16_t cos;
+/*****************************************************************************
+ * filter_sys_t
+ *****************************************************************************/
+struct filter_sys_t
+{
+    atomic_uint_fast32_t sincos;
+    motion_sensors_t *p_motion;
+};
+
+typedef union {
+    uint32_t u;
+    struct {
+        int16_t sin;
+        int16_t cos;
+    };
 } sincos_t;
 
-typedef struct
-{
-    _Atomic sincos_t sincos;
-    motion_sensors_t *p_motion;
-} filter_sys_t;
-
-static void store_trigo( filter_sys_t *sys, float f_angle )
+static void store_trigo( struct filter_sys_t *sys, float f_angle )
 {
     sincos_t sincos;
 
     f_angle *= (float)(M_PI / 180.); /* degrees -> radians */
 
-    sincos.sin = lroundf(ldexpf(sinf(f_angle), 12));
-    sincos.cos = lroundf(ldexpf(cosf(f_angle), 12));
-    atomic_store_explicit(&sys->sincos, sincos, memory_order_relaxed);
+    sincos.sin = lroundf(sinf(f_angle) * 4096.f);
+    sincos.cos = lroundf(cosf(f_angle) * 4096.f);
+    atomic_store(&sys->sincos, sincos.u);
 }
 
-static const struct vlc_filter_operations packed_filter_ops =
+static void fetch_trigo( struct filter_sys_t *sys, int *i_sin, int *i_cos )
 {
-    .filter_video = FilterPacked, .video_mouse = Mouse, .close = Destroy,
-};
+    sincos_t sincos = { .u = atomic_load(&sys->sincos) };
+
+    *i_sin = sincos.sin;
+    *i_cos = sincos.cos;
+}
 
 /*****************************************************************************
  * Create: allocates Distort video filter
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     if( p_filter->fmt_in.video.i_chroma != p_filter->fmt_out.video.i_chroma )
@@ -125,11 +139,11 @@ static int Create( filter_t *p_filter )
     switch( p_filter->fmt_in.video.i_chroma )
     {
         CASE_PLANAR_YUV
-            p_filter->ops = &Filter_ops;
+            p_filter->pf_video_filter = Filter;
             break;
 
         CASE_PACKED_YUV_422
-            p_filter->ops = &packed_filter_ops;
+            p_filter->pf_video_filter = FilterPacked;
             break;
 
         default:
@@ -137,6 +151,9 @@ static int Create( filter_t *p_filter )
                      (char*)&(p_filter->fmt_in.video.i_chroma) );
             return VLC_EGENERIC;
     }
+
+    /* Add mouse filter */
+    p_filter->pf_video_mouse = Mouse;
 
     /* Allocate structure */
     p_filter->p_sys = malloc( sizeof( filter_sys_t ) );
@@ -172,8 +189,9 @@ static int Create( filter_t *p_filter )
 /*****************************************************************************
  * Destroy: destroy Distort filter
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     if( p_sys->p_motion != NULL )
@@ -190,15 +208,14 @@ static void Destroy( filter_t *p_filter )
  *
  *****************************************************************************/
 static int Mouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
-                  const vlc_mouse_t *p_old )
+                  const vlc_mouse_t *p_old, const vlc_mouse_t *p_new )
 {
     VLC_UNUSED( p_old );
 
     const video_format_t *p_fmt = &p_filter->fmt_out.video;
     filter_sys_t *p_sys = p_filter->p_sys;
 
-    const int i_x = p_mouse->i_x;
-    const int i_y = p_mouse->i_y;
+    *p_mouse = *p_new;
 
     if( p_sys->p_motion != NULL )
     {
@@ -206,15 +223,17 @@ static int Mouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
         store_trigo( p_sys, i_angle / 20.f );
     }
 
+    int i_sin, i_cos;
+    fetch_trigo( p_sys, &i_sin, &i_cos );
+
     p_mouse->i_x = ( p_fmt->i_visible_width >> 1 );
     p_mouse->i_y = ( p_fmt->i_visible_height >> 1 );
 
-    const int i_rx = ( i_x - p_mouse->i_x );
-    const int i_ry = ( i_y - p_mouse->i_y );
-    sincos_t sc = atomic_load_explicit(&p_sys->sincos, memory_order_relaxed);
+    const int i_rx = ( p_new->i_x - p_mouse->i_x );
+    const int i_ry = ( p_new->i_y - p_mouse->i_y );
 
-    p_mouse->i_x += ( ( i_rx * sc.cos - i_ry * sc.sin )>> 12 );
-    p_mouse->i_y += ( ( i_rx * sc.sin + i_ry * sc.cos )>> 12 );
+    p_mouse->i_x += ( ( i_rx * i_cos - i_ry * i_sin )>> 12 );
+    p_mouse->i_y += ( ( i_rx * i_sin + i_ry * i_cos )>> 12 );
 
     return VLC_SUCCESS;
 }
@@ -222,9 +241,19 @@ static int Mouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
 /*****************************************************************************
  *
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
     filter_sys_t *p_sys = p_filter->p_sys;
+
+    if( !p_pic ) return NULL;
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     if( p_sys->p_motion != NULL )
     {
@@ -232,7 +261,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
         store_trigo( p_sys, i_angle / 20.f );
     }
 
-    sincos_t sc = atomic_load_explicit(&p_sys->sincos, memory_order_relaxed);
+    int i_sin, i_cos;
+    fetch_trigo( p_sys, &i_sin, &i_cos );
 
     for( int i_plane = 0 ; i_plane < p_pic->i_planes ; i_plane++ )
     {
@@ -250,12 +280,12 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
 
         const uint8_t black_pixel = ( i_plane == Y_PLANE ) ? 0x00 : 0x80;
 
-        const int i_line_next =  sc.cos / i_aspect -sc.sin*i_visible_pitch;
-        const int i_col_next  = -sc.sin / i_aspect -sc.cos*i_visible_pitch;
-        int i_line_orig0 = ( - sc.cos * i_line_center / i_aspect
-                             - sc.sin * i_col_center + (1<<11) );
-        int i_col_orig0 =    sc.sin * i_line_center / i_aspect
-                           - sc.cos * i_col_center + (1<<11);
+        const int i_line_next =  i_cos / i_aspect -i_sin*i_visible_pitch;
+        const int i_col_next  = -i_sin / i_aspect -i_cos*i_visible_pitch;
+        int i_line_orig0 = ( - i_cos * i_line_center / i_aspect
+                             - i_sin * i_col_center + (1<<11) );
+        int i_col_orig0 =    i_sin * i_line_center / i_aspect
+                           - i_cos * i_col_center + (1<<11);
         for( int y = 0; y < i_visible_lines; y++)
         {
             uint8_t *p_out = &p_dstp->p_pixels[y * p_dstp->i_pitch];
@@ -324,14 +354,16 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
                     *p_out = black_pixel;
                 }
 
-                i_line_orig0 += sc.sin;
-                i_col_orig0 += sc.cos;
+                i_line_orig0 += i_sin;
+                i_col_orig0 += i_cos;
             }
 
             i_line_orig0 += i_line_next;
             i_col_orig0 += i_col_next;
         }
     }
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 /*****************************************************************************
@@ -384,7 +416,8 @@ static picture_t *FilterPacked( filter_t *p_filter, picture_t *p_pic )
         store_trigo( p_sys, i_angle / 20.f );
     }
 
-    sincos_t sc = atomic_load_explicit(&p_sys->sincos, memory_order_relaxed);
+    int i_sin, i_cos;
+    fetch_trigo( p_sys, &i_sin, &i_cos );
 
     for( int i_line = 0; i_line < i_visible_lines; i_line++ )
     {
@@ -394,11 +427,11 @@ static picture_t *FilterPacked( filter_t *p_filter, picture_t *p_pic )
             int i_col_orig;
             /* Handle "1st Y", U and V */
             i_line_orig = i_line_center +
-                ( ( sc.sin * ( i_col - i_col_center )
-                  + sc.cos * ( i_line - i_line_center ) )>>12 );
+                ( ( i_sin * ( i_col - i_col_center )
+                  + i_cos * ( i_line - i_line_center ) )>>12 );
             i_col_orig = i_col_center +
-                ( ( sc.cos * ( i_col - i_col_center )
-                  - sc.sin * ( i_line - i_line_center ) )>>12 );
+                ( ( i_cos * ( i_col - i_col_center )
+                  - i_sin * ( i_line - i_line_center ) )>>12 );
             if( 0 <= i_col_orig && i_col_orig < i_visible_pitch
              && 0 <= i_line_orig && i_line_orig < i_visible_lines )
             {
@@ -420,11 +453,11 @@ static picture_t *FilterPacked( filter_t *p_filter, picture_t *p_pic )
                 break;
 
             i_line_orig = i_line_center +
-                ( ( sc.sin * ( i_col - i_col_center )
-                  + sc.cos * ( i_line - i_line_center ) )>>12 );
+                ( ( i_sin * ( i_col - i_col_center )
+                  + i_cos * ( i_line - i_line_center ) )>>12 );
             i_col_orig = i_col_center +
-                ( ( sc.cos * ( i_col - i_col_center )
-                  - sc.sin * ( i_line - i_line_center ) )>>12 );
+                ( ( i_cos * ( i_col - i_col_center )
+                  - i_sin * ( i_line - i_line_center ) )>>12 );
             if( 0 <= i_col_orig && i_col_orig < i_visible_pitch
              && 0 <= i_line_orig && i_line_orig < i_visible_lines )
             {

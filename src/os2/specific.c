@@ -25,6 +25,7 @@
 #include <vlc_common.h>
 #include "../libvlc.h"
 #include <vlc_playlist.h>
+#include <vlc_input.h>
 #include <vlc_interface.h>
 #include <vlc_url.h>
 
@@ -43,24 +44,6 @@ static HPIPE hpipeIPC     = NULLHANDLE;
 static int   tidIPCFirst  = -1;
 static int   tidIPCHelper = -1;
 
-static void add_to_playlist(vlc_playlist_t *playlist, const char *uri,
-                            bool play_now, int options_count,
-                            const char *const *options)
-{
-    input_item_t *media = input_item_New(uri, NULL);
-    if (!media)
-        return;
-    input_item_AddOptions(media, options_count, options,
-                          VLC_INPUT_OPTION_TRUSTED);
-
-    vlc_playlist_Lock(playlist);
-    vlc_playlist_AppendOne(playlist, media);
-    if (play_now)
-        vlc_playlist_Start(playlist);
-    vlc_playlist_Unlock(playlist);
-    input_item_Release(media);
-}
-
 static void IPCHelperThread( void *arg )
 {
     libvlc_int_t *libvlc = arg;
@@ -73,7 +56,7 @@ static void IPCHelperThread( void *arg )
     int    i_options;
 
     /* Add files to the playlist */
-    vlc_playlist_t *p_playlist;
+    playlist_t *p_playlist;
 
     do
     {
@@ -100,7 +83,7 @@ static void IPCHelperThread( void *arg )
             DosRead( hpipeIPC, ppsz_argv[ i_opt ], i_len, &cbActual );
         }
 
-        p_playlist = libvlc_priv(libvlc)->main_playlist;
+        p_playlist = libvlc_priv(libvlc)->playlist;
 
         for( int i_opt = 0; i_opt < i_argc;)
         {
@@ -114,12 +97,14 @@ static void IPCHelperThread( void *arg )
 
             if( p_playlist )
             {
-                add_to_playlist( p_playlist, ppsz_argv[ i_opt ],
+                playlist_AddExt( p_playlist, ppsz_argv[ i_opt ], NULL,
                                  i_opt == 0 && ulCmd != IPC_CMD_ENQUEUE,
                                  i_options,
                                  ( char const ** )
                                      ( i_options ? &ppsz_argv[ i_opt + 1 ] :
-                                                   NULL ));
+                                                   NULL ),
+                                 VLC_INPUT_OPTION_TRUSTED,
+                                 true );
             }
 
             for( ; i_options >= 0; i_options-- )
@@ -140,9 +125,7 @@ void system_Init( void )
 {
     /* Set the default file-translation mode */
     _fmode_bin = 1;
-
-    if( !isatty( fileno( stdin )))
-        setmode( fileno( stdin ), O_BINARY ); /* Needed for pipes */
+    setmode( fileno( stdin ), O_BINARY ); /* Needed for pipes */
 }
 
 void system_Configure( libvlc_int_t *p_this, int i_argc, const char *const ppsz_argv[] )

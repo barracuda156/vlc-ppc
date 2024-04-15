@@ -2,6 +2,7 @@
  * freeze.c : Freezing video filter
  *****************************************************************************
  * Copyright (C) 2013      Vianney Boyer
+ * $Id: 12689f5731fc438d9f7e9e17781938b02e6de85f $
  *
  * Authors: Vianney Boyer <vlcvboyer -at- gmail -dot- com>
  *
@@ -39,8 +40,7 @@
 #   define MOD(a, b) ((((a)%(b)) + (b))%(b))
 #endif
 
-typedef struct
-{
+struct filter_sys_t {
     bool b_init;
 
     int32_t i_planes;
@@ -51,7 +51,7 @@ typedef struct
     int16_t **pi_freezing_countdown; /* freezed pixel delay    */
     bool    **pb_update_cache;       /* update cache request  */
 
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Prototypes
@@ -60,7 +60,7 @@ typedef struct
 static picture_t *Filter( filter_t *, picture_t * );
 
 static int  freeze_mouse( filter_t *, vlc_mouse_t *,
-                          const vlc_mouse_t * );
+                   const vlc_mouse_t *, const vlc_mouse_t * );
 static int  freeze_allocate_data( filter_t *, picture_t * );
 static void freeze_free_allocated_data( filter_t * );
 
@@ -71,33 +71,29 @@ static void freeze_free_allocated_data( filter_t * );
 
 #define CFG_PREFIX "freeze-"
 
-static int  Open ( filter_t * );
-static void Close( filter_t * );
+static int  Open ( vlc_object_t * );
+static void Close( vlc_object_t * );
 
 vlc_module_begin()
     set_description( N_("Freezing interactive video filter") )
     set_shortname(   N_("Freeze" ) )
+    set_capability(  "video filter", 0 )
+    set_category(    CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
-    set_callback_video_filter( Open )
+    set_callbacks( Open, Close )
 vlc_module_end()
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
 
-static const struct vlc_filter_operations filter_ops =
-{
-    .filter_video = Filter,
-    .video_mouse = freeze_mouse,
-    .close = Close,
-};
-
 /**
  * Open the filter
  */
-static int Open( filter_t *p_filter )
+static int Open( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     /* Assert video in match with video out */
@@ -125,7 +121,8 @@ static int Open( filter_t *p_filter )
 
     /* init data */
 
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Filter;
+    p_filter->pf_video_mouse  = freeze_mouse;
 
     return VLC_SUCCESS;
 }
@@ -133,7 +130,8 @@ static int Open( filter_t *p_filter )
 /**
  * Close the filter
  */
-static void Close( filter_t *p_filter ) {
+static void Close( vlc_object_t *p_this ) {
+    filter_t *p_filter  = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     /* Free allocated memory */
@@ -224,8 +222,8 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic_in ) {
 /*
  * mouse callback
  **/
-static int freeze_mouse( filter_t *p_filter, vlc_mouse_t *p_new,
-                         const vlc_mouse_t *p_old )
+static int freeze_mouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
+                  const vlc_mouse_t *p_old, const vlc_mouse_t *p_new )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     const video_format_t  *p_fmt_in = &p_filter->fmt_in.video;
@@ -237,6 +235,7 @@ static int freeze_mouse( filter_t *p_filter, vlc_mouse_t *p_new,
 
     if ( unlikely(!p_sys->b_init) )
     {
+        *p_mouse = *p_new;
         return VLC_SUCCESS;
     }
 

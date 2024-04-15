@@ -1,39 +1,15 @@
 aoutdir = $(pluginsdir)/audio_output
 aout_LTLIBRARIES =
 
-libvlc_android_audioformat_jni_la_SOURCES = \
-	audio_output/android/audioformat_jni.c \
-	audio_output/android/audioformat_jni.h
+libopensles_android_plugin_la_SOURCES = audio_output/opensles_android.c
+libopensles_android_plugin_la_LIBADD = $(LIBDL) $(LIBM)
 
-libvlc_android_dynamicsprocessing_jni_la_SOURCES = \
-	audio_output/android/dynamicsprocessing_jni.c \
-	audio_output/android/dynamicsprocessing_jni.h
-
-if HAVE_ANDROID
-noinst_LTLIBRARIES += \
-	libvlc_android_audioformat_jni.la \
-	libvlc_android_dynamicsprocessing_jni.la
-endif
-
-libopensles_android_plugin_la_SOURCES = audio_output/android/opensles.c
-libopensles_android_plugin_la_LIBADD = libandroid_env.la $(LIBDL) $(LIBM)
-
-libandroid_audiotrack_plugin_la_SOURCES = audio_output/android/audiotrack.c audio_output/android/device.h
-libandroid_audiotrack_plugin_la_LIBADD = libandroid_env.la \
-	libvlc_android_audioformat_jni.la \
-	libvlc_android_dynamicsprocessing_jni.la
-
-libandroid_aaudio_plugin_la_SOURCES = audio_output/android/aaudio.c audio_output/android/device.h
-libandroid_aaudio_plugin_la_LIBADD = libandroid_env.la libvlc_android_dynamicsprocessing_jni.la $(LIBDL)
-
-libandroid_audiodevice_plugin_la_SOURCES = audio_output/android/device.c audio_output/android/device.h
-libandroid_audiodevice_plugin_la_LIBADD = libandroid_env.la \
-	libvlc_android_audioformat_jni.la \
-	libvlc_android_dynamicsprocessing_jni.la
+libandroid_audiotrack_plugin_la_SOURCES = audio_output/audiotrack.c \
+	video_output/android/utils.c video_output/android/utils.h
+libandroid_audiotrack_plugin_la_CFLAGS = $(AM_CFLAGS)
 
 if HAVE_ANDROID
-aout_LTLIBRARIES += libandroid_audiodevice_plugin.la libopensles_android_plugin.la \
-	libandroid_audiotrack_plugin.la libandroid_aaudio_plugin.la
+aout_LTLIBRARIES += libandroid_audiotrack_plugin.la libopensles_android_plugin.la
 endif
 
 libadummy_plugin_la_SOURCES = audio_output/adummy.c
@@ -98,6 +74,13 @@ aout_LTLIBRARIES += libwinstore_plugin.la
 endif
 endif
 
+libdirectsound_plugin_la_SOURCES = audio_output/directsound.c \
+	audio_output/windows_audio_common.h
+libdirectsound_plugin_la_LIBADD = -ldsound $(LIBCOM)
+if HAVE_WIN32_DESKTOP
+aout_LTLIBRARIES += libdirectsound_plugin.la
+endif
+
 libkai_plugin_la_SOURCES = audio_output/kai.c
 libkai_plugin_la_LIBADD = $(KAI_LIBS)
 if HAVE_KAI
@@ -134,3 +117,8 @@ endif
 if HAVE_TVOS
 aout_LTLIBRARIES += libaudiounit_ios_plugin.la
 endif
+
+libtizen_audio_plugin_la_SOURCES = audio_output/tizen_audio.c
+libtizen_audio_plugin_la_CFLAGS = $(AM_CFLAGS)
+EXTRA_LTLIBRARIES += libtizen_audio_plugin.la
+aout_LTLIBRARIES += $(LTLIBtizen_audio)

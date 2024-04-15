@@ -2,6 +2,7 @@
  * smf.c : Standard MIDI File (.mid) demux module for vlc
  *****************************************************************************
  * Copyright © 2007 Rémi Denis-Courmont
+ * $Id: c264b0f4d1a1c180022e35b28ebbc82f6b3db3ce $
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -90,7 +91,7 @@ static int ReadDeltaTime (stream_t *s, mtrk_t *track)
     return 0;
 }
 
-typedef struct
+struct demux_sys_t
 {
     es_out_id_t *es;
     date_t       pts; /*< Play timestamp */
@@ -103,7 +104,7 @@ typedef struct
 
     unsigned     trackc; /*< Number of tracks */
     mtrk_t       trackv[]; /*< Track states */
-} demux_sys_t;
+};
 
 /**
  * Non-MIDI Meta events handler
@@ -255,10 +256,9 @@ static
 int HandleMessage (demux_t *p_demux, mtrk_t *tr, es_out_t *out)
 {
     stream_t *s = p_demux->s;
-    demux_sys_t *sys = p_demux->p_sys;
     block_t *block;
     uint8_t first, event;
-    int datalen;
+    unsigned datalen;
 
     if (vlc_stream_Seek (s, tr->start + tr->offset)
      || (vlc_stream_Read (s, &first, 1) != 1))
@@ -346,9 +346,9 @@ int HandleMessage (demux_t *p_demux, mtrk_t *tr, es_out_t *out)
     }
 
 send:
-    block->i_dts = block->i_pts = date_Get(&sys->pts);
+    block->i_dts = block->i_pts = date_Get (&p_demux->p_sys->pts);
     if (out != NULL)
-        es_out_Send(out, sys->es, block);
+        es_out_Send (out, p_demux->p_sys->es, block);
     else
         block_Release (block);
 
@@ -428,7 +428,7 @@ static int ReadEvents (demux_t *demux, uint64_t *restrict pulse,
     return 0;
 }
 
-#define TICK VLC_TICK_FROM_MS(10)
+#define TICK (CLOCK_FREQ / 100)
 
 /*****************************************************************************
  * Demux: read chunks and send them to the synthesizer
@@ -453,20 +453,20 @@ static int Demux (demux_t *demux)
         es_out_SetPCR (demux->out, sys->tick);
 
         sys->tick += TICK;
-        return VLC_DEMUXER_SUCCESS;
+        return 1;
     }
 
     /* MIDI events in chronological order across all tracks */
     uint64_t pulse = sys->pulse;
 
     if (ReadEvents (demux, &pulse, demux->out))
-        return VLC_DEMUXER_EGENERIC;
+        return VLC_EGENERIC;
 
     if (pulse == UINT64_MAX)
-        return VLC_DEMUXER_EOF; /* all tracks are done */
+        return 0; /* all tracks are done */
 
     sys->pulse = pulse;
-    return VLC_DEMUXER_SUCCESS;
+    return 1;
 }
 
 static int Seek (demux_t *demux, vlc_tick_t pts)
@@ -514,20 +514,13 @@ static int Control (demux_t *demux, int i_query, va_list args)
         case DEMUX_SET_POSITION:
             return Seek (demux, va_arg (args, double) * sys->duration);
         case DEMUX_GET_LENGTH:
-            *va_arg (args, vlc_tick_t *) = sys->duration;
+            *va_arg (args, int64_t *) = sys->duration;
             break;
         case DEMUX_GET_TIME:
-            *va_arg (args, vlc_tick_t *) = sys->tick - VLC_TICK_0;
+            *va_arg (args, int64_t *) = sys->tick - VLC_TICK_0;
             break;
         case DEMUX_SET_TIME:
-            return Seek (demux, va_arg (args, vlc_tick_t));
-
-        case DEMUX_CAN_PAUSE:
-        case DEMUX_SET_PAUSE_STATE:
-        case DEMUX_CAN_CONTROL_PACE:
-        case DEMUX_GET_PTS_DELAY:
-            return demux_vaControlHelper( demux->s, 0, -1, 0, 1, i_query, args );
-
+            return Seek (demux, va_arg (args, int64_t));
         default:
             return VLC_EGENERIC;
     }
@@ -555,7 +548,7 @@ static int Open (vlc_object_t *obj)
         uint32_t riff_len = GetDWLE (peek + 4);
 
         msg_Dbg (demux, "detected RIFF MIDI file (%"PRIu32" bytes)", riff_len);
-        if (vlc_stream_Read( stream, NULL, 12 ) != 12 )
+        if ((vlc_stream_Read (stream, NULL, 12) < 12))
             return VLC_EGENERIC;
 
         /* Look for the RIFF data chunk */
@@ -577,7 +570,7 @@ static int Open (vlc_object_t *obj)
             if (!memcmp (chnk_hdr, "data", 4))
                 break; /* found! */
 
-            if (vlc_stream_Read( stream, NULL, chnk_len ) != chnk_len )
+            if (vlc_stream_Read (stream, NULL, chnk_len) < (ssize_t)chnk_len)
                 return VLC_EGENERIC;
         }
 
@@ -640,7 +633,7 @@ static int Open (vlc_object_t *obj)
         return VLC_ENOMEM;
 
     /* We've had a valid SMF header - now skip it*/
-    if (vlc_stream_Read( stream, NULL, 14 ) != 14 )
+    if (vlc_stream_Read (stream, NULL, 14) < 14)
         goto error;
 
     demux->p_sys = sys;
@@ -706,7 +699,6 @@ static int Open (vlc_object_t *obj)
     es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_MIDI);
     fmt.audio.i_channels = 2;
     fmt.audio.i_rate = 44100; /* dummy value */
-    fmt.i_id = 0;
     sys->es = es_out_Add (demux->out, &fmt);
 
     demux->pf_demux = Demux;
@@ -731,10 +723,8 @@ static void Close (vlc_object_t * p_this)
 
 vlc_module_begin ()
     set_description (N_("SMF demuxer"))
+    set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_DEMUX)
     set_capability ("demux", 20)
     set_callbacks (Open, Close)
-    add_file_extension("kar")
-    add_file_extension("mid")
-    add_file_extension("rmi")
 vlc_module_end ()

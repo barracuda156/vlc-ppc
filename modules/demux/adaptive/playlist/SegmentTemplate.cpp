@@ -2,6 +2,7 @@
  * SegmentTemplate.cpp: Implement the UrlTemplate element.
  *****************************************************************************
  * Copyright (C) 1998-2007 VLC authors and VideoLAN
+ * $Id: de8ffcf8442c4b30c9e6b47679fc98ca963aa46b $
  *
  * Authors: Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
@@ -135,7 +136,7 @@ vlc_tick_t SegmentTemplate::getMinAheadTime(uint64_t number) const
     else
     {
         const Timescale timescale = inheritTimescale();
-        uint64_t current = getLiveTemplateNumber(vlc_tick_from_sec(time(nullptr)));
+        uint64_t current = getLiveTemplateNumber(CLOCK_FREQ * time(nullptr));
         stime_t i_length = (current - number) * inheritDuration();
         return timescale.ToTime(i_length);
     }
@@ -231,7 +232,7 @@ bool SegmentTemplate::getSegmentNumberByTime(vlc_tick_t time, uint64_t *ret) con
         BasePlaylist *playlist = parent->getPlaylist();
         if( playlist->isLive() )
         {
-            vlc_tick_t now = vlc_tick_from_sec(::time(nullptr));
+            vlc_tick_t now = CLOCK_FREQ * ::time(nullptr);
             if(time >= playlist->availabilityStartTime.Get() && time < now)
                 *ret = getLiveTemplateNumber(time, true);
             else if(now - playlist->availabilityStartTime.Get() > time)

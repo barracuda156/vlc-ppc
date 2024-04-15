@@ -2,6 +2,7 @@
  * win32_factory.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 62cd20a5f1db7c8b38603219db0f231ed9f80cf7 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -101,7 +102,7 @@ public:
     virtual int getScreenHeight() const;
 
     /// Get Monitor Information
-    virtual void getMonitorInfo( OSWindow *pWindow,
+    virtual void getMonitorInfo( const GenericWindow &rWindow,
                                  int* x, int* y,
                                  int* width, int* height ) const;
     virtual void getMonitorInfo( int numScreen,
@@ -139,6 +140,10 @@ private:
     HWND m_hParentWindow;
     /// Structure for the system tray
     NOTIFYICONDATA m_trayIcon;
+    /// Handle on msimg32.dll (for TransparentBlt)
+    HINSTANCE m_hMsimg32;
+    /// Handle on user32.dll (for SetLayeredWindowAttributes)
+    HINSTANCE m_hUser32;
     /// Directory separator
     const std::string m_dirSep;
     /// Resource path

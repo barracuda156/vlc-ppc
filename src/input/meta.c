@@ -2,6 +2,7 @@
  * meta.c : Metadata handling
  *****************************************************************************
  * Copyright (C) 1998-2004 VLC authors and VideoLAN
+ * $Id: 241b926079ff186952b18c3ff7dedab377ea6705 $
  *
  * Authors: Antoine Cellerier <dionoea@videolan.org>
  *          Clément Stenac <zorglub@videolan.org
@@ -28,13 +29,14 @@
 #include <assert.h>
 
 #include <vlc_common.h>
+#include <vlc_playlist.h>
 #include <vlc_url.h>
 #include <vlc_arrays.h>
 #include <vlc_modules.h>
 #include <vlc_charset.h>
 
 #include "input_internal.h"
-#include "../preparser/art.h"
+#include "../playlist/art.h"
 
 struct vlc_meta_t
 {
@@ -45,9 +47,10 @@ struct vlc_meta_t
     int i_status;
 };
 
-const char *vlc_meta_TypeToString(vlc_meta_type_t meta_type)
+/* FIXME bad name convention */
+const char * vlc_meta_TypeToLocalizedString( vlc_meta_type_t meta_type )
 {
-    static const char posix_names[VLC_META_TYPE_COUNT][18] =
+    static const char posix_names[][18] =
     {
         [vlc_meta_Title]       = N_("Title"),
         [vlc_meta_Artist]      = N_("Artist"),
@@ -74,24 +77,16 @@ const char *vlc_meta_TypeToString(vlc_meta_type_t meta_type)
         [vlc_meta_ShowName]    = N_("Show Name"),
         [vlc_meta_Actors]      = N_("Actors"),
         [vlc_meta_AlbumArtist] = N_("Album Artist"),
-        [vlc_meta_DiscNumber]  = N_("Disc number"),
-        [vlc_meta_DiscTotal]   = N_("Total disc number")
+        [vlc_meta_DiscNumber]  = N_("Disc number")
     };
 
-    assert(meta_type < ARRAY_SIZE(posix_names));
-    assert(posix_names[meta_type][0] != '\0');
-    return posix_names[meta_type];
-}
-
-/* FIXME bad name convention */
-const char * vlc_meta_TypeToLocalizedString( vlc_meta_type_t meta_type )
-{
-    return vlc_gettext(vlc_meta_TypeToString(meta_type));
-}
+    assert (meta_type < (sizeof(posix_names) / sizeof(posix_names[0])));
+    return vlc_gettext (posix_names[meta_type]);
+};
 
 
 /**
- * vlc_meta constructor.
+ * vlc_meta contructor.
  * vlc_meta_Delete() will free the returned pointer.
  */
 vlc_meta_t *vlc_meta_New( void )
@@ -105,7 +100,7 @@ vlc_meta_t *vlc_meta_New( void )
     return m;
 }
 
-/* Free a dictionary key allocated by strdup() in vlc_meta_AddExtra() */
+/* Free a dictonary key allocated by strdup() in vlc_meta_AddExtra() */
 static void vlc_meta_FreeExtraKey( void *p_data, void *p_obj )
 {
     VLC_UNUSED( p_obj );
@@ -217,13 +212,27 @@ void input_ExtractAttachmentAndCacheArt( input_thread_t *p_input,
     {   /* XXX Weird, we should not end up with attachment:// art URL
          * unless there is a race condition */
         msg_Warn( p_input, "art already fetched" );
-        if( likely(input_FindArtInCache( p_item ) == VLC_SUCCESS) )
+        if( likely(playlist_FindArtInCache( p_item ) == VLC_SUCCESS) )
             return;
     }
 
     /* */
-    input_attachment_t *p_attachment = input_GetAttachment( p_input, name );
-    if( !p_attachment )
+    input_attachment_t *p_attachment = NULL;
+
+    vlc_mutex_lock( &p_item->lock );
+    for( int i_idx = 0; i_idx < input_priv(p_input)->i_attachment; i_idx++ )
+    {
+        input_attachment_t *a = input_priv(p_input)->attachment[i_idx];
+
+        if( !strcmp( a->psz_name, name ) )
+        {
+            p_attachment = vlc_input_attachment_Duplicate( a );
+            break;
+        }
+    }
+    vlc_mutex_unlock( &p_item->lock );
+
+    if( p_attachment == NULL )
     {
         msg_Warn( p_input, "art attachment %s not found", name );
         return;
@@ -239,9 +248,9 @@ void input_ExtractAttachmentAndCacheArt( input_thread_t *p_input,
     else if( !strcmp( p_attachment->psz_mime, "image/x-pict" ) )
         psz_type = ".pct";
 
-    input_SaveArt( VLC_OBJECT(p_input), p_item,
-                   p_attachment->p_data, p_attachment->i_data, psz_type );
-    vlc_input_attachment_Release( p_attachment );
+    playlist_SaveArt( VLC_OBJECT(p_input), p_item,
+                      p_attachment->p_data, p_attachment->i_data, psz_type );
+    vlc_input_attachment_Delete( p_attachment );
 }
 
 int input_item_WriteMeta( vlc_object_t *obj, input_item_t *p_item )
@@ -252,7 +261,7 @@ int input_item_WriteMeta( vlc_object_t *obj, input_item_t *p_item )
         return VLC_ENOMEM;
     p_export->p_item = p_item;
 
-    enum input_item_type_e type;
+    int type;
     vlc_mutex_lock( &p_item->lock );
     type = p_item->i_type;
     vlc_mutex_unlock( &p_item->lock );
@@ -270,11 +279,11 @@ int input_item_WriteMeta( vlc_object_t *obj, input_item_t *p_item )
     module_t *p_mod = module_need( p_export, "meta writer", NULL, false );
     if( p_mod )
         module_unneed( p_export, p_mod );
-    vlc_object_delete(p_export);
+    vlc_object_release( p_export );
     return VLC_SUCCESS;
 
 error:
-    vlc_object_delete(p_export);
+    vlc_object_release( p_export );
     return VLC_EGENERIC;
 }
 
@@ -290,26 +299,26 @@ void vlc_audio_replay_gain_MergeFromMeta( audio_replay_gain_t *p_dst,
         (psz_value = vlc_meta_GetExtra(p_meta, "RG_RADIO")) )
     {
         p_dst->pb_gain[AUDIO_REPLAY_GAIN_TRACK] = true;
-        p_dst->pf_gain[AUDIO_REPLAY_GAIN_TRACK] = vlc_atof_c( psz_value );
+        p_dst->pf_gain[AUDIO_REPLAY_GAIN_TRACK] = us_atof( psz_value );
     }
 
     if( (psz_value = vlc_meta_GetExtra(p_meta, "REPLAYGAIN_TRACK_PEAK" )) ||
              (psz_value = vlc_meta_GetExtra(p_meta, "RG_PEAK" )) )
     {
         p_dst->pb_peak[AUDIO_REPLAY_GAIN_TRACK] = true;
-        p_dst->pf_peak[AUDIO_REPLAY_GAIN_TRACK] = vlc_atof_c( psz_value );
+        p_dst->pf_peak[AUDIO_REPLAY_GAIN_TRACK] = us_atof( psz_value );
     }
 
     if( (psz_value = vlc_meta_GetExtra(p_meta, "REPLAYGAIN_ALBUM_GAIN" )) ||
              (psz_value = vlc_meta_GetExtra(p_meta, "RG_AUDIOPHILE" )) )
     {
         p_dst->pb_gain[AUDIO_REPLAY_GAIN_ALBUM] = true;
-        p_dst->pf_gain[AUDIO_REPLAY_GAIN_ALBUM] = vlc_atof_c( psz_value );
+        p_dst->pf_gain[AUDIO_REPLAY_GAIN_ALBUM] = us_atof( psz_value );
     }
 
     if( (psz_value = vlc_meta_GetExtra(p_meta, "REPLAYGAIN_ALBUM_PEAK" )) )
     {
         p_dst->pb_peak[AUDIO_REPLAY_GAIN_ALBUM] = true;
-        p_dst->pf_peak[AUDIO_REPLAY_GAIN_ALBUM] = vlc_atof_c( psz_value );
+        p_dst->pf_peak[AUDIO_REPLAY_GAIN_ALBUM] = us_atof( psz_value );
     }
 }

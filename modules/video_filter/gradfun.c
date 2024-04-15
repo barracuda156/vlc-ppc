@@ -2,6 +2,7 @@
  * gradfun.c: wrapper for the gradfun filter from libav
  *****************************************************************************
  * Copyright (C) 2010 Laurent Aimar
+ * $Id: 8ebb95d0aa0aa6210ba4a2a9a3a5de5ab6a3d8ec $
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -39,7 +40,8 @@
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
-static int  Open (filter_t *);
+static int  Open (vlc_object_t *);
+static void Close(vlc_object_t *);
 
 #define CFG_PREFIX "gradfun-"
 
@@ -57,19 +59,26 @@ vlc_module_begin()
     set_description(N_("Gradfun video filter"))
     set_shortname(N_("Gradfun"))
     set_help(N_("Debanding algorithm"))
+    set_capability("video filter", 0)
+    set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VFILTER)
     add_integer_with_range(CFG_PREFIX "radius", 16, RADIUS_MIN, RADIUS_MAX,
-                           RADIUS_TEXT, RADIUS_LONGTEXT)
+                           RADIUS_TEXT, RADIUS_LONGTEXT, false)
     add_float_with_range(CFG_PREFIX "strength", 1.2, STRENGTH_MIN, STRENGTH_MAX,
-                         STRENGTH_TEXT, STRENGTH_LONGTEXT)
+                         STRENGTH_TEXT, STRENGTH_LONGTEXT, false)
 
-    set_callback_video_filter(Open)
+    set_callbacks(Open, Close)
 vlc_module_end()
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
 #define FFMAX(a,b) __MAX(a,b)
+#ifdef CAN_COMPILE_MMXEXT
+#   define HAVE_MMX2 1
+#else
+#   define HAVE_MMX2 0
+#endif
 #ifdef CAN_COMPILE_SSE2
 #   define HAVE_SSE2 1
 #else
@@ -90,20 +99,20 @@ vlc_module_end()
 #include <stdalign.h>
 #include "gradfun.h"
 
+static picture_t *Filter(filter_t *, picture_t *);
 static int Callback(vlc_object_t *, char const *, vlc_value_t, vlc_value_t, void *);
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Close)
 
-typedef struct
-{
+struct filter_sys_t {
     vlc_mutex_t      lock;
     float            strength;
     int              radius;
     const vlc_chroma_description_t *chroma;
     struct vf_priv_s cfg;
-} filter_sys_t;
+};
 
-static int Open(filter_t *filter)
+static int Open(vlc_object_t *object)
 {
+    filter_t *filter = (filter_t *)object;
     const vlc_fourcc_t fourcc = filter->fmt_in.video.i_chroma;
 
     const vlc_chroma_description_t *chroma = vlc_fourcc_GetChromaDescription(fourcc);
@@ -140,26 +149,39 @@ static int Open(filter_t *filter)
         cfg->filter_line = filter_line_ssse3;
     else
 #endif
+#if HAVE_MMX2
+    if (vlc_CPU_MMXEXT())
+        cfg->filter_line = filter_line_mmx2;
+    else
+#endif
         cfg->filter_line = filter_line_c;
 
-    filter->p_sys = sys;
-    filter->ops   = &Filter_ops;
+    filter->p_sys           = sys;
+    filter->pf_video_filter = Filter;
     return VLC_SUCCESS;
 }
 
-static void Close(filter_t *filter)
+static void Close(vlc_object_t *object)
 {
+    filter_t     *filter = (filter_t *)object;
     filter_sys_t *sys = filter->p_sys;
 
     var_DelCallback(filter, CFG_PREFIX "radius",   Callback, NULL);
     var_DelCallback(filter, CFG_PREFIX "strength", Callback, NULL);
     aligned_free(sys->cfg.buf);
+    vlc_mutex_destroy(&sys->lock);
     free(sys);
 }
 
-static void Filter(filter_t *filter, picture_t *src, picture_t *dst)
+static picture_t *Filter(filter_t *filter, picture_t *src)
 {
     filter_sys_t *sys = filter->p_sys;
+
+    picture_t *dst = filter_NewPicture(filter);
+    if (!dst) {
+        picture_Release(src);
+        return NULL;
+    }
 
     vlc_mutex_lock(&sys->lock);
     float strength = VLC_CLIP(sys->strength, STRENGTH_MIN, STRENGTH_MAX);
@@ -193,6 +215,10 @@ static void Filter(filter_t *filter, picture_t *src, picture_t *dst)
             plane_CopyPixels(dstp, srcp);
         }
     }
+
+    picture_CopyProperties(dst, src);
+    picture_Release(src);
+    return dst;
 }
 
 static int Callback(vlc_object_t *object, char const *cmd,
@@ -211,3 +237,4 @@ static int Callback(vlc_object_t *object, char const *cmd,
 
     return VLC_SUCCESS;
 }
+

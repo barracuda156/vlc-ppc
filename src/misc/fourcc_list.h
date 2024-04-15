@@ -491,10 +491,6 @@ static const staticentry_t p_list_video[] = {
         A("VP31"),
         A("vp31"),
 
-    /* On2 VP4 Video Codec */
-    B(VLC_CODEC_VP4, "On2's VP4 Video"),
-        A("VP40"),
-
     /* On2  VP5, VP6 codecs */
     B(VLC_CODEC_VP5, "On2's VP5 Video"),
         A("VP5 "),
@@ -677,11 +673,6 @@ static const staticentry_t p_list_video[] = {
         A("AVs2"),
         A("avs2"),
 
-    B(VLC_CODEC_CAVS2, "AVS2-P2 video (IEEE 1857.4)"),
-        A("AVS2"),
-
-    B(VLC_CODEC_CAVS3, "AVS3-P2 video (IEEE 1857.10)"),
-
     B(VLC_CODEC_AMV, "AMV"),
 
     B(VLC_CODEC_BINKVIDEO, "Bink Video"),
@@ -793,10 +784,7 @@ static const staticentry_t p_list_video[] = {
         A("I40A"),
     B(VLC_CODEC_YUV422A, "Planar YUV 4:2:2 Y:U:V:A"),
         A("I42A"),
-    B(VLC_CODEC_YUVA_444_10L, "Planar YUV 4:4:4 Y:U:V:A 10bits LE"),
-    B(VLC_CODEC_YUVA_444_10B, "Planar YUV 4:4:4 Y:U:V:A 10bits BE"),
-    B(VLC_CODEC_YUVA_444_12L, "Planar YUV 4:4:4 Y:U:V:A 12bits LE"),
-    B(VLC_CODEC_YUVA_444_12B, "Planar YUV 4:4:4 Y:U:V:A 12bits BE"),
+    B(VLC_CODEC_YUVA_444_10L, "Planar YUV 4:4:4 Y:U:V:A 10bits"),
 
     B(VLC_CODEC_RGBP, "Palettized RGB with palette element R:G:B"),
         A("RGBP"),
@@ -820,7 +808,6 @@ static const staticentry_t p_list_video[] = {
         A("AV32"),
     B(VLC_CODEC_BGRA, "32 bits BGRA"),
         A("BGRA"),
-    B(VLC_CODEC_ABGR, "32 bits ABGR"),
     B(VLC_CODEC_RGBA10, "32 bits RGB 10bits A 2bits"),
         A("RGA0"),
     B(VLC_CODEC_RGBA64, "64 bits RGBA"),
@@ -867,11 +854,6 @@ static const staticentry_t p_list_video[] = {
         A("YUYV"),
         A("YUNV"),
         A("V422"),
-
-    B(VLC_CODEC_YUV2, "Packed YUV 4:2:2, Y:U:Y:V signed"),
-        A("yuv2"),
-        A("yuvu"),
-
     B(VLC_CODEC_YVYU, "Packed YUV 4:2:2, Y:V:Y:U"),
         A("YVYU"),
 
@@ -884,12 +866,8 @@ static const staticentry_t p_list_video[] = {
     B(VLC_CODEC_V210, "10-bit 4:2:2 Component YCbCr"),
         A("v210"),
 
-    B(VLC_CODEC_Y210, "Packed 10-bit YUV 4:2:2"),
-        A("Y210"),
     B(VLC_CODEC_VUYA, "Packed YUV 4:4:4, V:U:Y:A"),
         A("VUYA"),
-    B(VLC_CODEC_Y410, "Packed 10-bit YUV 4:4:4"),
-        A("Y410"),
 
     B(VLC_CODEC_NV12, "Biplanar 4:2:0 Y/UV"),
         A("NV12"),
@@ -1072,13 +1050,8 @@ static const staticentry_t p_list_video[] = {
         A("ULRG"),
         A("ULY0"),
         A("ULY2"),
-        A("ULY4"),
         A("ULH0"),
         A("ULH2"),
-        A("ULH4"),
-        A("UQY2"),
-        A("UQRA"),
-        A("UQRG"),
 
     B(VLC_CODEC_VBLE, "VBLE Lossless"),
         A("VBLE"),
@@ -1189,84 +1162,6 @@ static const staticentry_t p_list_video[] = {
 
     B(VLC_CODEC_PIXLET, "Apple Pixlet" ),
         A("pxlt"),
-
-    B(VLC_CODEC_MAGICYUV, "MagicYUV lossless" ),
-        A("M8RG"),
-        A("M8RA"),
-        A("M8G0"),
-        A("M8Y0"),
-        A("M8Y2"),
-        A("M8Y4"),
-        A("M8YA"),
-
-    B(VLC_CODEC_IMM4, "Infinity IMM4"),
-        A("IMM4"),
-
-    B(VLC_CODEC_IMM5, "Infinity IMM5"),
-        A("IMM5"),
-
-    B(VLC_CODEC_VDPAU_VIDEO, "VDPAU video"),
-
-    B(VLC_CODEC_VDPAU_OUTPUT, "VDPAU output"),
-
-    B(VLC_CODEC_VAAPI_420, "4:2:0 VAAPI opaque"),
-        A("VAOP"),
-
-    B(VLC_CODEC_VAAPI_420_10BPP, "4:2:0 10bits VAAPI opaque"),
-        A("VAO0"),
-
-    B(VLC_CODEC_ANDROID_OPAQUE, "Android opaque"),
-        A("ANOP"),
-
-    B(VLC_CODEC_MMAL_OPAQUE, "MMAL opaque"),
-        A("MMAL"),
-
-    B(VLC_CODEC_D3D9_OPAQUE, "4:2:0 D3D9 opaque"),
-        A("DXA9"),
-
-    B(VLC_CODEC_D3D9_OPAQUE_10B, "4:2:0 10bits D3D9 opaque"),
-        A("DXA0"),
-
-    B(VLC_CODEC_D3D11_OPAQUE, "4:2:0 D3D11 opaque"),
-        A("DX11"),
-
-    B(VLC_CODEC_D3D11_OPAQUE_10B, "4:2:0 10bits D3D11 opaque"),
-        A("DX10"),
-
-    B(VLC_CODEC_D3D11_OPAQUE_RGBA, "RGBA D3D11 opaque"),
-        A("DXRG"),
-
-    B(VLC_CODEC_D3D11_OPAQUE_BGRA, "BGRA D3D11 opaque"),
-        A("DAGR"),
-
-    B(VLC_CODEC_NVDEC_OPAQUE, "4:2:0 NVDEC opaque"),
-        A("NVD8"),
-
-    B(VLC_CODEC_NVDEC_OPAQUE_10B, "4:2:0 10bits NVDEC opaque"),
-        A("NVD0"),
-
-    B(VLC_CODEC_NVDEC_OPAQUE_16B, "4:2:0 16bits NVDEC opaque"),
-        A("NVD6"),
-
-    B(VLC_CODEC_NVDEC_OPAQUE_444, "4:4:4 NVDEC opaque"),
-        A("NV48"),
-
-    B(VLC_CODEC_NVDEC_OPAQUE_444_16B, "4:4:4 16bits NVDEC opaque"),
-        A("NV46"),
-
-    B(VLC_CODEC_AGM, "AmuseGraphics Movie"),
-        A("AGM0"),
-        A("AGM1"),
-        A("AGM2"),
-        A("AGM3"),
-        A("AGM4"),
-        A("AGM5"),
-        A("AGM6"),
-        A("AGM7"),
-
-    B(VLC_CODEC_NOTCHLC, "NotchLC"),
-
-    B(VLC_CODEC_RTP_VIDEO_RAW, "RTP raw video"),
 };
 
 static const staticentry_t p_list_audio[] = {
@@ -1350,17 +1245,15 @@ static const staticentry_t p_list_audio[] = {
         A("MP3 "),
 
     /* A52 Audio (aka AC3) */
-    B(VLC_CODEC_A52, "Audio Coding 3 (AC-3)"),
+    B(VLC_CODEC_A52, "A52 Audio (aka AC3)"),
         A("a52 "),
         A("a52b"),
         A("ac-3"),
         A("sac3"),
         A("ms\x20\x00"),
 
-    B(VLC_CODEC_EAC3, "Enhanced Audio Coding 3 (E-AC-3)"),
+    B(VLC_CODEC_EAC3, "A/52 B Audio (aka E-AC3)"),
         A("ec-3"),
-
-    B(VLC_CODEC_AC4,  "Audio Coding 4 (AC-4)"),
 
     /* DTS Audio */
     B(VLC_CODEC_DTS, "DTS Audio"),
@@ -1380,12 +1273,6 @@ static const staticentry_t p_list_audio[] = {
         A("AACL"),
         A("AACH"),
         A("AACP"), /* smooth streaming alias */
-
-    B(VLC_CODEC_MPEGH, "MPEG-H Audio"),
-        A("mha1"),
-        A("mha2"),
-        A("mhm1"),
-        A("mhm2"),
 
     /* ALS audio */
     B(VLC_CODEC_ALS, "MPEG-4 Audio Lossless (ALS)"),
@@ -1434,10 +1321,6 @@ static const staticentry_t p_list_audio[] = {
     /* G.726 ADPCM */
     B(VLC_CODEC_ADPCM_G726, "G.726 ADPCM Audio"),
         A("g726"),
-
-    /* G.726 ADPCM */
-    B(VLC_CODEC_ADPCM_G726_LE, "G.726 ADPCM Audio (little-endian)"),
-        A("g72s"),
 
     /* G.722 ADPCM */
     B(VLC_CODEC_ADPCM_G722, "G.722 ADPCM Audio"),
@@ -1549,8 +1432,6 @@ static const staticentry_t p_list_audio[] = {
         A("Qclp"),
         A("Qclq"),
         A("sqcp"),
-
-    B(VLC_CODEC_CODEC2, "Codec 2 Audio"),
 
     B(VLC_CODEC_SPEEX, "Speex Audio"),
         A("spx "),
@@ -1693,14 +1574,6 @@ static const staticentry_t p_list_audio[] = {
     B(VLC_CODEC_ADPCM_EA_R1, "ADPCM Electronic Arts R1"),
 
     B(VLC_CODEC_ADPCM_IMA_APC, "ADPCM APC"),
-
-    B(VLC_CODEC_DSD_LSBF, "DSD (Direct Stream Digital) LSB first"),
-
-    B(VLC_CODEC_DSD_MSBF, "DSD (Direct Stream Digital) MSB first"),
-
-    B(VLC_CODEC_DSD_LSBF_PLANAR, "DSD (Direct Stream Digital) LSB first, planar"),
-
-    B(VLC_CODEC_DSD_MSBF_PLANAR, "DSD (Direct Stream Digital) MSB first, planar"),
 };
 
 static const staticentry_t p_list_spu[] = {
@@ -1774,8 +1647,6 @@ static const staticentry_t p_list_spu[] = {
 
     B(VLC_CODEC_TTML, "TTML subtitles"),
         A("ttml"),
-
-    B(VLC_CODEC_TTML_TS, "TTML subtitles (EN.303.560)"),
 
     B(VLC_CODEC_WEBVTT, "WEBVTT subtitles"),
 };

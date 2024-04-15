@@ -2,6 +2,7 @@
  * cdrom_internals.h: cdrom tools private header
  *****************************************************************************
  * Copyright (C) 1998-2001 VLC authors and VideoLAN
+ * $Id: a9a1f69da1d8be9f890d8b0c5d3faac95fdb0313 $
  *
  * Authors: Johan Bilien <jobi@via.ecp.fr>
  *          Gildas Bazin <gbazin@netcourrier.com>
@@ -114,11 +115,6 @@ typedef struct _CDROM_READ_TOC_EX {
 
 
 #define MINIMUM_CDROM_READ_TOC_EX_SIZE    2
-#define CDROM_READ_TOC_EX_FORMAT_TOC      0x00
-#define CDROM_READ_TOC_EX_FORMAT_SESSION  0x01
-#define CDROM_READ_TOC_EX_FORMAT_FULL_TOC 0x02
-#define CDROM_READ_TOC_EX_FORMAT_PMA      0x03
-#define CDROM_READ_TOC_EX_FORMAT_ATIP     0x04
 #define CDROM_READ_TOC_EX_FORMAT_CDTEXT   0x05
 
 #endif /* _WIN32 */

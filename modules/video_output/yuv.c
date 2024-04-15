@@ -2,6 +2,7 @@
  * yuv.c : yuv video output
  *****************************************************************************
  * Copyright (C) 2008, M2X BV
+ * $Id: ff2f73743071f628c0e0fe26f73aef2609649a46 $
  *
  * Authors: Jean-Paul Saman <jpsaman@videolan.org>
  *
@@ -31,6 +32,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
+#include <vlc_picture_pool.h>
 #include <vlc_fs.h>
 
 /*****************************************************************************
@@ -49,23 +51,24 @@
 
 #define CFG_PREFIX "yuv-"
 
-static int Open(vout_display_t *vd,
-                video_format_t *fmtp, vlc_video_context *context);
-static void Close(vout_display_t *vd);
+static int  Open (vlc_object_t *);
+static void Close(vlc_object_t *);
 
 vlc_module_begin()
     set_shortname(N_("YUV output"))
     set_description(N_("YUV video output"))
+    set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VOUT)
+    set_capability("vout display", 0)
 
     add_string(CFG_PREFIX "file", "stream.yuv",
-                YUV_FILE_TEXT, YUV_FILE_LONGTEXT)
+                YUV_FILE_TEXT, YUV_FILE_LONGTEXT, false)
     add_string(CFG_PREFIX "chroma", NULL,
-                CHROMA_TEXT, CHROMA_LONGTEXT)
+                CHROMA_TEXT, CHROMA_LONGTEXT, true)
     add_bool  (CFG_PREFIX "yuv4mpeg2", false,
-                YUV4MPEG2_TEXT, YUV4MPEG2_LONGTEXT)
+                YUV4MPEG2_TEXT, YUV4MPEG2_LONGTEXT, true)
 
-    set_callback_display(Open, 0)
+    set_callbacks(Open, Close)
 vlc_module_end()
 
 /*****************************************************************************
@@ -73,28 +76,25 @@ vlc_module_end()
  *****************************************************************************/
 
 /* */
-static void           Display(vout_display_t *, picture_t *);
-static int            Control(vout_display_t *, int);
+static picture_pool_t *Pool  (vout_display_t *, unsigned);
+static void           Display(vout_display_t *, picture_t *, subpicture_t *subpicture);
+static int            Control(vout_display_t *, int, va_list);
 
 /*****************************************************************************
  * vout_display_sys_t: video output descriptor
  *****************************************************************************/
-typedef struct vout_display_sys_t {
+struct vout_display_sys_t {
     FILE *f;
     bool  is_first;
     bool  is_yuv4mpeg2;
-} vout_display_sys_t;
 
-static const struct vlc_display_operations ops = {
-    .close = Close,
-    .display = Display,
-    .control = Control,
+    picture_pool_t *pool;
 };
 
 /* */
-static int Open(vout_display_t *vd,
-                video_format_t *fmtp, vlc_video_context *context)
+static int Open(vlc_object_t *object)
 {
+    vout_display_t *vd = (vout_display_t *)object;
     vout_display_sys_t *sys;
 
     /* Allocate instance and initialize some members */
@@ -104,6 +104,7 @@ static int Open(vout_display_t *vd,
 
     sys->is_first = false;
     sys->is_yuv4mpeg2 = var_InheritBool(vd, CFG_PREFIX "yuv4mpeg2");
+    sys->pool = NULL;
 
     /* */
     char *psz_fcc = var_InheritString(vd, CFG_PREFIX "chroma");
@@ -148,23 +149,29 @@ static int Open(vout_display_t *vd,
 
     /* */
     video_format_t fmt;
-    video_format_ApplyRotation(&fmt, vd->source);
+    video_format_ApplyRotation(&fmt, &vd->fmt);
     fmt.i_chroma = chroma;
     video_format_FixRgb(&fmt);
 
     /* */
-    *fmtp = fmt;
-    vd->ops = &ops;
+    vd->fmt     = fmt;
+    vd->pool    = Pool;
+    vd->prepare = NULL;
+    vd->display = Display;
+    vd->control = Control;
 
-    (void) context;
+    vout_display_DeleteWindow(vd, NULL);
     return VLC_SUCCESS;
 }
 
 /* */
-static void Close(vout_display_t *vd)
+static void Close(vlc_object_t *object)
 {
+    vout_display_t *vd = (vout_display_t *)object;
     vout_display_sys_t *sys = vd->sys;
 
+    if (sys->pool)
+        picture_pool_Release(sys->pool);
     fclose(sys->f);
     free(sys);
 }
@@ -172,9 +179,31 @@ static void Close(vout_display_t *vd)
 /*****************************************************************************
  *
  *****************************************************************************/
-static void Display(vout_display_t *vd, picture_t *picture)
+static picture_pool_t *Pool(vout_display_t *vd, unsigned count)
 {
     vout_display_sys_t *sys = vd->sys;
+    if (!sys->pool)
+        sys->pool = picture_pool_NewFromFormat(&vd->fmt, count);
+    return sys->pool;
+}
+
+static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
+{
+    vout_display_sys_t *sys = vd->sys;
+
+    /* */
+    video_format_t fmt = vd->fmt;
+
+    if (ORIENT_IS_SWAP(vd->source.orientation))
+    {
+        fmt.i_sar_num = vd->source.i_sar_den;
+        fmt.i_sar_den = vd->source.i_sar_num;
+    }
+    else
+    {
+        fmt.i_sar_num = vd->source.i_sar_num;
+        fmt.i_sar_den = vd->source.i_sar_den;
+    }
 
     /* */
     char type;
@@ -195,25 +224,12 @@ static void Display(vout_display_t *vd, picture_t *picture)
     if (!sys->is_first) {
         const char *header;
         char buffer[5];
-        video_format_t fmt = *vd->fmt;
-
-        if (ORIENT_IS_SWAP(vd->source->orientation))
-        {
-            fmt.i_sar_num = vd->source->i_sar_den;
-            fmt.i_sar_den = vd->source->i_sar_num;
-        }
-        else
-        {
-            fmt.i_sar_num = vd->source->i_sar_num;
-            fmt.i_sar_den = vd->source->i_sar_den;
-        }
-
         if (sys->is_yuv4mpeg2) {
             /* MPlayer compatible header, unfortunately it doesn't tell you
              * the exact fourcc used. */
             header = "YUV4MPEG2";
         } else {
-            snprintf(buffer, sizeof(buffer), "%4.4s",
+            snprintf(buffer, sizeof(buffer), "%4.4s", 
                      (const char*)&fmt.i_chroma);
             header = buffer;
         }
@@ -233,8 +249,8 @@ static void Display(vout_display_t *vd, picture_t *picture)
         const plane_t *plane = &picture->p[i];
         const uint8_t *pixels = plane->p_pixels;
 
-        pixels += (vd->fmt->i_x_offset * plane->i_visible_pitch)
-                  / vd->fmt->i_visible_height;
+        pixels += (vd->fmt.i_x_offset * plane->i_visible_pitch)
+                  / vd->fmt.i_visible_height;
 
         for( int y = 0; y < plane->i_visible_lines; y++) {
             const size_t written = fwrite(pixels, 1, plane->i_visible_pitch,
@@ -247,19 +263,14 @@ static void Display(vout_display_t *vd, picture_t *picture)
         }
     }
     fflush(sys->f);
+
+    /* */
+    picture_Release(picture);
+    VLC_UNUSED(subpicture);
 }
 
-static int Control(vout_display_t *vd, int query)
+static int Control(vout_display_t *vd, int query, va_list args)
 {
-    (void) vd;
-
-    switch (query) {
-        case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
-        case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
-        case VOUT_DISPLAY_CHANGE_ZOOM:
-        case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
-        case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
-            return VLC_SUCCESS;
-    }
+    (void) vd; (void) query; (void) args;
     return VLC_EGENERIC;
 }

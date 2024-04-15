@@ -5,17 +5,13 @@ PROJECTM_URL := $(SF)/projectm/$(PROJECTM_VERSION)/projectM-$(PROJECTM_VERSION)-
 ifdef HAVE_WIN32
 ifneq ($(ARCH),arm)
 ifneq ($(ARCH),aarch64)
-ifndef HAVE_WINSTORE
 PKGS += projectM
-endif
 endif
 endif
 endif
 ifeq ($(call need_pkg,"libprojectM"),)
 PKGS_FOUND += projectM
 endif
-
-DEPS_projectM = glew $(DEPS_glew)
 
 $(TARBALLS)/projectM-$(PROJECTM_VERSION)-Source.tar.gz:
 	$(call download_pkg,$(PROJECTM_URL),projectM)
@@ -33,18 +29,20 @@ endif
 	$(APPLY) $(SRC)/projectM/gcc6.patch
 	$(APPLY) $(SRC)/projectM/clang6.patch
 	$(APPLY) $(SRC)/projectM/missing-includes.patch
-	$(APPLY) $(SRC)/projectM/projectm-cmake-install.patch
 	$(MOVE)
 
-PROJECTM_CONF := \
-		-DCMAKE_CXX_STANDARD=98 \
-		-DDISABLE_NATIVE_PRESETS:BOOL=ON \
-		-DUSE_FTGL:BOOL=OFF \
-		-DBUILD_PROJECTM_STATIC:BOOL=ON
+DEPS_projectM = glew $(DEPS_glew)
 
 .projectM: projectM toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(PROJECTM_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+	cd $< && rm -f CMakeCache.txt
+	cd $< && $(HOSTVARS) $(CMAKE) \
+		-DCMAKE_CXX_STANDARD=98 \
+		-DINCLUDE-PROJECTM-LIBVISUAL:BOOL=OFF \
+		-DDISABLE_NATIVE_PRESETS:BOOL=ON \
+		-DUSE_FTGL:BOOL=OFF \
+		-DINCLUDE-PROJECTM-PULSEAUDIO:BOOL=OFF \
+		-DINCLUDE-PROJECTM-QT:BOOL=OFF \
+		-DBUILD_PROJECTM_STATIC:BOOL=ON .
+	cd $< && $(CMAKEBUILD) . --target install
+	-cd $<; cp Renderer/libRenderer.a MilkdropPresetFactory/libMilkdropPresetFactory.a $(PREFIX)/lib
 	touch $@

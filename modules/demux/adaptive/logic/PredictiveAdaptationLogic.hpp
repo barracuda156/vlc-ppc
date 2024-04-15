@@ -41,7 +41,7 @@ namespace adaptive
                 vlc_tick_t buffering_level;
                 vlc_tick_t buffering_target;
                 unsigned last_download_rate;
-                vlc_tick_t last_duration;
+                unsigned last_duration;
                 MovingAverage<unsigned> average;
         };
 
@@ -54,7 +54,7 @@ namespace adaptive
                 virtual BaseRepresentation* getNextRepresentation(BaseAdaptationSet *,
                                                                   BaseRepresentation *) override;
                 virtual void                updateDownloadRate     (const ID &, size_t,
-                                                                    vlc_tick_t, vlc_tick_t) override;
+                                                                    mtime_t, mtime_t) override;
                 virtual void                trackerEvent           (const TrackerEvent &) override;
 
             private:

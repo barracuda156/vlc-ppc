@@ -26,13 +26,14 @@
 #include <stdio.h>
 
 #include <vlc_common.h>
+#include <vlc_memory.h>
 #include <vlc_keystore.h>
 
 #include "file_crypt.h"
 
 #include <jni.h>
 
-#include "../video_output/android/env.h"
+JNIEnv * android_getEnv(vlc_object_t *, const char *);
 #define GET_ENV() android_getEnv(VLC_OBJECT(p_keystore), "android keystore")
 
 static struct

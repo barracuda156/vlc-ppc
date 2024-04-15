@@ -82,7 +82,7 @@ namespace adaptive
                                               const BaseRepresentation *b);
 
                 virtual uint64_t translateSegmentNumber(uint64_t, const BaseRepresentation *) const;
-                bool getSegmentNumberByTime(vlc_tick_t, uint64_t *) const;
+                bool getSegmentNumberByTime(mtime_t, uint64_t *) const;
                 bool getPlaybackTimeDurationBySegmentNumber(uint64_t, vlc_tick_t *, vlc_tick_t *) const;
                 bool getMediaPlaybackRange(vlc_tick_t *rangeBegin,
                                                                vlc_tick_t *rangeEnd,

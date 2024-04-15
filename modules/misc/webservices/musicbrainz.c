@@ -47,15 +47,14 @@ static musicbrainz_lookup_t * musicbrainz_lookup_new(void)
 static musicbrainz_lookup_t * musicbrainz_lookup(vlc_object_t *p_obj, const char *psz_url)
 {
     msg_Dbg(p_obj, "Querying MB for %s", psz_url);
-    size_t i_buffer;
-    void *p_buffer = json_retrieve_document(p_obj, psz_url, &i_buffer);
+    void *p_buffer = json_retrieve_document(p_obj, psz_url);
     if(!p_buffer)
         return NULL;
 
     musicbrainz_lookup_t *p_lookup = musicbrainz_lookup_new();
     if(p_lookup)
     {
-        p_lookup->root = json_parse_document(p_obj, p_buffer, i_buffer);
+        p_lookup->root = json_parse_document(p_obj, p_buffer);
         if (!p_lookup->root)
             msg_Dbg(p_obj, "No results");
     }
@@ -332,9 +331,8 @@ coverartarchive_t * coverartarchive_lookup_releasegroup(musicbrainz_config_t *cf
         return NULL;
 
     char *psz_url;
-    if(asprintf(&psz_url, "https://%s/release-group/%s", cfg->psz_coverart_server, psz_id) < 0)
+    if(0 < asprintf(&psz_url, "https://%s/releasegroup/%s", cfg->psz_coverart_server, psz_id ))
     {
-        free(c);
         return NULL;
     }
 

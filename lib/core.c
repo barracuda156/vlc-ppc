@@ -2,6 +2,7 @@
  * core.c: Core libvlc new API functions : initialization
  *****************************************************************************
  * Copyright (C) 2005 VLC authors and VideoLAN
+ * $Id: 5e8c614c837e49dbfa60f5b2cff74d61bbecc903 $
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *
@@ -29,23 +30,13 @@
 #include <vlc/vlc.h>
 
 #include <vlc_interface.h>
+#include <vlc_vlm.h>
 
 #include <stdarg.h>
 #include <limits.h>
 #include <assert.h>
 
-static_assert(LIBVLC_VERSION_MAJOR    == PACKAGE_VERSION_MAJOR, "Major VLC version mismatch");
-static_assert(LIBVLC_VERSION_MINOR    == PACKAGE_VERSION_MINOR, "Minor VLC version mismatch");
-static_assert(LIBVLC_VERSION_REVISION == PACKAGE_VERSION_REVISION, "VLC Revision version mismatch");
-static_assert(LIBVLC_VERSION_EXTRA    == PACKAGE_VERSION_EXTRA, "VLC Extra version mismatch");
-static_assert(LIBVLC_ABI_VERSION_MAJOR == LIBVLC_ABI_MAJOR, "Major LibVLC version mismatch");
-static_assert(LIBVLC_ABI_VERSION_MINOR == LIBVLC_ABI_MINOR, "Minor LibVLC version mismatch");
-static_assert(LIBVLC_ABI_VERSION_MICRO == LIBVLC_ABI_MICRO, "Micro LibVLC version mismatch");
-
-int libvlc_abi_version(void)
-{
-    return LIBVLC_ABI_VERSION_INT;
-}
+#include "../src/revision.c"
 
 libvlc_instance_t * libvlc_new( int argc, const char *const *argv )
 {
@@ -72,8 +63,10 @@ libvlc_instance_t * libvlc_new( int argc, const char *const *argv )
     }
 
     p_new->p_libvlc_int = p_libvlc_int;
-    vlc_atomic_rc_init( &p_new->ref_count );
+    p_new->vlm = NULL;
+    p_new->ref_count = 1;
     p_new->p_callback_list = NULL;
+    vlc_mutex_init(&p_new->instance_lock);
     return p_new;
 
 error:
@@ -85,14 +78,28 @@ error:
 void libvlc_retain( libvlc_instance_t *p_instance )
 {
     assert( p_instance != NULL );
+    assert( p_instance->ref_count < UINT_MAX );
 
-    vlc_atomic_rc_inc( &p_instance->ref_count );
+    vlc_mutex_lock( &p_instance->instance_lock );
+    p_instance->ref_count++;
+    vlc_mutex_unlock( &p_instance->instance_lock );
 }
 
 void libvlc_release( libvlc_instance_t *p_instance )
 {
-    if(vlc_atomic_rc_dec( &p_instance->ref_count ))
+    vlc_mutex_t *lock = &p_instance->instance_lock;
+    int refs;
+
+    vlc_mutex_lock( lock );
+    assert( p_instance->ref_count > 0 );
+    refs = --p_instance->ref_count;
+    vlc_mutex_unlock( lock );
+
+    if( refs == 0 )
     {
+        vlc_mutex_destroy( lock );
+        if( p_instance->vlm != NULL )
+            libvlc_vlm_release( p_instance );
         libvlc_Quit( p_instance->p_libvlc_int );
         libvlc_InternalCleanup( p_instance->p_libvlc_int );
         libvlc_InternalDestroy( p_instance->p_libvlc_int );
@@ -106,6 +113,22 @@ void libvlc_set_exit_handler( libvlc_instance_t *p_i, void (*cb) (void *),
 {
     libvlc_int_t *p_libvlc = p_i->p_libvlc_int;
     libvlc_SetExitHandler( p_libvlc, cb, data );
+}
+
+static void libvlc_wait_wakeup( void *data )
+{
+    vlc_sem_post( data );
+}
+
+void libvlc_wait( libvlc_instance_t *p_i )
+{
+    vlc_sem_t sem;
+
+    vlc_sem_init( &sem, 0 );
+    libvlc_set_exit_handler( p_i, libvlc_wait_wakeup, &sem );
+    vlc_sem_wait( &sem );
+    libvlc_set_exit_handler( p_i, NULL, NULL );
+    vlc_sem_destroy( &sem );
 }
 
 void libvlc_set_user_agent (libvlc_instance_t *p_i,
@@ -183,8 +206,8 @@ static libvlc_module_description_t *module_description_list_get(
             p_list = p_actual;
 
         const char* name = module_get_object( p_module );
-        const char* shortname = module_GetShortName( p_module );
-        const char* longname = module_GetLongName( p_module );
+        const char* shortname = module_get_name( p_module, false );
+        const char* longname = module_get_name( p_module, true );
         const char* help = module_get_help( p_module );
         p_actual->psz_name = name ? strdup( name ) : NULL;
         p_actual->psz_shortname = shortname ? strdup( shortname ) : NULL;
@@ -231,7 +254,7 @@ libvlc_module_description_t *libvlc_video_filter_list_get( libvlc_instance_t *p_
 
 int64_t libvlc_clock(void)
 {
-    return US_FROM_VLC_TICK(vlc_tick_now());
+    return mdate();
 }
 
 const char vlc_module_name[] = "libvlc";

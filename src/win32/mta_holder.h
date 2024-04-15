@@ -39,8 +39,6 @@ typedef struct vlc_mta_holder
 
 static inline void* MtaMainLoop( void* opaque )
 {
-    vlc_thread_set_name("vlc-mta");
-
     vlc_mta_holder* p_mta = (vlc_mta_holder*)opaque;
     CoInitializeEx( NULL, COINIT_MULTITHREADED );
 
@@ -58,15 +56,13 @@ static inline void* MtaMainLoop( void* opaque )
  * In the background, this will create a thread that does nothing but to keep the MTA
  * refcount greater than 0.
  *
- * This is useful in order not to commit a thread to a specific concurrency model.
+ * This is usefull in order not to commit a thread to a specific concurrency model.
  * This function is win32 specific.
  */
 static inline bool vlc_mta_acquire( vlc_object_t *p_parent )
 {
-    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_parent));
-
     vlc_global_lock( VLC_MTA_MUTEX );
-    vlc_mta_holder* p_mta = (vlc_mta_holder*)var_CreateGetAddress( vlc, "mta-holder" );
+    vlc_mta_holder* p_mta = (vlc_mta_holder*)var_CreateGetAddress( p_parent->obj.libvlc, "mta-holder" );
     if ( p_mta == NULL )
     {
         p_mta = (vlc_mta_holder*)malloc( sizeof( *p_mta ) );
@@ -78,14 +74,16 @@ static inline bool vlc_mta_acquire( vlc_object_t *p_parent )
         vlc_sem_init( &p_mta->ready_sem, 0 );
         vlc_sem_init( &p_mta->release_sem, 0 );
         p_mta->i_refcount = 1;
-        if ( vlc_clone( &p_mta->thread, MtaMainLoop, p_mta ) )
+        if ( vlc_clone( &p_mta->thread, MtaMainLoop, p_mta, VLC_THREAD_PRIORITY_LOW ) )
         {
+            vlc_sem_destroy( &p_mta->release_sem );
+            vlc_sem_destroy( &p_mta->ready_sem );
             free( p_mta );
             p_mta = NULL;
             vlc_global_unlock( VLC_MTA_MUTEX );
             return false;
         }
-        var_SetAddress( vlc, "mta-holder", p_mta );
+        var_SetAddress( p_parent->obj.libvlc, "mta-holder", p_mta );
         vlc_sem_wait( &p_mta->ready_sem );
     }
     else
@@ -101,14 +99,12 @@ static inline bool vlc_mta_acquire( vlc_object_t *p_parent )
  */
 static inline void vlc_mta_release( vlc_object_t* p_parent )
 {
-    vlc_object_t *vlc = VLC_OBJECT(vlc_object_instance(p_parent));
-
     vlc_global_lock( VLC_MTA_MUTEX );
-    vlc_mta_holder *p_mta = (vlc_mta_holder*)var_InheritAddress( vlc, "mta-holder" );
+    vlc_mta_holder *p_mta = (vlc_mta_holder*)var_InheritAddress( p_parent->obj.libvlc, "mta-holder" );
     assert( p_mta != NULL );
     int i_refcount = --p_mta->i_refcount;
     if ( i_refcount == 0 )
-        var_SetAddress( vlc, "mta-holder", NULL );
+        var_SetAddress( p_parent->obj.libvlc, "mta-holder", NULL );
     vlc_global_unlock( VLC_MTA_MUTEX );
     if ( i_refcount == 0 )
     {
@@ -116,6 +112,8 @@ static inline void vlc_mta_release( vlc_object_t* p_parent )
 
         vlc_join( p_mta->thread, NULL );
 
+        vlc_sem_destroy( &p_mta->release_sem );
+        vlc_sem_destroy( &p_mta->ready_sem );
         free( p_mta );
     }
 }

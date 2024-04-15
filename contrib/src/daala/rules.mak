@@ -20,7 +20,7 @@ daala: daala-$(DAALA_VERSION).tar.xz .sum-daala
 	$(call pkg_static,"daalaenc.pc.in")
 	$(MOVE)
 
-DAALACONF := \
+DAALACONF := $(HOSTCONF) \
 	--disable-tools \
 	--disable-unit-tests \
 	--disable-examples \
@@ -29,8 +29,6 @@ DAALACONF := \
 .daala: daala
 	mkdir -p daala/m4
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(DAALACONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(DAALACONF)
+	cd $< && $(MAKE) install
 	touch $@

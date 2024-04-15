@@ -25,11 +25,27 @@
 #import "coreaudio_common.h"
 
 #import <vlc_plugin.h>
+#import <vlc_memory.h>
 
 #import <CoreAudio/CoreAudioTypes.h>
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
 #import <mach/mach_time.h>
+
+#pragma mark -
+#pragma mark local prototypes & module descriptor
+
+static int  Open  (vlc_object_t *);
+static void Close (vlc_object_t *);
+
+vlc_module_begin ()
+    set_shortname("audiounit_ios")
+    set_description("AudioUnit output for iOS")
+    set_capability("audio output", 101)
+    set_category(CAT_AUDIO)
+    set_subcategory(SUBCAT_AUDIO_AOUT)
+    set_callbacks(Open, Close)
+vlc_module_end ()
 
 #pragma mark -
 #pragma mark private declarations
@@ -58,8 +74,8 @@ static const struct {
 
 #if ((__IPHONE_OS_VERSION_MAX_ALLOWED && __IPHONE_OS_VERSION_MAX_ALLOWED < 150000) || (__TV_OS_MAX_VERSION_ALLOWED && __TV_OS_MAX_VERSION_ALLOWED < 150000))
 
-NSString *const AVAudioSessionSpatialAudioEnabledKey = @"AVAudioSessionSpatializationEnabledKey";
-NSString *const AVAudioSessionSpatialPlaybackCapabilitiesChangedNotification = @"AVAudioSessionSpatialPlaybackCapabilitiesChangedNotification";
+extern NSString *const AVAudioSessionSpatialAudioEnabledKey = @"AVAudioSessionSpatializationEnabledKey";
+extern NSString *const AVAudioSessionSpatialPlaybackCapabilitiesChangedNotification = @"AVAudioSessionSpatialPlaybackCapabilitiesChangedNotification";
 
 @interface AVAudioSession (iOS15RoutingConfiguration)
 - (BOOL)setSupportsMultichannelContent:(BOOL)inValue error:(NSError **)outError;
@@ -124,7 +140,7 @@ NSString *const AVAudioSessionSpatialPlaybackCapabilitiesChangedNotification = @
  * This structure is part of the audio output thread descriptor.
  * It describes the CoreAudio specific properties of an output thread.
  *****************************************************************************/
-typedef struct
+struct aout_sys_t
 {
     struct aout_sys_common c;
 
@@ -138,14 +154,10 @@ typedef struct
     bool      b_spatial_audio_supported;
     enum au_dev au_dev;
 
-    /* For debug purpose, to print when specific latency changed */
-    vlc_tick_t output_latency_ticks;
-    vlc_tick_t io_buffer_duration_ticks;
-
     /* sw gain */
     float               soft_gain;
     bool                soft_mute;
-} aout_sys_t;
+};
 
 /* Soft volume helper */
 #include "audio_output/volume.h"
@@ -157,40 +169,6 @@ enum port_type
     PORT_TYPE_HDMI,
     PORT_TYPE_HEADPHONES
 };
-
-static vlc_tick_t
-GetLatency(audio_output_t *p_aout)
-{
-    aout_sys_t *p_sys = p_aout->sys;
-
-    Float64 unit_s;
-    vlc_tick_t latency_us = 0, us;
-    bool changed = false;
-
-    us = vlc_tick_from_sec([p_sys->avInstance outputLatency]);
-    if (us != p_sys->output_latency_ticks)
-    {
-        msg_Dbg(p_aout, "Current device has a new outputLatency of %" PRId64 "us", us);
-        p_sys->output_latency_ticks = us;
-        changed = true;
-    }
-    latency_us += us;
-
-    us = vlc_tick_from_sec([p_sys->avInstance IOBufferDuration]);
-    if (us != p_sys->io_buffer_duration_ticks)
-    {
-        msg_Dbg(p_aout, "Current device has a new IOBufferDuration of %" PRId64 "us", us);
-        p_sys->io_buffer_duration_ticks = us;
-        changed = true;
-    }
-    /* Don't add 'us' to 'latency_us', IOBufferDuration is already handled by
-     * the render callback (end_ticks include the current buffer length). */
-
-    if (changed)
-        msg_Dbg(p_aout, "Current device has a new total latency of %" PRId64 "us",
-                latency_us);
-    return latency_us;
-}
 
 #pragma mark -
 #pragma mark AVAudioSession route and output handling
@@ -208,7 +186,7 @@ GetLatency(audio_output_t *p_aout)
 - (void)audioSessionRouteChange:(NSNotification *)notification
 {
     audio_output_t *p_aout = [self aout];
-    aout_sys_t *p_sys = p_aout->sys;
+    struct aout_sys_t *p_sys = p_aout->sys;
     NSDictionary *userInfo = notification.userInfo;
     NSInteger routeChangeReason =
         [[userInfo valueForKey:AVAudioSessionRouteChangeReasonKey] integerValue];
@@ -219,7 +197,11 @@ GetLatency(audio_output_t *p_aout)
      || routeChangeReason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable)
         aout_RestartRequest(p_aout, AOUT_RESTART_OUTPUT);
     else
-        ca_ResetDeviceLatency(p_aout);
+    {
+        const vlc_tick_t latency_us = [p_sys->avInstance outputLatency] * CLOCK_FREQ;
+        ca_SetDeviceLatency(p_aout, latency_us);
+        msg_Dbg(p_aout, "Current device has a new latency of %lld us", latency_us);
+    }
 }
 
 - (void)handleInterruption:(NSNotification *)notification
@@ -262,7 +244,7 @@ static void
 avas_setPreferredNumberOfChannels(audio_output_t *p_aout,
                                   const audio_sample_format_t *fmt)
 {
-    aout_sys_t *p_sys = p_aout->sys;
+    struct aout_sys_t *p_sys = p_aout->sys;
 
     if (aout_BitsPerSample(fmt->i_format) == 0)
         return; /* Don't touch the number of channels for passthrough */
@@ -290,7 +272,7 @@ avas_setPreferredNumberOfChannels(audio_output_t *p_aout,
 static void
 avas_resetPreferredNumberOfChannels(audio_output_t *p_aout)
 {
-    aout_sys_t *p_sys = p_aout->sys;
+    struct aout_sys_t *p_sys = p_aout->sys;
     AVAudioSession *instance = p_sys->avInstance;
 
     if (p_sys->b_preferred_channels_set)
@@ -303,7 +285,7 @@ avas_resetPreferredNumberOfChannels(audio_output_t *p_aout)
 static int
 avas_GetPortType(audio_output_t *p_aout, enum port_type *pport_type)
 {
-    aout_sys_t * p_sys = p_aout->sys;
+    struct aout_sys_t * p_sys = p_aout->sys;
     AVAudioSession *instance = p_sys->avInstance;
     *pport_type = PORT_TYPE_DEFAULT;
 
@@ -335,29 +317,21 @@ avas_GetPortType(audio_output_t *p_aout, enum port_type *pport_type)
     return VLC_SUCCESS;
 }
 
-struct API_AVAILABLE(ios(11.0))
-role2policy
+struct role2policy
 {
     char role[sizeof("accessibility")];
     AVAudioSessionRouteSharingPolicy policy;
 };
 
-static int API_AVAILABLE(ios(11.0))
-role2policy_cmp(const void *key, const void *val)
+static int role2policy_cmp(const void *key, const void *val)
 {
     const struct role2policy *entry = val;
     return strcmp(key, entry->role);
 }
 
-static AVAudioSessionRouteSharingPolicy API_AVAILABLE(ios(11.0))
+static AVAudioSessionRouteSharingPolicy
 GetRouteSharingPolicy(audio_output_t *p_aout)
 {
-#if __IPHONEOS_VERSION_MAX_ALLOWED < 130000
-    AVAudioSessionRouteSharingPolicy AVAudioSessionRouteSharingPolicyLongFormAudio =
-        AVAudioSessionRouteSharingPolicyLongForm;
-    AVAudioSessionRouteSharingPolicy AVAudioSessionRouteSharingPolicyLongFormVideo =
-        AVAudioSessionRouteSharingPolicyLongForm;
-#endif
     /* LongFormAudio by default */
     AVAudioSessionRouteSharingPolicy policy = AVAudioSessionRouteSharingPolicyLongFormAudio;
     AVAudioSessionRouteSharingPolicy video_policy;
@@ -399,29 +373,30 @@ GetRouteSharingPolicy(audio_output_t *p_aout)
 static int
 avas_SetActive(audio_output_t *p_aout, bool active, NSUInteger options)
 {
-    aout_sys_t * p_sys = p_aout->sys;
+    struct aout_sys_t * p_sys = p_aout->sys;
     AVAudioSession *instance = p_sys->avInstance;
     BOOL ret = false;
     NSError *error = nil;
 
     if (active)
     {
+        AVAudioSessionCategory category = AVAudioSessionCategoryPlayback;
+        AVAudioSessionMode mode = AVAudioSessionModeMoviePlayback;
+        AVAudioSessionRouteSharingPolicy policy = GetRouteSharingPolicy(p_aout);
+
         if (@available(iOS 11.0, tvOS 11.0, *))
         {
-            AVAudioSessionRouteSharingPolicy policy = GetRouteSharingPolicy(p_aout);
-
-            ret = [instance setCategory:AVAudioSessionCategoryPlayback
-                                   mode:AVAudioSessionModeMoviePlayback
+            ret = [instance setCategory:category
+                                   mode:mode
                      routeSharingPolicy:policy
                                 options:0
                                   error:&error];
         }
         else
         {
-            ret = [instance setCategory:AVAudioSessionCategoryPlayback
+            ret = [instance setCategory:category
                                   error:&error];
-            ret = ret && [instance setMode:AVAudioSessionModeMoviePlayback
-                                     error:&error];
+            ret = ret && [instance setMode:mode error:&error];
             /* Not AVAudioSessionRouteSharingPolicy on older devices */
         }
         if (@available(iOS 15.0, tvOS 15.0, *)) {
@@ -455,7 +430,7 @@ avas_SetActive(audio_output_t *p_aout, bool active, NSUInteger options)
 static void
 Pause (audio_output_t *p_aout, bool pause, vlc_tick_t date)
 {
-    aout_sys_t * p_sys = p_aout->sys;
+    struct aout_sys_t * p_sys = p_aout->sys;
 
     /* We need to start / stop the audio unit here because otherwise the OS
      * won't believe us that we stopped the audio output so in case of an
@@ -471,7 +446,7 @@ Pause (audio_output_t *p_aout, bool pause, vlc_tick_t date)
     {
         err = AudioOutputUnitStop(p_sys->au_unit);
         if (err != noErr)
-            ca_LogErr("AudioOutputUnitStop failed");
+            ca_LogErr("AudioOutputUnitStart failed");
         avas_SetActive(p_aout, false, 0);
     }
     else
@@ -491,26 +466,49 @@ Pause (audio_output_t *p_aout, bool pause, vlc_tick_t date)
     }
     p_sys->b_stopped = pause;
     ca_Pause(p_aout, pause, date);
+
+    /* Since we stopped the AudioUnit, we can't really recover the delay from
+     * the last playback. So it's better to flush everything now to avoid
+     * synchronization glitches when resuming from pause. The main drawback is
+     * that we loose 1-2 sec of audio when resuming. The order is important
+     * here, ca_Flush need to be called when paused. */
+    if (pause)
+        ca_Flush(p_aout, false);
+}
+
+static void
+Flush(audio_output_t *p_aout, bool wait)
+{
+    struct aout_sys_t * p_sys = p_aout->sys;
+
+    ca_Flush(p_aout, wait);
 }
 
 static int
 MuteSet(audio_output_t *p_aout, bool mute)
 {
-    ca_MuteSet(p_aout, mute);
-    aout_MuteReport(p_aout, mute);
+    struct aout_sys_t * p_sys = p_aout->sys;
+
+    p_sys->b_muted = mute;
+    if (p_sys->au_unit != NULL)
+    {
+        Pause(p_aout, mute, 0);
+        if (mute)
+            ca_Flush(p_aout, false);
+    }
 
     return VLC_SUCCESS;
 }
 
 static void
-Play(audio_output_t * p_aout, block_t * p_block, vlc_tick_t date)
+Play(audio_output_t * p_aout, block_t * p_block)
 {
-    aout_sys_t * p_sys = p_aout->sys;
+    struct aout_sys_t * p_sys = p_aout->sys;
 
     if (p_sys->b_muted)
         block_Release(p_block);
     else
-        ca_Play(p_aout, p_block, date);
+        ca_Play(p_aout, p_block);
 }
 
 #pragma mark initialization
@@ -518,7 +516,7 @@ Play(audio_output_t * p_aout, block_t * p_block, vlc_tick_t date)
 static void
 Stop(audio_output_t *p_aout)
 {
-    aout_sys_t   *p_sys = p_aout->sys;
+    struct aout_sys_t   *p_sys = p_aout->sys;
     OSStatus err;
 
     [[NSNotificationCenter defaultCenter] removeObserver:p_sys->aoutWrapper];
@@ -545,7 +543,7 @@ Stop(audio_output_t *p_aout)
 static int
 Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
 {
-    aout_sys_t *p_sys = p_aout->sys;
+    struct aout_sys_t *p_sys = p_aout->sys;
     OSStatus err;
     OSStatus status;
     AudioChannelLayout *layout = NULL;
@@ -560,8 +558,6 @@ Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
     aout_FormatPrint(p_aout, "VLC is looking for:", fmt);
 
     p_sys->au_unit = NULL;
-    p_sys->output_latency_ticks = 0;
-    p_sys->io_buffer_duration_ticks = 0;
 
     NSNotificationCenter *notificationCenter = [NSNotificationCenter defaultCenter];
     [notificationCenter addObserver:p_sys->aoutWrapper
@@ -602,6 +598,13 @@ Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
     if (ret != VLC_SUCCESS)
         goto error;
 
+    if (AOUT_FMT_SPDIF(fmt))
+    {
+        if (p_sys->au_dev != AU_DEV_ENCODED
+         || (port_type != PORT_TYPE_USB && port_type != PORT_TYPE_HDMI))
+            goto error;
+    }
+
     msg_Dbg(p_aout, "Output on %s, channel count: %ld, spatialAudioEnabled %i",
             port_type == PORT_TYPE_HDMI ? "HDMI" :
             port_type == PORT_TYPE_USB ? "USB" :
@@ -630,7 +633,10 @@ Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
     if (err != noErr)
         ca_LogWarn("failed to set IO mode");
 
-    ret = au_Initialize(p_aout, p_sys->au_unit, fmt, NULL, 0, GetLatency, NULL);
+    const vlc_tick_t latency_us = [p_sys->avInstance outputLatency] * CLOCK_FREQ;
+    msg_Dbg(p_aout, "Current device has a latency of %lld us", latency_us);
+
+    ret = au_Initialize(p_aout, p_sys->au_unit, fmt, NULL, latency_us, NULL);
     if (ret != VLC_SUCCESS)
         goto error;
 
@@ -650,6 +656,7 @@ Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
     free(layout);
     fmt->channel_type = AUDIO_CHANNEL_TYPE_BITMAP;
     p_aout->pause = Pause;
+    p_aout->flush = Flush;
 
     aout_SoftVolumeStart( p_aout );
 
@@ -703,6 +710,7 @@ Close(vlc_object_t *obj)
 
     [sys->aoutWrapper release];
 
+    ca_Close(aout);
     free(sys);
 }
 
@@ -727,6 +735,7 @@ Open(vlc_object_t *obj)
     sys->aoutWrapper = [[AoutWrapper alloc] initWithAout:aout];
     if (sys->aoutWrapper == NULL)
     {
+        ca_Close(aout);
         free(sys);
         return VLC_ENOMEM;
     }
@@ -747,15 +756,3 @@ Open(vlc_object_t *obj)
 
     return VLC_SUCCESS;
 }
-
-#pragma mark -
-#pragma mark module descriptor
-
-vlc_module_begin ()
-    set_shortname("audiounit_ios")
-    set_description("AudioUnit output for iOS")
-    set_capability("audio output", 101)
-    set_subcategory(SUBCAT_AUDIO_AOUT)
-    add_sw_gain()
-    set_callbacks(Open, Close)
-vlc_module_end ()

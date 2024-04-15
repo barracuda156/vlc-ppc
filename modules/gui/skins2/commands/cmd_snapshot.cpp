@@ -2,6 +2,7 @@
  * cmd_snapshot.cpp
  *****************************************************************************
  * Copyright (C) 2006-2009 the VideoLAN team
+ * $Id: 33107c5690f24548ce56354c75456bff63237221 $
  *
  * Authors: Olivier Teulière <ipkiss@via.ecp.fr>
  *
@@ -21,26 +22,37 @@
  *****************************************************************************/
 
 #include "cmd_snapshot.hpp"
-#include <vlc_player.h>
+#include <vlc_input.h>
+#include <vlc_vout.h>
 
 void CmdSnapshot::execute()
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-    vlc_player_vout_Snapshot( player );
+    if( getIntf()->p_sys->p_input == NULL )
+        return;
+
+    vout_thread_t *pVout = input_GetVout( getIntf()->p_sys->p_input );
+    if( pVout )
+    {
+        // Take a snapshot
+        var_TriggerCallback( pVout, "video-snapshot" );
+        vlc_object_release( pVout );
+    }
 }
 
 
 void CmdToggleRecord::execute()
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-    vlc_player_ToggleRecording( player );
+    input_thread_t* pInput = getIntf()->p_sys->p_input;
+    if( pInput )
+        var_ToggleBool( pInput, "record" );
 }
 
 
 void CmdNextFrame::execute()
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-    vlc_player_NextVideoFrame( player );
+    input_thread_t* pInput = getIntf()->p_sys->p_input;
+    if( pInput )
+        var_TriggerCallback( pInput, "frame-next" );
 }
 
 

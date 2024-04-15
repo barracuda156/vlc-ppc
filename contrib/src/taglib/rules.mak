@@ -15,15 +15,9 @@ $(TARBALLS)/taglib-$(TAGLIB_VERSION).tar.gz:
 
 taglib: taglib-$(TAGLIB_VERSION).tar.gz .sum-taglib
 	$(UNPACK)
-	$(APPLY) $(SRC)/taglib/0001-Implement-ID3v2-readStyle-avoid-worst-case.patch
-	$(APPLY) $(SRC)/taglib/0001-FileTypeResolver-Fix-IOStream-usage-with-custom-reso.patch
 	$(MOVE)
 
-TAGLIB_CONF := -DBUILD_BINDINGS=OFF
-
 .taglib: taglib toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(TAGLIB_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+	cd $< && $(HOSTVARS_PIC) $(CMAKE) .
+	cd $< && $(CMAKEBUILD) . --target install
 	touch $@

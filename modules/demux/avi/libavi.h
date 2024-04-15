@@ -2,6 +2,7 @@
  * libavi.h : LibAVI library
  ******************************************************************************
  * Copyright (C) 2001-2003 VLC authors and VideoLAN
+ * $Id$
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -18,6 +19,17 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
+
+/* biCompression / Others are FourCC */
+#define BI_RGB              0x0000
+#define BI_RLE8             0x0001
+#define BI_RLE4             0x0002
+#define BI_BITFIELDS        0x0003
+#define BI_JPEG             0x0004
+#define BI_PNG              0x0005
+#define BI_CMYK             0x000B
+#define BI_CMYKRLE8         0x000C
+#define BI_CMYKRLE4         0x000D
 
 /* flags for use in <dwFlags> in AVIFileHdr */
 #define AVIF_HASINDEX       0x00000010  /* Index at end of file? */
@@ -37,19 +49,17 @@
                                         /* the keyframe flag isn't a true flag */
                                         /* but have to be verified */
 
-typedef union avi_chunk_u avi_chunk_t;
-
 #define AVI_CHUNK_COMMON           \
     vlc_fourcc_t i_chunk_fourcc;   \
     uint64_t i_chunk_size;         \
     uint64_t i_chunk_pos;          \
-    avi_chunk_t *p_next;           \
-    avi_chunk_t *p_father;         \
-    avi_chunk_t *p_first;
+    union  avi_chunk_u *p_next;    \
+    union  avi_chunk_u *p_father;  \
+    union  avi_chunk_u *p_first;
 
 #define AVI_CHUNK( p_chk ) (avi_chunk_t*)(p_chk)
 
-typedef struct
+typedef struct idx1_entry_s
 {
     vlc_fourcc_t i_fourcc;
     uint32_t i_flags;
@@ -58,18 +68,18 @@ typedef struct
 
 } idx1_entry_t;
 
-typedef struct
+typedef struct avi_chunk_common_s
 {
     AVI_CHUNK_COMMON
 } avi_chunk_common_t;
 
-typedef struct
+typedef struct avi_chunk_list_s
 {
     AVI_CHUNK_COMMON
     vlc_fourcc_t i_type;
 } avi_chunk_list_t;
 
-typedef struct
+typedef struct avi_chunk_idx1_s
 {
     AVI_CHUNK_COMMON
     unsigned int i_entry_count;
@@ -78,7 +88,7 @@ typedef struct
 
 } avi_chunk_idx1_t;
 
-typedef struct
+typedef struct avi_chunk_avih_s
 {
     AVI_CHUNK_COMMON
     uint32_t i_microsecperframe;
@@ -98,7 +108,7 @@ typedef struct
     uint32_t i_length;
 } avi_chunk_avih_t;
 
-typedef struct
+typedef struct avi_chunk_strh_s
 {
     AVI_CHUNK_COMMON
     vlc_fourcc_t i_type;
@@ -118,35 +128,21 @@ typedef struct
 typedef struct
 {
     AVI_CHUNK_COMMON
-    int             i_cat;
-    WAVEFORMATEX    *p_wf;
-} avi_chunk_strf_auds_t;
-
-typedef struct
-{
-    AVI_CHUNK_COMMON
-    int                     i_cat;
-    VLC_BITMAPINFOHEADER    *p_bih;
-} avi_chunk_strf_vids_t;
-
-typedef union
-{
-    avi_chunk_strf_auds_t   auds;
-    avi_chunk_strf_vids_t   vids;
-    struct
+    int i_cat;
+    union
     {
-        AVI_CHUNK_COMMON
-        int i_cat;
-    }                       common;
+        VLC_BITMAPINFOHEADER *p_bih;
+        WAVEFORMATEX         *p_wf;
+    } u;
 } avi_chunk_strf_t;
 
-typedef struct
+typedef struct avi_chunk_strd_s
 {
     AVI_CHUNK_COMMON
     uint8_t  *p_data;
 } avi_chunk_strd_t;
 
-typedef struct
+typedef struct avi_chunk_vprp_s
 {
     AVI_CHUNK_COMMON
     uint32_t i_video_format_token;
@@ -172,7 +168,7 @@ typedef struct
 
 } avi_chunk_vprp_t;
 
-typedef struct
+typedef struct avi_chunk_dmlh_s
 {
     AVI_CHUNK_COMMON
     uint32_t dwTotalFrames;
@@ -206,7 +202,7 @@ typedef struct
     uint32_t i_duration;
 } indx_super_entry_t;
 
-typedef struct
+typedef struct avi_chunk_indx_s
 {
     AVI_CHUNK_COMMON
     int16_t  i_longsperentry;
@@ -225,14 +221,14 @@ typedef struct
     } idx;
 } avi_chunk_indx_t;
 
-typedef struct
+typedef struct avi_chunk_STRING_s
 {
     AVI_CHUNK_COMMON
     char *p_type;
     char *p_str;
 } avi_chunk_STRING_t;
 
-union avi_chunk_u
+typedef union avi_chunk_u
 {
     avi_chunk_common_t  common;
     avi_chunk_list_t    list;
@@ -244,7 +240,7 @@ union avi_chunk_u
     avi_chunk_vprp_t    vprp;
     avi_chunk_indx_t    indx;
     avi_chunk_STRING_t  strz;
-};
+} avi_chunk_t;
 
 /****************************************************************************
  * Stream(input) access functions

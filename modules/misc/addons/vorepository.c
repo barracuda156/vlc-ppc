@@ -57,6 +57,7 @@ static int   FindDesignated ( addons_finder_t *p_finder );
  ****************************************************************************/
 
 vlc_module_begin ()
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_shortname(N_("Videolan.org's addons finder"))
     add_shortcut(ADDONS_MODULE_SHORTCUT)
@@ -64,12 +65,13 @@ vlc_module_begin ()
     set_capability("addons finder", 100)
     set_callbacks(Open, Close)
 add_submodule ()
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_shortname(N_("Videolan.org's single archive addons finder"))
     add_shortcut(ADDONS_MODULE_SHORTCUT".vlp")
     set_description(N_("single .vlp archive addons finder"))
     set_capability("addons finder", 101)
-    set_callback(OpenDesignated)
+    set_callbacks(OpenDesignated, NULL)
 vlc_module_end ()
 
 struct addons_finder_sys_t
@@ -374,7 +376,7 @@ static int Retrieve( addons_finder_t *p_finder, addon_entry_t *p_entry )
     {
         /* Relative path */
         char *psz_uri;
-        if ( asprintf( &psz_uri, ADDONS_REPO_SCHEMEHOST"%s", psz_archive_uri ) == -1 )
+        if ( ! asprintf( &psz_uri, ADDONS_REPO_SCHEMEHOST"%s", psz_archive_uri ) )
         {
             free( psz_archive_uri );
             return VLC_ENOMEM;
@@ -483,10 +485,10 @@ static int FindDesignated( addons_finder_t *p_finder )
     if ( ParseCategoriesInfo( p_finder, p_stream ) )
     {
         /* Do archive uri fixup */
-        addon_entry_t *p_entry;
-        ARRAY_FOREACH( p_entry, p_finder->entries )
-            if ( likely( !p_entry->psz_archive_uri ) )
+        FOREACH_ARRAY( addon_entry_t *p_entry, p_finder->entries )
+        if ( likely( !p_entry->psz_archive_uri ) )
                 p_entry->psz_archive_uri = strdup( p_finder->psz_uri );
+        FOREACH_END()
     }
     else
     {

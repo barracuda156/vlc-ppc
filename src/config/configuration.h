@@ -21,63 +21,44 @@
 #ifndef LIBVLC_CONFIGURATION_H
 # define LIBVLC_CONFIGURATION_H 1
 
+# ifdef __cplusplus
+extern "C" {
+# endif
+
 /* Internal configuration prototypes and structures */
 
-struct vlc_plugin_t;
+int  config_CreateDir( vlc_object_t *, const char * );
+int  config_AutoSaveConfigFile( vlc_object_t * );
 
-struct vlc_param {
-    union {
-        _Atomic int64_t i; /**< Current value (if integer or boolean) */
-        _Atomic float f; /**< Current value (if floating point) */
-        char *_Atomic str; /**< Current value (if character string) */
-    } value;
+void config_Free (module_config_t *, size_t);
 
-    struct vlc_plugin_t *owner;
-    unsigned char shortname; /**< Optional short option name */
-    unsigned internal:1; /**< Hidden from preferences and help */
-    unsigned unsaved:1; /**< Not stored in persistent configuration */
-    unsigned safe:1; /**< Safe for untrusted provisioning (playlists) */
-    unsigned obsolete:1; /**< Ignored for backward compatibility */
-    struct module_config_t item;
-};
-
-/**
- * Looks up a configuration parameter by name.
- *
- * \return the configuration parameter, or NULL if not found
- */
-struct vlc_param *vlc_param_Find(const char *name);
-
-int vlc_param_SetString(struct vlc_param *param, const char *value);
-
-int  config_AutoSaveConfigFile( libvlc_int_t * );
-
-void config_Free(struct vlc_param *, size_t);
-
-void config_CmdLineEarlyScan( libvlc_int_t *, int, const char *[] );
-
-int config_LoadCmdLine   ( libvlc_int_t *, int, const char *[], int * );
-int config_LoadConfigFile( libvlc_int_t * );
-bool config_PrintHelp (libvlc_int_t *);
-void config_Lock(void);
-void config_Unlock(void);
+int config_LoadCmdLine   ( vlc_object_t *, int, const char *[], int * );
+int config_LoadConfigFile( vlc_object_t * );
+#define config_LoadCmdLine(a,b,c,d) config_LoadCmdLine(VLC_OBJECT(a),b,c,d)
+#define config_LoadConfigFile(a) config_LoadConfigFile(VLC_OBJECT(a))
+bool config_PrintHelp (vlc_object_t *);
 
 int config_SortConfig (void);
 void config_UnsortConfig (void);
 
-bool config_IsSafe (const char *);
+#define CONFIG_CLASS(x) ((x) & ~0x1F)
 
-/**
- * Gets the arch-specific installation directory.
- *
- * This function determines the directory containing the architecture-specific
- * installed asset files (such as executable plugins and compiled byte code).
- *
- * @return a heap-allocated string (use free() to release it), or NULL on error
- */
-char *config_GetLibDir(void) VLC_USED VLC_MALLOC;
+#define IsConfigStringType(type) \
+    (((type) & CONFIG_ITEM_STRING) != 0)
+#define IsConfigIntegerType(type) \
+    (((type) & CONFIG_ITEM_INTEGER) != 0)
+#define IsConfigFloatType(type) \
+    ((type) == CONFIG_ITEM_FLOAT)
+
+extern vlc_rwlock_t config_lock;
+extern bool config_dirty;
+
+bool config_IsSafe (const char *);
 
 /* The configuration file */
 #define CONFIG_FILE                     "vlcrc"
 
+# ifdef __cplusplus
+}
+# endif
 #endif

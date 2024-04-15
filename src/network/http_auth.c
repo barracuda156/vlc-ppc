@@ -2,6 +2,7 @@
  * http_auth.c: HTTP authentication for clients as per RFC2617
  *****************************************************************************
  * Copyright (C) 2001-2008 VLC authors and VideoLAN
+ * $Id: 5c3d165cf804dc967168debf38a92c6f7b476d00 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Christophe Massiot <massiot@via.ecp.fr>
@@ -32,7 +33,7 @@
 
 #include <vlc_common.h>
 #include <vlc_http.h>
-#include <vlc_hash.h>
+#include <vlc_md5.h>
 #include <vlc_rand.h>
 #include <vlc_strings.h>
 
@@ -42,9 +43,10 @@
 /*****************************************************************************
  * "RFC 2617: Basic and Digest Access Authentication" header parsing
  *****************************************************************************/
-#define AuthGetParam( HEADER, PARAM ) AuthGetParamConcat( HEADER, PARAM "=\"" )
-static char *AuthGetParamConcat( const char *psz_header, const char *psz_what )
+static char *AuthGetParam( const char *psz_header, const char *psz_param )
 {
+    char psz_what[strlen(psz_param)+3];
+    sprintf( psz_what, "%s=\"", psz_param );
     psz_header = strstr( psz_header, psz_what );
     if ( psz_header )
     {
@@ -61,9 +63,10 @@ static char *AuthGetParamConcat( const char *psz_header, const char *psz_what )
     }
 }
 
-#define AuthGetParamNoQuotes( HEADER, PARAM ) AuthGetParamNoQuotesConcat( HEADER, PARAM "=" )
-static char *AuthGetParamNoQuotesConcat( const char *psz_header, const char *psz_what )
+static char *AuthGetParamNoQuotes( const char *psz_header, const char *psz_param )
 {
+    char psz_what[strlen(psz_param)+2];
+    sprintf( psz_what, "%s=", psz_param );
     psz_header = strstr( psz_header, psz_what );
     if ( psz_header )
     {
@@ -82,122 +85,140 @@ static char *AuthGetParamNoQuotesConcat( const char *psz_header, const char *psz
     }
 }
 
-static char *GenerateCnonce(void)
+static char *GenerateCnonce()
 {
     char ps_random[32];
-    char *md5_hex;
-    vlc_hash_md5_t md5;
-
-    md5_hex = malloc( VLC_HASH_MD5_DIGEST_HEX_SIZE );
-    if (unlikely( md5_hex == NULL ))
-        return NULL;
+    struct md5_s md5;
 
     vlc_rand_bytes( ps_random, sizeof( ps_random ) );
 
-    vlc_hash_md5_Init( &md5 );
-    vlc_hash_md5_Update( &md5, ps_random, sizeof( ps_random ) );
+    InitMD5( &md5 );
+    AddMD5( &md5, ps_random, sizeof( ps_random ) );
+    EndMD5( &md5 );
 
-    vlc_hash_FinishHex( &md5, md5_hex );
-    return md5_hex;
+    return psz_md5_hash( &md5 );
 }
 
 static char *AuthDigest( vlc_object_t *p_this, vlc_http_auth_t *p_auth,
                          const char *psz_method, const char *psz_path,
                          const char *psz_username, const char *psz_password )
 {
-    char psz_HA1[VLC_HASH_MD5_DIGEST_HEX_SIZE];
-    char psz_HA2[VLC_HASH_MD5_DIGEST_HEX_SIZE];
-    char psz_ent[VLC_HASH_MD5_DIGEST_HEX_SIZE];
+    char *psz_HA1 = NULL;
+    char *psz_HA2 = NULL;
+    char *psz_ent = NULL;
     char *psz_result = NULL;
     char psz_inonce[9];
-    vlc_hash_md5_t md5;
-    vlc_hash_md5_t ent;
+    struct md5_s md5;
+    struct md5_s ent;
 
     if ( p_auth->psz_realm == NULL )
     {
         msg_Warn( p_this, "Digest Authentication: "
                   "Mandatory 'realm' value not available" );
-        return NULL;
+        goto error;
     }
 
     /* H(A1) */
     if ( p_auth->psz_HA1 )
     {
-        memcpy( psz_HA1, p_auth->psz_HA1, sizeof(psz_HA1) );
+        psz_HA1 = strdup( p_auth->psz_HA1 );
+        if ( psz_HA1 == NULL )
+            goto error;
     }
     else
     {
-        vlc_hash_md5_Init( &md5 );
-        vlc_hash_md5_Update( &md5, psz_username, strlen( psz_username ) );
-        vlc_hash_md5_Update( &md5, ":", 1 );
-        vlc_hash_md5_Update( &md5, p_auth->psz_realm, strlen( p_auth->psz_realm ) );
-        vlc_hash_md5_Update( &md5, ":", 1 );
-        vlc_hash_md5_Update( &md5, psz_password, strlen( psz_password ) );
-        vlc_hash_FinishHex( &md5, psz_HA1 );
+        InitMD5( &md5 );
+        AddMD5( &md5, psz_username, strlen( psz_username ) );
+        AddMD5( &md5, ":", 1 );
+        AddMD5( &md5, p_auth->psz_realm, strlen( p_auth->psz_realm ) );
+        AddMD5( &md5, ":", 1 );
+        AddMD5( &md5, psz_password, strlen( psz_password ) );
+        EndMD5( &md5 );
+
+        psz_HA1 = psz_md5_hash( &md5 );
+        if ( psz_HA1 == NULL )
+            goto error;
 
         if ( p_auth->psz_algorithm &&
              strcmp( p_auth->psz_algorithm, "MD5-sess" ) == 0 )
         {
-            vlc_hash_md5_Init( &md5 );
-            vlc_hash_md5_Update( &md5, psz_HA1, sizeof(psz_HA1) - 1 );
-            vlc_hash_md5_Update( &md5, ":", 1 );
-            vlc_hash_md5_Update( &md5, p_auth->psz_nonce, strlen( p_auth->psz_nonce ) );
-            vlc_hash_md5_Update( &md5, ":", 1 );
-            vlc_hash_md5_Update( &md5, p_auth->psz_cnonce, strlen( p_auth->psz_cnonce ) );
-            vlc_hash_FinishHex( &md5, psz_HA1 );
+            InitMD5( &md5 );
+            AddMD5( &md5, psz_HA1, 32 );
+            AddMD5( &md5, ":", 1 );
+            AddMD5( &md5, p_auth->psz_nonce, strlen( p_auth->psz_nonce ) );
+            AddMD5( &md5, ":", 1 );
+            AddMD5( &md5, p_auth->psz_cnonce, strlen( p_auth->psz_cnonce ) );
+            EndMD5( &md5 );
+
+            free( psz_HA1 );
+
+            psz_HA1 = psz_md5_hash( &md5 );
+            if ( psz_HA1 == NULL )
+                goto error;
 
             p_auth->psz_HA1 = strdup( psz_HA1 );
             if ( p_auth->psz_HA1 == NULL )
-                return NULL;
+                goto error;
         }
     }
 
     /* H(A2) */
-    vlc_hash_md5_Init( &md5 );
+    InitMD5( &md5 );
     if ( *psz_method )
-        vlc_hash_md5_Update( &md5, psz_method, strlen( psz_method ) );
-    vlc_hash_md5_Update( &md5, ":", 1 );
+        AddMD5( &md5, psz_method, strlen( psz_method ) );
+    AddMD5( &md5, ":", 1 );
     if ( psz_path )
-        vlc_hash_md5_Update( &md5, psz_path, strlen( psz_path ) );
+        AddMD5( &md5, psz_path, strlen( psz_path ) );
     else
-        vlc_hash_md5_Update( &md5, "/", 1 );
+        AddMD5( &md5, "/", 1 );
     if ( p_auth->psz_qop && strcmp( p_auth->psz_qop, "auth-int" ) == 0 )
     {
-        vlc_hash_md5_Init( &ent );
+        InitMD5( &ent );
         /* TODO: Support for "qop=auth-int" */
-        vlc_hash_md5_Update( &ent, "", 0 );
-        vlc_hash_FinishHex( &ent, psz_ent );
-        vlc_hash_md5_Update( &md5, ":", 1 );
-        vlc_hash_md5_Update( &md5, psz_ent, sizeof(psz_ent) - 1 );
-    }
+        AddMD5( &ent, "", 0 );
+        EndMD5( &ent );
 
-    vlc_hash_FinishHex( &md5, psz_HA2 );
+        psz_ent = psz_md5_hash( &ent );
+        if ( psz_ent == NULL )
+            goto error;
+
+        AddMD5( &md5, ":", 1 );
+        AddMD5( &md5, psz_ent, 32 );
+    }
+    EndMD5( &md5 );
+
+    psz_HA2 = psz_md5_hash( &md5 );
+    if ( psz_HA2 == NULL )
+        goto error;
 
     /* Request digest */
-    vlc_hash_md5_Init( &md5 );
-    vlc_hash_md5_Update( &md5, psz_HA1, sizeof(psz_HA1) - 1 );
-    vlc_hash_md5_Update( &md5, ":", 1 );
-    vlc_hash_md5_Update( &md5, p_auth->psz_nonce, strlen( p_auth->psz_nonce ) );
-    vlc_hash_md5_Update( &md5, ":", 1 );
+    InitMD5( &md5 );
+    AddMD5( &md5, psz_HA1, 32 );
+    AddMD5( &md5, ":", 1 );
+    AddMD5( &md5, p_auth->psz_nonce, strlen( p_auth->psz_nonce ) );
+    AddMD5( &md5, ":", 1 );
     if ( p_auth->psz_qop &&
          ( strcmp( p_auth->psz_qop, "auth" ) == 0 ||
            strcmp( p_auth->psz_qop, "auth-int" ) == 0 ) )
     {
         snprintf( psz_inonce, sizeof( psz_inonce ), "%08x", p_auth->i_nonce );
-        vlc_hash_md5_Update( &md5, psz_inonce, 8 );
-        vlc_hash_md5_Update( &md5, ":", 1 );
-        vlc_hash_md5_Update( &md5, p_auth->psz_cnonce, strlen( p_auth->psz_cnonce ) );
-        vlc_hash_md5_Update( &md5, ":", 1 );
-        vlc_hash_md5_Update( &md5, p_auth->psz_qop, strlen( p_auth->psz_qop ) );
-        vlc_hash_md5_Update( &md5, ":", 1 );
+        AddMD5( &md5, psz_inonce, 8 );
+        AddMD5( &md5, ":", 1 );
+        AddMD5( &md5, p_auth->psz_cnonce, strlen( p_auth->psz_cnonce ) );
+        AddMD5( &md5, ":", 1 );
+        AddMD5( &md5, p_auth->psz_qop, strlen( p_auth->psz_qop ) );
+        AddMD5( &md5, ":", 1 );
     }
-    vlc_hash_md5_Update( &md5, psz_HA2, sizeof(psz_HA2) - 1 );
+    AddMD5( &md5, psz_HA2, 32 );
+    EndMD5( &md5 );
 
-    psz_result = malloc(VLC_HASH_MD5_DIGEST_HEX_SIZE);
-    if (psz_result == NULL)
-        return NULL;
+    psz_result = psz_md5_hash( &md5 );
 
-    vlc_hash_FinishHex( &md5, psz_result );
+error:
+    free( psz_HA1 );
+    free( psz_HA2 );
+    free( psz_ent );
+
     return psz_result;
 }
 

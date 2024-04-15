@@ -26,6 +26,7 @@
 #include <vlc_url.h>
 #include <ctype.h>
 #include <algorithm>
+#include <sstream>
 
 using namespace adaptive::http;
 
@@ -61,26 +62,20 @@ const std::string & ConnectionParams::getPath() const
 
 void ConnectionParams::setPath(const std::string &path_)
 {
-    vlc_url_t url_components{};
-    char *uri_str;
+    path = path_;
 
-    url_components.psz_protocol = const_cast<char *>(scheme.c_str());
-    url_components.psz_path = const_cast<char *>(path_.c_str());
-    url_components.i_port = 0;
-
-    if (!hostname.empty()) {
-        url_components.psz_host = const_cast<char *>(hostname.c_str());
-        if ((port != 80 && scheme == "http") ||
-            (port != 443 && scheme == "https"))
-            url_components.i_port = port;
+    std::ostringstream os;
+    os.imbue(std::locale("C"));
+    os << scheme << "://";
+    if(!hostname.empty())
+    {
+        os << hostname;
+        if( (port != 80 && scheme != "http") ||
+            (port != 443 && scheme != "https") )
+            os << ":" << port;
     }
-
-    uri_str = vlc_uri_compose(&url_components);
-    if (uri_str != nullptr) {
-        path = path_;
-        uri.assign(uri_str);
-    }
-    free(uri_str);
+    os << path;
+    uri = os.str();
 }
 
 uint16_t ConnectionParams::getPort() const

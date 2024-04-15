@@ -32,10 +32,10 @@
 
 extern "C"
 {
-    #include "access/http/resource.h"
-    #include "access/http/connmgr.h"
-    #include "access/http/conn.h"
-    #include "access/http/message.h"
+    #include "../access/http/resource.h"
+    #include "../access/http/connmgr.h"
+    #include "../access/http/conn.h"
+    #include "../access/http/message.h"
 }
 
 using namespace adaptive::http;
@@ -136,13 +136,13 @@ class adaptive::http::LibVLCHTTPSource : public adaptive::AbstractSource
             {
                 if(range.getEndByte() > 0)
                 {
-                    if (vlc_http_msg_add_header(req, "Range", "bytes=%zu-%zu",
+                    if (vlc_http_msg_add_header(req, "Range", "bytes=%" PRIuMAX "-%" PRIuMAX,
                                                 range.getStartByte(), range.getEndByte()))
                         return -1;
                 }
                 else
                 {
-                    if (vlc_http_msg_add_header(req, "Range", "bytes=%zu-",
+                    if (vlc_http_msg_add_header(req, "Range", "bytes=%" PRIuMAX "-",
                                                 range.getStartByte()))
                         return -1;
                 }
@@ -311,17 +311,10 @@ RequestStatus LibVLCHTTPConnection::request(const std::string &path,
     vlc_UrlParse(&crd_url, params.getUrl().c_str());
 
     vlc_credential_init(&crd, &crd_url);
-    int ret = vlc_credential_get(&crd, p_object, NULL, NULL, NULL, NULL);
-    if (ret == 0)
+    if (vlc_credential_get(&crd, p_object, NULL, NULL, NULL, NULL))
     {
         vlc_http_res_set_login(source->http_res,
                                crd.psz_username, crd.psz_password);
-    }
-    else if (ret == -EINTR)
-    {
-        vlc_credential_clean(&crd);
-        vlc_UrlClean(&crd_url);
-        return RequestStatus::GenericError;
     }
 
     int status = vlc_http_res_get_status(source->http_res);
@@ -344,7 +337,7 @@ RequestStatus LibVLCHTTPConnection::request(const std::string &path,
             if (vlc_credential_get(&crd, p_object, NULL, NULL,
                                    _("HTTP authentication"),
                                    _("Please enter a valid login name and a "
-                                   "password for realm %s."), psz_realm) == 0)
+                                   "password for realm %s."), psz_realm))
             {
                 if(source->abortandlogin(crd.psz_username, crd.psz_password))
                 {

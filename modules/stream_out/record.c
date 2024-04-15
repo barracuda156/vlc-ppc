@@ -2,6 +2,7 @@
  * record.c: record stream output module
  *****************************************************************************
  * Copyright (C) 2008-2009 VLC authors and VideoLAN
+ * $Id: 8a06747c4e3e0193fe35bb783a6aa3a7e896eb12 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -54,14 +55,15 @@ static void     Close   ( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("Record stream output") )
-    set_capability( "sout output", 0 )
+    set_capability( "sout stream", 0 )
     add_shortcut( "record" )
     set_shortname( N_("Record") )
 
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_STREAM )
 
     add_string( SOUT_CFG_PREFIX "dst-prefix", "", DST_PREFIX_TEXT,
-                DST_PREFIX_LONGTEXT )
+                DST_PREFIX_LONGTEXT, true )
 
     set_callbacks( Open, Close )
 vlc_module_end ()
@@ -73,11 +75,11 @@ static const char *const ppsz_sout_options[] = {
 };
 
 /* */
-static void *Add( sout_stream_t *, const es_format_t * );
-static void  Del( sout_stream_t *, void * );
-static int   Send( sout_stream_t *, void *, block_t * );
+static sout_stream_id_sys_t *Add( sout_stream_t *, const es_format_t * );
+static void              Del ( sout_stream_t *, sout_stream_id_sys_t * );
+static int               Send( sout_stream_t *, sout_stream_id_sys_t *, block_t* );
 
-typedef struct sout_stream_id_sys_t sout_stream_id_sys_t;
+/* */
 struct sout_stream_id_sys_t
 {
     es_format_t fmt;
@@ -91,7 +93,7 @@ struct sout_stream_id_sys_t
     bool b_wait_start;
 };
 
-typedef struct
+struct sout_stream_sys_t
 {
     char *psz_prefix;
 
@@ -108,14 +110,10 @@ typedef struct
     int              i_id;
     sout_stream_id_sys_t **id;
     vlc_tick_t  i_dts_start;
-} sout_stream_sys_t;
+};
 
 static void OutputStart( sout_stream_t *p_stream );
 static void OutputSend( sout_stream_t *p_stream, sout_stream_id_sys_t *id, block_t * );
-
-static const struct sout_stream_operations ops = {
-    Add, Del, Send, NULL, NULL, NULL,
-};
 
 /*****************************************************************************
  * Open:
@@ -124,6 +122,10 @@ static int Open( vlc_object_t *p_this )
 {
     sout_stream_t *p_stream = (sout_stream_t*)p_this;
     sout_stream_sys_t *p_sys;
+
+    p_stream->pf_add    = Add;
+    p_stream->pf_del    = Del;
+    p_stream->pf_send   = Send;
 
     p_stream->p_sys = p_sys = malloc( sizeof(*p_sys) );
     if( !p_sys )
@@ -143,19 +145,18 @@ static int Open( vlc_object_t *p_this )
         }
     }
 
-    p_sys->i_date_start = VLC_TICK_INVALID;
+    p_sys->i_date_start = -1;
     p_sys->i_size = 0;
 #ifdef OPTIMIZE_MEMORY
-    p_sys->i_max_wait = VLC_TICK_FROM_SEC(5);
+    p_sys->i_max_wait = 5*CLOCK_FREQ; /* 5s */
     p_sys->i_max_size = 1*1024*1024; /* 1 MiB */
 #else
-    p_sys->i_max_wait = VLC_TICK_FROM_SEC(30);
+    p_sys->i_max_wait = 30*CLOCK_FREQ; /* 30s */
     p_sys->i_max_size = 20*1024*1024; /* 20 MiB */
 #endif
     p_sys->b_drop = false;
     p_sys->i_dts_start = 0;
     TAB_INIT( p_sys->i_id, p_sys->id );
-    p_stream->ops = &ops;
 
     return VLC_SUCCESS;
 }
@@ -169,7 +170,7 @@ static void Close( vlc_object_t * p_this )
     sout_stream_sys_t *p_sys = p_stream->p_sys;
 
     if( p_sys->p_out )
-        sout_StreamChainDelete( p_sys->p_out, NULL );
+        sout_StreamChainDelete( p_sys->p_out, p_sys->p_out );
 
     TAB_CLEAN( p_sys->i_id, p_sys->id );
     free( p_sys->psz_prefix );
@@ -179,7 +180,7 @@ static void Close( vlc_object_t * p_this )
 /*****************************************************************************
  *
  *****************************************************************************/
-static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static sout_stream_id_sys_t *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     sout_stream_id_sys_t *id;
@@ -200,10 +201,9 @@ static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
     return id;
 }
 
-static void Del( sout_stream_t *p_stream, void *_id )
+static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
 
     if( !p_sys->p_out )
         OutputStart( p_stream );
@@ -228,18 +228,19 @@ static void Del( sout_stream_t *p_stream, void *_id )
     free( id );
 }
 
-static int Send( sout_stream_t *p_stream, void *id, block_t *p_buffer )
+static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
+                 block_t *p_buffer )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
 
-    if( p_sys->i_date_start == VLC_TICK_INVALID )
-        p_sys->i_date_start = vlc_tick_now();
+    if( p_sys->i_date_start < 0 )
+        p_sys->i_date_start = mdate();
     if( !p_sys->p_out &&
-        ( vlc_tick_now() - p_sys->i_date_start > p_sys->i_max_wait ||
+        ( mdate() - p_sys->i_date_start > p_sys->i_max_wait ||
           p_sys->i_size > p_sys->i_max_size ) )
     {
         msg_Dbg( p_stream, "Starting recording, waited %ds and %dbyte",
-                 (int)SEC_FROM_VLC_TICK(vlc_tick_now() - p_sys->i_date_start), (int)p_sys->i_size );
+                 (int)((mdate() - p_sys->i_date_start)/1000000), (int)p_sys->i_size );
         OutputStart( p_stream );
     }
 
@@ -253,8 +254,8 @@ static int Send( sout_stream_t *p_stream, void *id, block_t *p_buffer )
  *****************************************************************************/
 typedef struct
 {
-    const char  psz_muxer[19];
-    const char  psz_extension[5];
+    const char  psz_muxer[4];
+    const char  psz_extension[4];
     int         i_es_max;
     vlc_fourcc_t codec[128];
 } muxer_properties_t;
@@ -264,8 +265,8 @@ typedef struct
  * Do not do non native and non standard association !
  * Muxer will be probe if no entry found */
 static const muxer_properties_t p_muxers[] = {
-    M( "raw", "mp3", 1,         VLC_CODEC_MPGA, VLC_CODEC_MP2, VLC_CODEC_MP3 ),
-    M( "raw", "a52", 1,         VLC_CODEC_A52, VLC_CODEC_EAC3 ),
+    M( "raw", "mp3", 1,         VLC_CODEC_MPGA ),
+    M( "raw", "a52", 1,         VLC_CODEC_A52 ),
     M( "raw", "dts", 1,         VLC_CODEC_DTS ),
     M( "raw", "mpc", 1,         VLC_CODEC_MUSEPACK7, VLC_CODEC_MUSEPACK8 ),
     M( "raw", "ape", 1,         VLC_CODEC_APE ),
@@ -282,11 +283,10 @@ static const muxer_properties_t p_muxers[] = {
     M( "asf", "asf", 127,       VLC_CODEC_WMA1, VLC_CODEC_WMA2, VLC_CODEC_WMAP, VLC_CODEC_WMAL, VLC_CODEC_WMAS,
                                 VLC_CODEC_WMV1, VLC_CODEC_WMV2, VLC_CODEC_WMV3, VLC_CODEC_VC1 ),
 
-    M( "mp4", "mp4", INT_MAX,   VLC_CODEC_MP4A, VLC_CODEC_A52, VLC_CODEC_EAC3, VLC_CODEC_DTS,
-                                VLC_CODEC_H264, VLC_CODEC_MP4V, VLC_CODEC_HEVC, VLC_CODEC_AV1,
-                                VLC_CODEC_SUBT, VLC_CODEC_QTXT, VLC_CODEC_TX3G ),
+    M( "mp4", "mp4", INT_MAX,   VLC_CODEC_MP4A, VLC_CODEC_H264, VLC_CODEC_MP4V, VLC_CODEC_HEVC,
+                                VLC_CODEC_SUBT ),
 
-    M( "ps", "mpg", 16/* FIXME*/, VLC_CODEC_MPGV, VLC_CODEC_MP2V, VLC_CODEC_MP1V,
+    M( "ps", "mpg", 16/* FIXME*/,VLC_CODEC_MPGV,
                                 VLC_CODEC_MPGA, VLC_CODEC_DVD_LPCM, VLC_CODEC_A52,
                                 VLC_CODEC_DTS,
                                 VLC_CODEC_SPU ),
@@ -296,34 +296,16 @@ static const muxer_properties_t p_muxers[] = {
                                 VLC_CODEC_U8, VLC_CODEC_S16L, VLC_CODEC_S24L,
                                 VLC_CODEC_MP4V ),
 
-    M( "ts", "ts", 8000,        VLC_CODEC_MPGV, VLC_CODEC_MP2V, VLC_CODEC_MP1V,
+    M( "ts", "ts", 8000,        VLC_CODEC_MPGV,
                                 VLC_CODEC_H264, VLC_CODEC_HEVC,
-                                VLC_CODEC_MPGA, VLC_CODEC_MP2, VLC_CODEC_MP3,
-                                VLC_CODEC_DVD_LPCM, VLC_CODEC_A52, VLC_CODEC_EAC3,
+                                VLC_CODEC_MPGA, VLC_CODEC_DVD_LPCM, VLC_CODEC_A52,
                                 VLC_CODEC_DTS,  VLC_CODEC_MP4A,
                                 VLC_CODEC_DVBS, VLC_CODEC_TELETEXT ),
 
-    M( "avformat{mux=webm}", "webm", 32,
-                                VLC_CODEC_VP8, VLC_CODEC_VP9,
-                                VLC_CODEC_VORBIS, VLC_CODEC_OPUS ),
-
-    M( "mkv", "mkv", 32,        VLC_CODEC_H264, VLC_CODEC_HEVC, VLC_CODEC_MP4V,
-                                VLC_CODEC_A52, VLC_CODEC_EAC3, VLC_CODEC_DTS, VLC_CODEC_MP4A,
-                                VLC_CODEC_VORBIS, VLC_CODEC_FLAC ),
+    M( "mkv", "mkv", 32,        VLC_CODEC_H264, VLC_CODEC_HEVC, VLC_CODEC_VP8, VLC_CODEC_MP4V,
+                                VLC_CODEC_A52,  VLC_CODEC_MP4A, VLC_CODEC_VORBIS, VLC_CODEC_FLAC ),
 };
 #undef M
-
-static void set_record_file_var(vlc_object_t *obj, const char *file)
-{
-    while ((obj = vlc_object_parent(obj)) != NULL)
-    {
-        if (var_Type(obj, "record-file") != 0)
-        {
-            var_SetString(obj, "record-file", file);
-            break;
-        }
-    }
-}
 
 static int OutputNew( sout_stream_t *p_stream,
                       const char *psz_muxer, const char *psz_prefix, const char *psz_extension  )
@@ -349,7 +331,7 @@ static int OutputNew( sout_stream_t *p_stream,
 
     if( asprintf( &psz_output,
                   "std{access=file{no-append,no-format,no-overwrite},"
-                  "mux=%s,dst='%s'}", psz_muxer, psz_file ) < 0 )
+                  "mux='%s',dst='%s'}", psz_muxer, psz_file ) < 0 )
     {
         psz_output = NULL;
         goto error;
@@ -358,8 +340,7 @@ static int OutputNew( sout_stream_t *p_stream,
     /* Create the output */
     msg_Dbg( p_stream, "Using record output `%s'", psz_output );
 
-    p_sys->p_out = sout_StreamChainNew( VLC_OBJECT(p_stream), psz_output,
-                                        NULL );
+    p_sys->p_out = sout_StreamChainNew( p_stream->p_sout, psz_output, NULL, NULL );
 
     if( !p_sys->p_out )
         goto error;
@@ -376,7 +357,7 @@ static int OutputNew( sout_stream_t *p_stream,
     }
 
     if( psz_file && psz_extension )
-        set_record_file_var(VLC_OBJECT(p_stream), psz_file);
+        var_SetString( p_stream->obj.libvlc, "record-file", psz_file );
 
     free( psz_file );
     free( psz_output );
@@ -394,8 +375,8 @@ error:
 static vlc_tick_t BlockTick( const block_t *p_block )
 {
     if( unlikely(!p_block) )
-        return VLC_TICK_INVALID;
-    else if( likely(p_block->i_dts != VLC_TICK_INVALID) )
+        return 0;
+    else if( likely(p_block->i_dts != 0) )
         return p_block->i_dts;
     else
         return p_block->i_pts;
@@ -502,7 +483,7 @@ static void OutputStart( sout_stream_t *p_stream )
                 id->id = NULL;
             }
             if( p_sys->p_out )
-                sout_StreamChainDelete( p_sys->p_out, NULL );
+                sout_StreamChainDelete( p_sys->p_out, p_sys->p_out );
             p_sys->p_out = NULL;
 
             if( i_es > i_best_es )
@@ -572,7 +553,7 @@ static void OutputStart( sout_stream_t *p_stream )
     {
         /* dequeue candidate */
         p_cand = NULL;
-        canddts = VLC_TICK_INVALID;
+        canddts = 0;
 
         /* Send buffered data in dts order */
         for( int i = 0; i < p_sys->i_id; i++ )
@@ -583,18 +564,18 @@ static void OutputStart( sout_stream_t *p_stream )
                 continue;
 
             block_t *p_id_block;
-            vlc_tick_t id_dts = VLC_TICK_INVALID;
+            vlc_tick_t id_dts = 0;
             for( p_id_block = id->p_first; p_id_block; p_id_block = p_id_block->p_next )
             {
                 id_dts = BlockTick( p_id_block );
-                if( id_dts != VLC_TICK_INVALID )
+                if( id_dts != 0 )
                     break;
             }
 
-            if( id_dts == VLC_TICK_INVALID )
+            if( id_dts == 0 )
             {
                 p_cand = id;
-                canddts = VLC_TICK_INVALID;
+                canddts = 0;
                 break;
             }
 

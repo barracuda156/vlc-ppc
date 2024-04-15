@@ -28,7 +28,15 @@
 #include "vlc_vaapi.h"
 
 /* chroma filters callbacks */
-int  vlc_vaapi_OpenChroma(filter_t *);
-void vlc_vaapi_CloseChroma(filter_t *);
+int  vlc_vaapi_OpenChroma(vlc_object_t *obj);
+void vlc_vaapi_CloseChroma(vlc_object_t *obj);
+
+/* Get and hold the VADisplay instance from a filter */
+struct vlc_vaapi_instance *
+vlc_vaapi_FilterHoldInstance(filter_t *filter, VADisplay *dpy);
+
+void
+vlc_vaapi_FilterReleaseInstance(filter_t *filter,
+                                struct vlc_vaapi_instance *va_inst);
 
 #endif /* VLC_VAAPI_FILTERS_H */

@@ -48,10 +48,10 @@ struct hxxx_helper
 {
     vlc_object_t *p_obj; /* for logs */
     vlc_fourcc_t i_codec;
-    uint8_t i_input_nal_length_size;
-    uint8_t i_output_nal_length_size;
-    uint8_t i_config_version_prev;
-    uint8_t i_config_version;
+    bool b_need_xvcC; /* Need avcC or hvcC */
+
+    bool b_is_xvcC;
+    uint8_t i_nal_length_size;
     union {
         struct {
             struct hxxx_helper_nal sps_list[H264_SPS_ID_MAX + 1];
@@ -76,40 +76,26 @@ struct hxxx_helper
             uint8_t i_previous_nal_type;
         } hevc;
     };
+
+    /* Process the block: do the AnnexB <-> xvcC conversion if needed. If
+     * p_config_changed is not NULL, parse nals to detect a SPS/PPS or a video
+     * size change. */
+    block_t * (*pf_process_block)(struct hxxx_helper *hh, block_t *p_block,
+                                  bool *p_config_changed);
 };
 
-/* Init:
- * i_input_length_size set xvcC nal length or 0 for AnnexB (overridden by extradata)
- * i_output_length_size set xvcC nal length or 0 for AnnexB */
 void hxxx_helper_init(struct hxxx_helper *hh, vlc_object_t *p_obj,
-                      vlc_fourcc_t i_codec, uint8_t i_input_length_size,
-                      uint8_t i_output_length_size);
-
+                      vlc_fourcc_t i_codec, bool b_need_xvcC);
 void hxxx_helper_clean(struct hxxx_helper *hh);
 
-/* Process raw NAL buffer:
- * No framing prefix */
-int hxxx_helper_process_nal(struct hxxx_helper *hh, const uint8_t *, size_t);
-
-/* Process the buffer:*/
-int hxxx_helper_process_buffer(struct hxxx_helper *hh, const uint8_t *, size_t);
-
-/* Process the block:
- * Does AnnexB <-> xvcC conversion if needed. */
-block_t * hxxx_helper_process_block(struct hxxx_helper *hh, block_t *p_block);
-
-/* Set Extra:
- * Also changes/set the input to match xvcC nal_size of Annexb format */
 int hxxx_helper_set_extra(struct hxxx_helper *hh, const void *p_extra,
                           size_t i_extra);
 
-/* returns if a configuration parameter has changed since last block/buffer
- * processing */
-bool hxxx_helper_has_new_config(const struct hxxx_helper *hh);
-bool hxxx_helper_has_config(const struct hxxx_helper *hh);
+block_t *h264_helper_get_annexb_config(const struct hxxx_helper *hh);
+block_t *hevc_helper_get_annexb_config(const struct hxxx_helper *hh);
 
-block_t * hxxx_helper_get_extradata_chain(const struct hxxx_helper *hh);
-block_t * hxxx_helper_get_extradata_block(const struct hxxx_helper *hh);
+block_t *h264_helper_get_avcc_config(const struct hxxx_helper *hh);
+block_t *hevc_helper_get_hvcc_config(const struct hxxx_helper *hh);
 
 int hxxx_helper_get_current_picture_size(const struct hxxx_helper *hh,
                                          unsigned *p_w, unsigned *p_h,
@@ -131,4 +117,4 @@ int hxxx_helper_get_colorimetry(const struct hxxx_helper *hh,
                                 video_color_primaries_t *p_primaries,
                                 video_transfer_func_t *p_transfer,
                                 video_color_space_t *p_colorspace,
-                                video_color_range_t *p_full_range);
+                                bool *p_full_range);

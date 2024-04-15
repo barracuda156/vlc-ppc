@@ -24,62 +24,79 @@
 #define VLC_VIDEOCHROMA_D3D9_FMT_H_
 
 #include <vlc_picture.h>
-#include <vlc_codec.h>
 
 #define COBJMACROS
 #include <d3d9.h>
+#include <dxva2api.h>
 
 #include "dxgi_fmt.h"
 
-#define DXVAHD_TEXT N_("Use DXVA-HD for color conversion")
-
 /* owned by the vout for VLC_CODEC_D3D9_OPAQUE */
-typedef struct
+struct picture_sys_t
 {
     IDirect3DSurface9    *surface;
-} picture_sys_d3d9_t;
-
-struct d3d9_pic_context
-{
-    picture_context_t         s;
-    picture_sys_d3d9_t        picsys;
+    /* decoder only */
+    IDirectXVideoDecoder *decoder; /* keep a reference while the surface exist */
+    HINSTANCE            dxva2_dll;
 };
 
 typedef struct
 {
     HINSTANCE               hdll;       /* handle of the opened d3d9 dll */
     union {
-        IDirect3D9          *obj;
-        IDirect3D9Ex        *objex;
+        LPDIRECT3D9         obj;
+        LPDIRECT3D9EX       objex;
     };
     bool                    use_ex;
 } d3d9_handle_t;
 
 typedef struct
 {
+    /* d3d9_handle_t           hd3d; TODO */
     union
     {
-        IDirect3DDevice9    *dev;
-        IDirect3DDevice9Ex  *devex;
+        LPDIRECT3DDEVICE9   dev;
+        LPDIRECT3DDEVICE9EX devex;
     };
+    bool                    owner;
 
     /* creation parameters */
+    D3DPRESENT_PARAMETERS   pp;
     UINT                    adapterId;
-
+    HWND                    hwnd;
     D3DCAPS9                caps;
     D3DADAPTER_IDENTIFIER9  identifier;
 } d3d9_device_t;
 
 typedef struct
 {
-    d3d9_handle_t  hd3d;
-    d3d9_device_t  d3ddev;
-} d3d9_decoder_device_t;
+    const char   *name;
+    D3DFORMAT    format;    /* D3D format */
+    vlc_fourcc_t fourcc;    /* VLC fourcc */
+    uint32_t     rmask;
+    uint32_t     gmask;
+    uint32_t     bmask;
+} d3d9_format_t;
 
-typedef struct
+#include "../codec/avcodec/va_surface.h"
+
+picture_sys_t *ActivePictureSys(picture_t *p_pic);
+
+static inline void AcquirePictureSys(picture_sys_t *p_sys)
 {
-    D3DFORMAT        format;
-} d3d9_video_context_t;
+    IDirect3DSurface9_AddRef(p_sys->surface);
+    if (p_sys->decoder)
+        IDirectXVideoDecoder_AddRef(p_sys->decoder);
+    p_sys->dxva2_dll = LoadLibrary(TEXT("DXVA2.DLL"));
+}
+
+static inline void ReleasePictureSys(picture_sys_t *p_sys)
+{
+    IDirect3DSurface9_Release(p_sys->surface);
+    if (p_sys->decoder)
+        IDirectXVideoDecoder_Release(p_sys->decoder);
+    FreeLibrary(p_sys->dxva2_dll);
+}
 
 static inline bool is_d3d9_opaque(vlc_fourcc_t chroma)
 {
@@ -93,55 +110,33 @@ static inline bool is_d3d9_opaque(vlc_fourcc_t chroma)
     }
 }
 
-extern const struct vlc_video_context_operations d3d9_vctx_ops;
+HRESULT D3D9_CreateDevice(vlc_object_t *, d3d9_handle_t *, HWND,
+                          const video_format_t *, d3d9_device_t *out);
+#define D3D9_CreateDevice(a,b,c,d,e) D3D9_CreateDevice( VLC_OBJECT(a), b, c, d, e )
 
-picture_sys_d3d9_t *ActiveD3D9PictureSys(picture_t *);
+void D3D9_ReleaseDevice(d3d9_device_t *);
+int D3D9_Create(vlc_object_t *, d3d9_handle_t *);
+#define D3D9_Create(a,b) D3D9_Create( VLC_OBJECT(a), b )
 
-static inline d3d9_decoder_device_t *GetD3D9OpaqueDevice(vlc_decoder_device *device)
-{
-    if (device == NULL || device->type != VLC_DECODER_DEVICE_DXVA2)
-        return NULL;
-    return device->opaque;
-}
+void D3D9_Destroy(d3d9_handle_t *);
 
-static inline d3d9_decoder_device_t *GetD3D9OpaqueContext(vlc_video_context *vctx)
-{
-    vlc_decoder_device *device = vctx ? vlc_video_context_HoldDevice(vctx) : NULL;
-    if (unlikely(device == NULL))
-        return NULL;
-    d3d9_decoder_device_t *res = NULL;
-    if (device->type == VLC_DECODER_DEVICE_DXVA2)
-    {
-        assert(device->opaque != NULL);
-        res = GetD3D9OpaqueDevice(device);
-    }
-    vlc_decoder_device_Release(device);
-    return res;
-}
+int D3D9_FillPresentationParameters(d3d9_handle_t *, const video_format_t *, d3d9_device_t *);
 
-static inline d3d9_video_context_t *GetD3D9ContextPrivate(vlc_video_context *vctx)
-{
-    return (d3d9_video_context_t *) vlc_video_context_GetPrivate( vctx, VLC_VIDEO_CONTEXT_DXVA2 );
-}
+/**
+ * It locks the surface associated to the picture and get the surface
+ * descriptor which amongst other things has the pointer to the picture
+ * data and its pitch.
+ */
+int Direct3D9LockSurface(picture_t *picture);
 
-static inline void AcquireD3D9PictureSys(picture_sys_d3d9_t *p_sys)
-{
-    IDirect3DSurface9_AddRef(p_sys->surface);
-}
+/**
+ * It unlocks the surface associated to the picture.
+ */
+void Direct3D9UnlockSurface(picture_t *picture);
 
-static inline void ReleaseD3D9PictureSys(picture_sys_d3d9_t *p_sys)
-{
-    IDirect3DSurface9_Release(p_sys->surface);
-}
+struct picture_pool_t *Direct3D9CreatePicturePool(vlc_object_t *, d3d9_device_t *,
+     const d3d9_format_t *, const video_format_t *, unsigned);
 
-d3d9_decoder_device_t *D3D9_CreateDevice(vlc_object_t *);
-#define D3D9_CreateDevice(a) D3D9_CreateDevice( VLC_OBJECT(a) )
 
-void D3D9_ReleaseDevice(d3d9_decoder_device_t *);
-
-int D3D9_ResetDevice(vlc_object_t *, d3d9_decoder_device_t *);
-
-void d3d9_pic_context_destroy(picture_context_t *);
-picture_context_t *d3d9_pic_context_copy(picture_context_t *);
 
 #endif /* VLC_VIDEOCHROMA_D3D9_FMT_H_ */

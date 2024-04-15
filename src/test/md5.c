@@ -2,6 +2,7 @@
  * md5.c: test md5
  *****************************************************************************
  * Copyright (C) 2011 VideoLAN
+ * $Id: a7a987096dfd8f8f6c7d40b258e6005bc07475bd $
  *
  * Authors: Jean-Bapstiste Kempf <jb@videolan.org>
  *
@@ -28,8 +29,7 @@
 #include <string.h>
 
 #include <vlc_common.h>
-#include <vlc_strings.h>
-#include <vlc_hash.h>
+#include <vlc_md5.h>
 
 typedef struct
 {
@@ -52,15 +52,15 @@ static const md5_sample_t md5_samples[] =
     { NULL,         NULL            }
 };
 
-static void test_vlc_hash_md5()
+static void test_config_StringEscape()
 {
     for( int i = 0; md5_samples[i].psz_string; i++ )
     {
-        char psz_hash[VLC_HASH_MD5_DIGEST_HEX_SIZE];
-        vlc_hash_md5_t md5;
-        vlc_hash_md5_Init( &md5 );
-        vlc_hash_md5_Update( &md5, md5_samples[i].psz_string, strlen( md5_samples[i].psz_string ) );
-        vlc_hash_FinishHex( &md5, psz_hash );
+        struct md5_s md5;
+        InitMD5( &md5 );
+        AddMD5( &md5, md5_samples[i].psz_string, strlen( md5_samples[i].psz_string ) );
+        EndMD5( &md5 );
+        char * psz_hash = psz_md5_hash( &md5 );
 
         if( strcmp( psz_hash, md5_samples[i].psz_md5 ) )
         {
@@ -68,12 +68,13 @@ static void test_vlc_hash_md5()
                     md5_samples[i].psz_md5 );
             abort();
         }
+        free( psz_hash );
     }
 }
 
 int main( void )
 {
-    test_vlc_hash_md5();
+    test_config_StringEscape();
 
     return 0;
 }

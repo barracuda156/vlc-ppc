@@ -2,6 +2,7 @@
  * gstvlcvideosink.h: VLC gstreamer video sink
  *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id:
  *
  * Author: Vikram Fugro <vikram.fugro@gmail.com>
  *
@@ -57,7 +58,6 @@ struct _GstVlcVideoSink
 
     GstAllocator *p_allocator;
     GstVideoInfo vinfo;
-    gboolean b_use_pool;
 
     decoder_t *p_dec;
 
@@ -80,7 +80,5 @@ struct _GstVlcVideoSinkClass
 };
 
 GType gst_vlc_video_sink_get_type (void);
-
-gboolean gst_vlc_video_sink_query_caps( GstQuery *p_query );
 
 #endif /* __GST_VLC_VIDEO_SINK_H__ */

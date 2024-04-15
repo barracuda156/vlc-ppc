@@ -2,6 +2,7 @@
  * deinterlace.c : deinterlacer plugin for vlc
  *****************************************************************************
  * Copyright (C) 2000-2011 VLC authors and VideoLAN
+ * $Id: 9f9d5291ff82e14cbc36dfaad031560c3592eba6 $
  *
  * Author: Sam Hocevar <sam@zoy.org>
  *         Christophe Massiot <massiot@via.ecp.fr>
@@ -53,7 +54,7 @@
 /**
  * Top-level filtering method.
  *
- * Open() sets this up as the processing method (filter_video)
+ * Open() sets this up as the processing method (pf_video_filter)
  * in the filter structure.
  *
  * Note that there is no guarantee that the returned picture directly
@@ -106,7 +107,7 @@ static picture_t *Deinterlace( filter_t *p_filter, picture_t *p_pic );
  * Open() is atomic: if an error occurs, the state of p_this
  * is left as it was before the call to this function.
  *
- * @param p_filter The filter instance.
+ * @param p_this The filter instance as vlc_object_t.
  * @return VLC error code
  * @retval VLC_SUCCESS All ok, filter set up and started.
  * @retval VLC_ENOMEM Memory allocation error, initialization aborted.
@@ -114,7 +115,7 @@ static picture_t *Deinterlace( filter_t *p_filter, picture_t *p_pic );
  * @see IsChromaSupported()
  * @see SetFilterMethod()
  */
-static int Open( filter_t *p_filter );
+static int Open( vlc_object_t *p_this );
 
 /**
  * Resets the filter state, including resetting all algorithm-specific state
@@ -154,7 +155,14 @@ static void Flush( filter_t *p_filter );
  */
 static int Mouse( filter_t *p_filter,
                   vlc_mouse_t *p_mouse,
-                  const vlc_mouse_t *p_old );
+                  const vlc_mouse_t *p_old,
+                  const vlc_mouse_t *p_new );
+
+/**
+ * Stops and uninitializes the filter, and deallocates memory.
+ * @param p_this The filter instance as vlc_object_t.
+ */
+static void Close( vlc_object_t *p_this );
 
 /*****************************************************************************
  * Extra documentation
@@ -290,21 +298,24 @@ static int Mouse( filter_t *p_filter,
 vlc_module_begin ()
     set_description( N_("Deinterlacing video filter") )
     set_shortname( N_("Deinterlace" ))
+    set_capability( "video filter", 0 )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
     add_string( FILTER_CFG_PREFIX "mode", "blend", SOUT_MODE_TEXT,
-                SOUT_MODE_LONGTEXT )
+                SOUT_MODE_LONGTEXT, false )
         change_string_list( mode_list, mode_list_text )
         change_safe ()
     add_integer( FILTER_CFG_PREFIX "phosphor-chroma", 2, PHOSPHOR_CHROMA_TEXT,
-                PHOSPHOR_CHROMA_LONGTEXT )
+                PHOSPHOR_CHROMA_LONGTEXT, true )
         change_integer_list( phosphor_chroma_list, phosphor_chroma_list_text )
         change_safe ()
     add_integer( FILTER_CFG_PREFIX "phosphor-dimmer", 2, PHOSPHOR_DIMMER_TEXT,
-                PHOSPHOR_DIMMER_LONGTEXT )
+                PHOSPHOR_DIMMER_LONGTEXT, true )
         change_integer_list( phosphor_dimmer_list, phosphor_dimmer_list_text )
         change_safe ()
-    set_deinterlace_callback( Open )
+    add_shortcut( "deinterlace" )
+    set_callbacks( Open, Close )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -372,7 +383,7 @@ static struct filter_mode_t filter_mode [] = {
  * @param mode Desired method. See mode_list for available choices.
  * @see mode_list
  */
-static int SetFilterMethod( filter_t *p_filter, const char *mode, bool pack )
+static void SetFilterMethod( filter_t *p_filter, const char *mode, bool pack )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
 
@@ -387,23 +398,25 @@ static int SetFilterMethod( filter_t *p_filter, const char *mode, bool pack )
             {
                 msg_Err( p_filter, "unknown or incompatible deinterlace mode \"%s\""
                         " for packed format", mode );
-                return SetFilterMethod( p_filter, "blend", pack );
+                SetFilterMethod( p_filter, "blend", pack );
+                return;
             }
             if( p_sys->chroma->pixel_size > 1 && !filter_mode[i].b_high_bit_depth )
             {
                 msg_Err( p_filter, "unknown or incompatible deinterlace mode \"%s\""
                         " for high depth format", mode );
-                return SetFilterMethod( p_filter, "blend", pack );
+                SetFilterMethod( p_filter, "blend", pack );
+                return;
             }
 
             msg_Dbg( p_filter, "using %s deinterlace method", mode );
             p_sys->context.settings = filter_mode[i].settings;
             p_sys->context.pf_render_ordered = filter_mode[i].pf_render_ordered;
-            return VLC_SUCCESS;
+            return;
         }
     }
 
-    return VLC_EGENERIC;
+    msg_Err( p_filter, "unknown deinterlace mode \"%s\"", mode );
 }
 
 /**
@@ -421,24 +434,17 @@ static int SetFilterMethod( filter_t *p_filter, const char *mode, bool pack )
 static void GetOutputFormat( filter_t *p_filter,
                       video_format_t *p_dst, const video_format_t *p_src )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    GetDeinterlacingOutput(&p_sys->context, p_dst, p_src);
+    GetDeinterlacingOutput(&p_filter->p_sys->context, p_dst, p_src);
 }
 
 /*****************************************************************************
  * video filter functions
  *****************************************************************************/
 
-picture_t *AllocPicture( filter_t *filter )
-{
-    return filter_NewPicture( filter );
-}
-
 /* This is the filter function. See Open(). */
 picture_t *Deinterlace( filter_t *p_filter, picture_t *p_pic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    return DoDeinterlacing( p_filter, &p_sys->context, p_pic );
+    return DoDeinterlacing( p_filter, &p_filter->p_sys->context, p_pic );
 }
 
 /*****************************************************************************
@@ -447,8 +453,7 @@ picture_t *Deinterlace( filter_t *p_filter, picture_t *p_pic )
 
 void Flush( filter_t *p_filter )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    FlushDeinterlacing(&p_sys->context);
+    FlushDeinterlacing(&p_filter->p_sys->context);
 
     IVTCClearState( p_filter );
 }
@@ -459,45 +464,23 @@ void Flush( filter_t *p_filter )
 
 int Mouse( filter_t *p_filter,
            vlc_mouse_t *p_mouse,
-           const vlc_mouse_t *p_old )
+           const vlc_mouse_t *p_old, const vlc_mouse_t *p_new )
 {
     VLC_UNUSED(p_old);
-    filter_sys_t *p_sys = p_filter->p_sys;
-    if( p_sys->context.settings.b_half_height )
+    *p_mouse = *p_new;
+    if( p_filter->p_sys->context.settings.b_half_height )
         p_mouse->i_y *= 2;
     return VLC_SUCCESS;
 }
 
-/*****************************************************************************
- * Close: clean up the filter
- *****************************************************************************/
-/**
- * Stops and uninitializes the filter, and deallocates memory.
- * @param p_this The filter instance as vlc_object_t.
- */
-static void Close( filter_t *p_filter )
-{
-    Flush( p_filter );
-    free( p_filter->p_sys );
-}
-
-static const struct vlc_filter_operations filter_ops = {
-    .filter_video = Deinterlace,
-    .flush = Flush,
-    .video_mouse = Mouse,
-    .close = Close,
-};
-
-static struct deinterlace_functions funcs = {
-    { Merge8BitGeneric, Merge16BitGeneric, },
-};
 
 /*****************************************************************************
  * Open
  *****************************************************************************/
 
-int Open( filter_t *p_filter )
+int Open( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t*)p_this;
     filter_sys_t *p_sys;
 
     const vlc_fourcc_t fourcc = p_filter->fmt_in.video.i_chroma;
@@ -542,13 +525,7 @@ notsupp:
     config_ChainParse( p_filter, FILTER_CFG_PREFIX, ppsz_filter_options,
                        p_filter->p_cfg );
     char *psz_mode = var_InheritString( p_filter, FILTER_CFG_PREFIX "mode" );
-    int ret = SetFilterMethod( p_filter, psz_mode, packed );
-    if (ret != VLC_SUCCESS)
-    {
-        free(psz_mode);
-        free(p_sys);
-        return ret;
-    }
+    SetFilterMethod( p_filter, psz_mode, packed );
 
     IVTCClearState( p_filter );
 
@@ -561,13 +538,41 @@ notsupp:
     if( vlc_CPU_SSE2() )
     {
         p_sys->pf_merge = pixel_size == 1 ? Merge8BitSSE2 : Merge16BitSSE2;
-        p_sys->pf_end_merge = EndSSE;
+        p_sys->pf_end_merge = EndMMX;
     }
     else
 #endif
+#if defined(CAN_COMPILE_MMXEXT)
+    if( pixel_size == 1 && vlc_CPU_MMXEXT() )
     {
-        vlc_CPU_functions_init_once("deinterlace functions", &funcs);
-        p_sys->pf_merge = funcs.merges[vlc_ctz(pixel_size)];
+        p_sys->pf_merge = MergeMMXEXT;
+        p_sys->pf_end_merge = EndMMX;
+    }
+    else
+#endif
+#if defined(CAN_COMPILE_3DNOW)
+    if( pixel_size == 1 && vlc_CPU_3dNOW() )
+    {
+        p_sys->pf_merge = Merge3DNow;
+        p_sys->pf_end_merge = End3DNow;
+    }
+    else
+#endif
+#if defined(CAN_COMPILE_ARM)
+    if( vlc_CPU_ARM_NEON() )
+        p_sys->pf_merge = pixel_size == 1 ? merge8_arm_neon : merge16_arm_neon;
+    else
+    if( vlc_CPU_ARMv6() )
+        p_sys->pf_merge = pixel_size == 1 ? merge8_armv6 : merge16_armv6;
+    else
+#endif
+#if defined(CAN_COMPILE_ARM64)
+    if( vlc_CPU_ARM64_NEON() )
+        p_sys->pf_merge = pixel_size == 1 ? merge8_arm64_neon : merge16_arm64_neon;
+    else
+#endif
+    {
+        p_sys->pf_merge = pixel_size == 1 ? Merge8BitGeneric : Merge16BitGeneric;
 #if defined(__i386__) || defined(__x86_64__)
         p_sys->pf_end_merge = NULL;
 #endif
@@ -622,14 +627,28 @@ notsupp:
         ( fmt.i_chroma != p_filter->fmt_in.video.i_chroma ||
           fmt.i_height != p_filter->fmt_in.video.i_height ) )
     {
-        Close( p_filter );
+        Close( VLC_OBJECT(p_filter) );
         return VLC_EGENERIC;
     }
     p_filter->fmt_out.video = fmt;
     p_filter->fmt_out.i_codec = fmt.i_chroma;
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Deinterlace;
+    p_filter->pf_flush = Flush;
+    p_filter->pf_video_mouse  = Mouse;
 
     msg_Dbg( p_filter, "deinterlacing" );
 
     return VLC_SUCCESS;
+}
+
+/*****************************************************************************
+ * Close: clean up the filter
+ *****************************************************************************/
+
+void Close( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t*)p_this;
+
+    Flush( p_filter );
+    free( p_filter->p_sys );
 }

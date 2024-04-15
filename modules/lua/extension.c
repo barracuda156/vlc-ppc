@@ -2,6 +2,7 @@
  * extension.c: Lua Extensions (meta data, web information, ...)
  *****************************************************************************
  * Copyright (C) 2009-2010 VideoLAN and authors
+ * $Id: cc6bffc8651908d2be80de2846f6b6eef229ca27 $
  *
  * Authors: Jean-Philippe André < jpeg # videolan.org >
  *
@@ -34,10 +35,10 @@
 #include "assert.h"
 
 #include <vlc_common.h>
+#include <vlc_input.h>
 #include <vlc_interface.h>
 #include <vlc_events.h>
 #include <vlc_dialog.h>
-#include <vlc_player.h>
 
 /* Functions to register */
 static const luaL_Reg p_reg[] =
@@ -50,17 +51,22 @@ static const luaL_Reg p_reg[] =
  * Note: #define and ppsz_capabilities must be in sync
  */
 static const char caps[][20] = {
+#define EXT_HAS_MENU          (1 << 0)   ///< Hook: menu
     "menu",
+#define EXT_TRIGGER_ONLY      (1 << 1)   ///< Hook: trigger. Not activable
     "trigger",
+#define EXT_INPUT_LISTENER    (1 << 2)   ///< Hook: input_changed
     "input-listener",
+#define EXT_META_LISTENER     (1 << 3)   ///< Hook: meta_changed
     "meta-listener",
+#define EXT_PLAYING_LISTENER  (1 << 4)   ///< Hook: status_changed
     "playing-listener",
 };
 
 static int ScanExtensions( extensions_manager_t *p_this );
 static int ScanLuaCallback( vlc_object_t *p_this, const char *psz_script,
                             const struct luabatch_context_t * );
-static int Control( extensions_manager_t *, int, extension_t *, va_list );
+static int Control( extensions_manager_t *, int, va_list );
 static int GetMenuEntries( extensions_manager_t *p_mgr, extension_t *p_ext,
                     char ***pppsz_titles, uint16_t **ppi_ids );
 static lua_State* GetLuaState( extensions_manager_t *p_mgr,
@@ -79,6 +85,11 @@ static int vlclua_extension_dialog_callback( vlc_object_t *p_this,
                                              vlc_value_t oldval,
                                              vlc_value_t newval,
                                              void *p_data );
+
+/* Input item callback: vlc_InputItemMetaChanged */
+static void inputItemMetaChanged( const vlc_event_t *p_event,
+                                  void *data );
+
 
 /**
  * Module entry-point
@@ -126,38 +137,36 @@ void Close_Extension( vlc_object_t *p_this )
     extension_t *p_ext = NULL;
 
     /* Free extensions' memory */
-    ARRAY_FOREACH( p_ext, p_mgr->extensions )
+    FOREACH_ARRAY( p_ext, p_mgr->extensions )
     {
         if( !p_ext )
             break;
-        struct lua_extension *sys = p_ext->p_sys;
 
-        vlc_mutex_lock(&sys->command_lock);
-        if (sys->b_activated && sys->p_progress_id == NULL &&
-            !sys->b_deactivating)
+        vlc_mutex_lock( &p_ext->p_sys->command_lock );
+        if( p_ext->p_sys->b_activated == true && p_ext->p_sys->p_progress_id == NULL )
         {
+            p_ext->p_sys->b_exiting = true;
             // QueueDeactivateCommand will signal the wait condition.
-            sys->b_exiting = true;
             QueueDeactivateCommand( p_ext );
         }
         else
         {
-            if (sys->L != NULL)
-                vlclua_fd_interrupt(&sys->dtable);
+            if ( p_ext->p_sys->L != NULL )
+                vlclua_fd_interrupt( &p_ext->p_sys->dtable );
             // however here we need to manually signal the wait cond, since no command is queued.
-            sys->b_exiting = true;
-            vlc_cond_signal(&sys->wait);
+            p_ext->p_sys->b_exiting = true;
+            vlc_cond_signal( &p_ext->p_sys->wait );
         }
-        vlc_mutex_unlock(&sys->command_lock);
+        vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
-        if (sys->b_thread_running)
-            vlc_join(sys->thread, NULL);
+        if( p_ext->p_sys->b_thread_running == true )
+            vlc_join( p_ext->p_sys->thread, NULL );
 
         /* Clear Lua State */
-        if (sys->L)
+        if( p_ext->p_sys->L )
         {
-            lua_close(sys->L);
-            vlclua_fd_cleanup(&sys->dtable);
+            lua_close( p_ext->p_sys->L );
+            vlclua_fd_cleanup( &p_ext->p_sys->dtable );
         }
 
         free( p_ext->psz_name );
@@ -169,11 +178,17 @@ void Close_Extension( vlc_object_t *p_this )
         free( p_ext->psz_version );
         free( p_ext->p_icondata );
 
-        vlc_timer_destroy(sys->timer);
+        vlc_mutex_destroy( &p_ext->p_sys->running_lock );
+        vlc_mutex_destroy( &p_ext->p_sys->command_lock );
+        vlc_cond_destroy( &p_ext->p_sys->wait );
+        vlc_timer_destroy( p_ext->p_sys->timer );
 
         free( p_ext->p_sys );
         free( p_ext );
     }
+    FOREACH_END()
+
+    vlc_mutex_destroy( &p_mgr->lock );
 
     ARRAY_RESET( p_mgr->extensions );
 }
@@ -252,15 +267,6 @@ static int vlclua_extension_require( lua_State *L )
     return 0;
 }
 
-static char *
-GetStringFieldOrNull(lua_State *L, const char *name)
-{
-    lua_getfield(L, -1, name);
-    char *value = luaL_strdupornull(L, -1);
-    lua_pop(L, 1);
-    return value;
-}
-
 /**
  * Batch scan all Lua files in folder "extensions": callback
  * @param p_this This extensions_manager_t object
@@ -273,17 +279,22 @@ int ScanLuaCallback( vlc_object_t *p_this, const char *psz_filename,
 {
     VLC_UNUSED(dummy);
     extensions_manager_t *p_mgr = ( extensions_manager_t* ) p_this;
+    bool b_ok = false;
 
     msg_Dbg( p_mgr, "Scanning Lua script %s", psz_filename );
 
     /* Experimental: read .vle packages (Zip archives) */
     char *psz_script = NULL;
-    char *extension = strrchr(psz_filename, '.');
-    if (extension != NULL && strcmp(extension, ".vle") == 0)
+    int i_flen = strlen( psz_filename );
+    if( !strncasecmp( psz_filename + i_flen - 4, ".vle", 4 ) )
     {
         msg_Dbg( p_this, "reading Lua script in a zip archive" );
-        if (asprintf(&psz_script, "zip://%s!/script.lua", psz_filename) == -1)
-            return VLC_ENOMEM;
+        psz_script = calloc( 1, i_flen + 6 + 12 + 1 );
+        if( !psz_script )
+            return 0;
+        strcpy( psz_script, "zip://" );
+        strncat( psz_script, psz_filename, i_flen + 19 );
+        strncat( psz_script, "!/script.lua", i_flen + 19 );
     }
     else
     {
@@ -293,40 +304,37 @@ int ScanLuaCallback( vlc_object_t *p_this, const char *psz_filename,
     }
 
     /* Create new script descriptor */
-    extension_t *p_ext = calloc( 1, sizeof( extension_t ) );
+    extension_t *p_ext = ( extension_t* ) calloc( 1, sizeof( extension_t ) );
     if( !p_ext )
     {
         free( psz_script );
         return 0;
     }
 
-    p_ext->logger = vlc_object_logger(p_mgr);
     p_ext->psz_name = psz_script;
-    struct lua_extension *sys
-        = p_ext->p_sys
-        = calloc(1, sizeof(*sys));
-    if (sys == NULL || !p_ext->psz_name)
+    p_ext->p_sys = (extension_sys_t*) calloc( 1, sizeof( extension_sys_t ) );
+    if( !p_ext->p_sys || !p_ext->psz_name )
     {
         free( p_ext->psz_name );
-        free(sys);
+        free( p_ext->p_sys );
         free( p_ext );
         return 0;
     }
-    sys->p_mgr = p_mgr;
+    p_ext->p_sys->p_mgr = p_mgr;
 
     /* Watch timer */
-    if( vlc_timer_create( &sys->timer, WatchTimerCallback, p_ext ) )
+    if( vlc_timer_create( &p_ext->p_sys->timer, WatchTimerCallback, p_ext ) )
     {
         free( p_ext->psz_name );
-        free(sys);
+        free( p_ext->p_sys );
         free( p_ext );
         return 0;
     }
 
     /* Mutexes and conditions */
-    vlc_mutex_init(&sys->command_lock);
-    vlc_mutex_init(&sys->running_lock);
-    vlc_cond_init(&sys->wait);
+    vlc_mutex_init( &p_ext->p_sys->command_lock );
+    vlc_mutex_init( &p_ext->p_sys->running_lock );
+    vlc_cond_init( &p_ext->p_sys->wait );
 
     /* Prepare Lua state */
     lua_State *L = luaL_newstate();
@@ -338,7 +346,7 @@ int ScanLuaCallback( vlc_object_t *p_this, const char *psz_filename,
         msg_Warn( p_mgr, "Error loading script %s: %s", psz_script,
                   lua_tostring( L, lua_gettop( L ) ) );
         lua_pop( L, 1 );
-        goto discard;
+        goto exit;
     }
 
     /* Scan script for capabilities */
@@ -348,7 +356,7 @@ int ScanLuaCallback( vlc_object_t *p_this, const char *psz_filename,
     {
         msg_Warn( p_mgr, "Error while running script %s, "
                   "function descriptor() not found", psz_script );
-        goto discard;
+        goto exit;
     }
 
     if( lua_pcall( L, 0, 1, 0 ) )
@@ -356,124 +364,152 @@ int ScanLuaCallback( vlc_object_t *p_this, const char *psz_filename,
         msg_Warn( p_mgr, "Error while running script %s, "
                   "function descriptor(): %s", psz_script,
                   lua_tostring( L, lua_gettop( L ) ) );
-        goto discard;
+        goto exit;
     }
 
-    if (lua_gettop(L) == 0)
+    if( lua_gettop( L ) )
     {
-        msg_Err(p_mgr, "Script %s went completely foobar", psz_script);
-        goto discard;
-    }
-
-    if (!lua_istable(L, -1))
-    {
-        msg_Warn(p_mgr, "In script %s, function descriptor() "
-                 "did not return a table!", psz_script);
-        goto discard;
-    }
-
-    /* Get caps */
-    lua_getfield(L, -1, "capabilities");
-    if (lua_istable(L, -1))
-    {
-        lua_pushnil(L);
-        while (lua_next(L, -2) != 0)
+        if( lua_istable( L, -1 ) )
         {
-            /* Key is at index -2 and value at index -1. Discard key */
-            const char *psz_cap = luaL_checkstring(L, -1);
-            bool found = false;
-            /* Find this capability's flag */
-            for (size_t i = 0; i < ARRAY_SIZE(caps); i++)
+            /* Get caps */
+            lua_getfield( L, -1, "capabilities" );
+            if( lua_istable( L, -1 ) )
             {
-                if (!strcmp(caps[i], psz_cap))
+                lua_pushnil( L );
+                while( lua_next( L, -2 ) != 0 )
                 {
-                    /* Flag it! */
-                    sys->i_capabilities |= 1 << i;
-                    found = true;
-                    break;
+                    /* Key is at index -2 and value at index -1. Discard key */
+                    const char *psz_cap = luaL_checkstring( L, -1 );
+                    bool b_ok = false;
+                    /* Find this capability's flag */
+                    for( size_t i = 0; i < sizeof(caps)/sizeof(caps[0]); i++ )
+                    {
+                        if( !strcmp( caps[i], psz_cap ) )
+                        {
+                            /* Flag it! */
+                            p_ext->p_sys->i_capabilities |= 1 << i;
+                            b_ok = true;
+                            break;
+                        }
+                    }
+                    if( !b_ok )
+                    {
+                        msg_Warn( p_mgr, "Extension capability '%s' unknown in"
+                                  " script %s", psz_cap, psz_script );
+                    }
+                    /* Removes 'value'; keeps 'key' for next iteration */
+                    lua_pop( L, 1 );
                 }
             }
-            if (!found)
+            else
             {
-                msg_Warn(p_mgr, "Extension capability '%s' unknown in"
-                         " script %s", psz_cap, psz_script);
+                msg_Warn( p_mgr, "In script %s, function descriptor() "
+                              "did not return a table of capabilities.",
+                              psz_script );
             }
-            /* Removes 'value'; keeps 'key' for next iteration */
-            lua_pop(L, 1);
+            lua_pop( L, 1 );
+
+            /* Get title */
+            lua_getfield( L, -1, "title" );
+            if( lua_isstring( L, -1 ) )
+            {
+                p_ext->psz_title = strdup( luaL_checkstring( L, -1 ) );
+            }
+            else
+            {
+                msg_Dbg( p_mgr, "In script %s, function descriptor() "
+                                "did not return a string as title.",
+                                psz_script );
+                p_ext->psz_title = strdup( psz_script );
+            }
+            lua_pop( L, 1 );
+
+            /* Get author */
+            lua_getfield( L, -1, "author" );
+            p_ext->psz_author = luaL_strdupornull( L, -1 );
+            lua_pop( L, 1 );
+
+            /* Get description */
+            lua_getfield( L, -1, "description" );
+            p_ext->psz_description = luaL_strdupornull( L, -1 );
+            lua_pop( L, 1 );
+
+            /* Get short description */
+            lua_getfield( L, -1, "shortdesc" );
+            p_ext->psz_shortdescription = luaL_strdupornull( L, -1 );
+            lua_pop( L, 1 );
+
+            /* Get URL */
+            lua_getfield( L, -1, "url" );
+            p_ext->psz_url = luaL_strdupornull( L, -1 );
+            lua_pop( L, 1 );
+
+            /* Get version */
+            lua_getfield( L, -1, "version" );
+            p_ext->psz_version = luaL_strdupornull( L, -1 );
+            lua_pop( L, 1 );
+
+            /* Get icon data */
+            lua_getfield( L, -1, "icon" );
+            if( !lua_isnil( L, -1 ) && lua_isstring( L, -1 ) )
+            {
+                int len = lua_strlen( L, -1 );
+                p_ext->p_icondata = malloc( len );
+                if( p_ext->p_icondata )
+                {
+                    p_ext->i_icondata_size = len;
+                    memcpy( p_ext->p_icondata, lua_tostring( L, -1 ), len );
+                }
+            }
+            lua_pop( L, 1 );
         }
-    }
-    else
-    {
-        msg_Warn(p_mgr, "In script %s, function descriptor() "
-                     "did not return a table of capabilities.",
-                     psz_script);
-    }
-    lua_pop(L, 1);
-
-    /* Get title */
-    lua_getfield(L, -1, "title");
-    if (lua_isstring(L, -1))
-    {
-        p_ext->psz_title = strdup(luaL_checkstring(L, -1));
-    }
-    else
-    {
-        msg_Dbg(p_mgr,"In script %s, function descriptor() "
-                      "did not return a string as title.",
-                      psz_script);
-        p_ext->psz_title = strdup(psz_script);
-    }
-    lua_pop(L, 1);
-
-    /* Get the fields from the extension manifest. */
-    p_ext->psz_author = GetStringFieldOrNull(L, "author");
-    p_ext->psz_description = GetStringFieldOrNull(L, "description");
-    p_ext->psz_shortdescription = GetStringFieldOrNull(L, "shortdesc");
-    p_ext->psz_url = GetStringFieldOrNull(L, "url");
-    p_ext->psz_version = GetStringFieldOrNull(L, "version");
-    /* Get icon data */
-    lua_getfield(L, -1, "icon");
-    if (!lua_isnil(L, -1) && lua_isstring(L, -1))
-    {
-        int len = lua_strlen(L, -1);
-        p_ext->p_icondata = malloc(len);
-        if (p_ext->p_icondata)
+        else
         {
-            p_ext->i_icondata_size = len;
-            memcpy(p_ext->p_icondata, lua_tostring(L, -1), len);
+            msg_Warn( p_mgr, "In script %s, function descriptor() "
+                      "did not return a table!", psz_script );
+            goto exit;
         }
     }
-    lua_pop(L, 1);
+    else
+    {
+        msg_Err( p_mgr, "Script %s went completely foobar", psz_script );
+        goto exit;
+    }
 
+    msg_Dbg( p_mgr, "Script %s has the following capability flags: 0x%x",
+             psz_script, p_ext->p_sys->i_capabilities );
 
-    msg_Dbg(p_mgr, "Script %s has the following capability flags: 0x%x",
-            psz_script, sys->i_capabilities);
-
+    b_ok = true;
+exit:
     lua_close( L );
-    /* Add the extension to the list of known extensions */
-    ARRAY_APPEND(p_mgr->extensions, p_ext);
+    if( !b_ok )
+    {
+        free( p_ext->psz_name );
+        free( p_ext->psz_title );
+        free( p_ext->psz_url );
+        free( p_ext->psz_author );
+        free( p_ext->psz_description );
+        free( p_ext->psz_shortdescription );
+        free( p_ext->psz_version );
+        vlc_mutex_destroy( &p_ext->p_sys->command_lock );
+        vlc_mutex_destroy( &p_ext->p_sys->running_lock );
+        vlc_cond_destroy( &p_ext->p_sys->wait );
+        free( p_ext->p_sys );
+        free( p_ext );
+    }
+    else
+    {
+        /* Add the extension to the list of known extensions */
+        ARRAY_APPEND( p_mgr->extensions, p_ext );
+    }
 
     /* Continue batch execution */
     return VLC_EGENERIC;
-discard:
-    lua_close(L);
-    free(p_ext->psz_name);
-    free(p_ext->psz_title);
-    free(p_ext->psz_url);
-    free(p_ext->psz_author);
-    free(p_ext->psz_description);
-    free(p_ext->psz_shortdescription);
-    free(p_ext->psz_version);
-    free(p_ext);
-    free(sys);
-    return VLC_EGENERIC;
 }
 
-static int Control(extensions_manager_t *p_mgr, int i_control,
-                   extension_t *ext, va_list args)
+static int Control( extensions_manager_t *p_mgr, int i_control, va_list args )
 {
-    struct lua_extension *sys = ext->p_sys;
-
+    extension_t *p_ext = NULL;
     bool *pb = NULL;
     uint16_t **ppus = NULL;
     char ***pppsz = NULL;
@@ -482,84 +518,127 @@ static int Control(extensions_manager_t *p_mgr, int i_control,
     switch( i_control )
     {
         case EXTENSION_ACTIVATE:
-            return Activate(ext);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            return Activate( p_mgr, p_ext );
 
         case EXTENSION_DEACTIVATE:
-            return Deactivate(p_mgr, ext);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            return Deactivate( p_mgr, p_ext );
 
         case EXTENSION_IS_ACTIVATED:
-            pb = va_arg( args, bool* );
-            vlc_mutex_lock(&sys->command_lock);
-            *pb = sys->b_activated;
-            vlc_mutex_unlock(&sys->command_lock);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            pb = ( bool* ) va_arg( args, bool* );
+            vlc_mutex_lock( &p_ext->p_sys->command_lock );
+            *pb = p_ext->p_sys->b_activated;
+            vlc_mutex_unlock( &p_ext->p_sys->command_lock );
             break;
 
         case EXTENSION_HAS_MENU:
-            pb = va_arg( args, bool* );
-            *pb = (sys->i_capabilities & EXT_HAS_MENU) ? 1 : 0;
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            pb = ( bool* ) va_arg( args, bool* );
+            *pb = ( p_ext->p_sys->i_capabilities & EXT_HAS_MENU ) ? 1 : 0;
             break;
 
         case EXTENSION_GET_MENU:
-            pppsz = va_arg( args, char*** );
-            ppus = va_arg( args, uint16_t** );
-            return GetMenuEntries(p_mgr, ext, pppsz, ppus);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            pppsz = ( char*** ) va_arg( args, char*** );
+            ppus = ( uint16_t** ) va_arg( args, uint16_t** );
+            if( p_ext == NULL )
+                return VLC_EGENERIC;
+            return GetMenuEntries( p_mgr, p_ext, pppsz, ppus );
 
         case EXTENSION_TRIGGER_ONLY:
-            pb = va_arg( args, bool* );
-            *pb = (sys->i_capabilities & EXT_TRIGGER_ONLY) ? 1 : 0;
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            pb = ( bool* ) va_arg( args, bool* );
+            *pb = ( p_ext->p_sys->i_capabilities & EXT_TRIGGER_ONLY ) ? 1 : 0;
             break;
 
         case EXTENSION_TRIGGER:
-            return TriggerExtension(p_mgr, ext);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            return TriggerExtension( p_mgr, p_ext );
 
         case EXTENSION_TRIGGER_MENU:
-            i = va_arg( args, int );
-            return TriggerMenu(ext, i);
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            // GCC: 'uint16_t' is promoted to 'int' when passed through '...'
+            i = ( int ) va_arg( args, int );
+            return TriggerMenu( p_ext, i );
 
         case EXTENSION_SET_INPUT:
         {
-            input_item_t *p_item = va_arg( args, struct input_item_t * );
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            input_thread_t *p_input = va_arg( args, struct input_thread_t * );
 
-            vlc_mutex_lock(&sys->command_lock);
-            if (sys->b_exiting)
+            if( p_ext == NULL )
+                return VLC_EGENERIC;
+            vlc_mutex_lock( &p_ext->p_sys->command_lock );
+            if ( p_ext->p_sys->b_exiting == true )
             {
-                vlc_mutex_unlock(&sys->command_lock);
+                vlc_mutex_unlock( &p_ext->p_sys->command_lock );
                 return VLC_EGENERIC;
             }
-            vlc_mutex_unlock(&sys->command_lock);
+            vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
-            vlc_mutex_lock(&sys->running_lock);
+            vlc_mutex_lock( &p_ext->p_sys->running_lock );
 
             // Change input
-            input_item_t *old = sys->p_item;
+            input_thread_t *old = p_ext->p_sys->p_input;
+            input_item_t *p_item;
             if( old )
-                input_item_Release( old );
-
-            sys->p_item = p_item ? input_item_Hold(p_item) : NULL;
-
-            // Tell the script the input changed
-            if (sys->i_capabilities & EXT_INPUT_LISTENER)
             {
-                PushCommandUnique(ext, CMD_SET_INPUT);
+                // Untrack meta fetched events
+                if( p_ext->p_sys->i_capabilities & EXT_META_LISTENER )
+                {
+                    p_item = input_GetItem( old );
+                    vlc_event_detach( &p_item->event_manager,
+                                      vlc_InputItemMetaChanged,
+                                      inputItemMetaChanged,
+                                      p_ext );
+                    input_item_Release( p_item );
+                }
+                vlc_object_release( old );
             }
 
-            vlc_mutex_unlock(&sys->running_lock);
+            p_ext->p_sys->p_input = p_input ? vlc_object_hold( p_input )
+                                            : p_input;
+
+            // Tell the script the input changed
+            if( p_ext->p_sys->i_capabilities & EXT_INPUT_LISTENER )
+            {
+                PushCommandUnique( p_ext, CMD_SET_INPUT );
+            }
+
+            // Track meta fetched events
+            if( p_ext->p_sys->p_input &&
+                p_ext->p_sys->i_capabilities & EXT_META_LISTENER )
+            {
+                p_item = input_GetItem( p_ext->p_sys->p_input );
+                input_item_Hold( p_item );
+                vlc_event_attach( &p_item->event_manager,
+                                  vlc_InputItemMetaChanged,
+                                  inputItemMetaChanged,
+                                  p_ext );
+            }
+
+            vlc_mutex_unlock( &p_ext->p_sys->running_lock );
             break;
         }
         case EXTENSION_PLAYING_CHANGED:
         {
-            assert(ext->psz_name != NULL);
-            i = va_arg( args, int );
-            if (sys->i_capabilities & EXT_PLAYING_LISTENER)
+            extension_t *p_ext;
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            assert( p_ext->psz_name != NULL );
+            i = ( int ) va_arg( args, int );
+            if( p_ext->p_sys->i_capabilities & EXT_PLAYING_LISTENER )
             {
-                PushCommand(ext, CMD_PLAYING_CHANGED, i);
+                PushCommand( p_ext, CMD_PLAYING_CHANGED, i );
             }
             break;
         }
         case EXTENSION_META_CHANGED:
         {
-            ext = va_arg( args, extension_t* );
-            PushCommand(ext, CMD_UPDATE_META);
+            extension_t *p_ext;
+            p_ext = ( extension_t* ) va_arg( args, extension_t* );
+            PushCommand( p_ext, CMD_UPDATE_META );
             break;
         }
         default:
@@ -580,26 +659,40 @@ int lua_ExtensionActivate( extensions_manager_t *p_mgr, extension_t *p_ext )
 int lua_ExtensionDeactivate( extensions_manager_t *p_mgr, extension_t *p_ext )
 {
     assert( p_mgr != NULL && p_ext != NULL );
-    struct lua_extension *sys = p_ext->p_sys;
 
-    vlclua_fd_interrupt(&sys->dtable);
+    if( p_ext->p_sys->b_activated == false )
+        return VLC_SUCCESS;
+
+    vlclua_fd_interrupt( &p_ext->p_sys->dtable );
 
     // Unset and release input objects
-    if (sys->p_item)
+    if( p_ext->p_sys->p_input )
     {
-        input_item_Release(sys->p_item);
-        sys->p_item = NULL;
+        if( p_ext->p_sys->i_capabilities & EXT_META_LISTENER )
+        {
+            // Release item
+            input_item_t *p_item = input_GetItem( p_ext->p_sys->p_input );
+            input_item_Release( p_item );
+        }
+        vlc_object_release( p_ext->p_sys->p_input );
+        p_ext->p_sys->p_input = NULL;
     }
 
-    return lua_ExecuteFunction( p_mgr, p_ext, "deactivate", LUA_END );
+    int i_ret = lua_ExecuteFunction( p_mgr, p_ext, "deactivate", LUA_END );
+
+    if ( p_ext->p_sys->L == NULL )
+        return VLC_EGENERIC;
+    lua_close( p_ext->p_sys->L );
+    p_ext->p_sys->L = NULL;
+
+    return i_ret;
 }
 
 int lua_ExtensionWidgetClick( extensions_manager_t *p_mgr,
                               extension_t *p_ext,
                               extension_widget_t *p_widget )
 {
-    struct lua_extension *sys = p_ext->p_sys;
-    if (sys->L == NULL)
+    if( !p_ext->p_sys->L )
         return VLC_SUCCESS;
 
     lua_State *L = GetLuaState( p_mgr, p_ext );
@@ -624,23 +717,22 @@ static int GetMenuEntries( extensions_manager_t *p_mgr, extension_t *p_ext,
 {
     assert( *pppsz_titles == NULL );
     assert( *ppi_ids == NULL );
-    struct lua_extension *sys = p_ext->p_sys;
 
-    vlc_mutex_lock(&sys->command_lock);
-    if (!sys->b_activated || sys->b_exiting)
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
+    if( p_ext->p_sys->b_activated == false || p_ext->p_sys->b_exiting == true )
     {
-        vlc_mutex_unlock(&sys->command_lock);
+        vlc_mutex_unlock( &p_ext->p_sys->command_lock );
         msg_Dbg( p_mgr, "Can't get menu of an unactivated/dying extension!" );
         return VLC_EGENERIC;
     }
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
-    vlc_mutex_lock(&sys->running_lock);
+    vlc_mutex_lock( &p_ext->p_sys->running_lock );
 
     int i_ret = VLC_EGENERIC;
     lua_State *L = GetLuaState( p_mgr, p_ext );
 
-    if ((sys->i_capabilities & EXT_HAS_MENU) == 0)
+    if( ( p_ext->p_sys->i_capabilities & EXT_HAS_MENU ) == 0 )
     {
         msg_Dbg( p_mgr, "can't get a menu from an extension without menu!" );
         goto exit;
@@ -663,46 +755,50 @@ static int GetMenuEntries( extensions_manager_t *p_mgr, extension_t *p_ext,
         goto exit;
     }
 
-    if (lua_gettop(L) == 0)
+    if( lua_gettop( L ) )
     {
-        msg_Warn(p_mgr, "Script %s went completely foobar", p_ext->psz_name);
-        goto exit;
-    }
-
-    if (!lua_istable(L, -1))
-    {
-        msg_Warn(p_mgr, "Function menu() in script %s "
-                 "did not return a table", p_ext->psz_name);
-        goto exit;
-    }
-
-    /* Get table size */
-    size_t i_size = lua_objlen( L, -1 );
-    *pppsz_titles = calloc(i_size+1, sizeof(char*));
-    *ppi_ids = calloc(i_size+1, sizeof(uint16_t));
-
-    /* Walk table */
-    size_t i_idx = 0;
-    lua_pushnil(L);
-    while (lua_next(L, -2) != 0)
-    {
-        assert(i_idx < i_size);
-        if(!lua_isstring(L, -1) || !lua_isnumber(L, -2))
+        if( lua_istable( L, -1 ) )
         {
-            msg_Warn(p_mgr, "In script %s, an entry in "
-                     "the menu table is invalid!", p_ext->psz_name);
+            /* Get table size */
+            size_t i_size = lua_objlen( L, -1 );
+            *pppsz_titles = ( char** ) calloc( i_size+1, sizeof( char* ) );
+            *ppi_ids = ( uint16_t* ) calloc( i_size+1, sizeof( uint16_t ) );
+
+            /* Walk table */
+            size_t i_idx = 0;
+            lua_pushnil( L );
+            while( lua_next( L, -2 ) != 0 )
+            {
+                assert( i_idx < i_size );
+                if( (!lua_isstring( L, -1 )) || (!lua_isnumber( L, -2 )) )
+                {
+                    msg_Warn( p_mgr, "In script %s, an entry in "
+                              "the menu table is invalid!", p_ext->psz_name );
+                    goto exit;
+                }
+                (*pppsz_titles)[ i_idx ] = strdup( luaL_checkstring( L, -1 ) );
+                (*ppi_ids)[ i_idx ] = luaL_checkinteger( L, -2 ) & 0xFFFF;
+                i_idx++;
+                lua_pop( L, 1 );
+            }
+        }
+        else
+        {
+            msg_Warn( p_mgr, "Function menu() in script %s "
+                      "did not return a table", p_ext->psz_name );
             goto exit;
         }
-        (*pppsz_titles)[i_idx] = strdup(luaL_checkstring(L, -1));
-        (*ppi_ids)[i_idx] = luaL_checkinteger(L, -2) & 0xFFFF;
-        i_idx++;
-        lua_pop(L, 1);
+    }
+    else
+    {
+        msg_Warn( p_mgr, "Script %s went completely foobar", p_ext->psz_name );
+        goto exit;
     }
 
     i_ret = VLC_SUCCESS;
 
 exit:
-    vlc_mutex_unlock(&sys->running_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->running_lock );
     if( i_ret != VLC_SUCCESS )
     {
         msg_Dbg( p_mgr, "Something went wrong in %s (%s:%d)",
@@ -716,89 +812,88 @@ static lua_State* GetLuaState( extensions_manager_t *p_mgr,
                                extension_t *p_ext )
 {
     assert( p_ext != NULL );
-    struct lua_extension *sys = p_ext->p_sys;
+    lua_State *L = p_ext->p_sys->L;
 
-    if (sys->L != NULL)
-        return sys->L;
-
-    lua_State *L = luaL_newstate();
-    if (L == NULL)
+    if( !L )
     {
-        msg_Err(p_mgr, "Could not create new Lua State");
-        return NULL;
-    }
-    vlclua_set_this(L, p_mgr);
-    intf_thread_t *intf = (intf_thread_t *)vlc_object_parent(p_mgr);
-    vlc_playlist_t *playlist = vlc_intf_GetMainPlaylist(intf);
-    vlclua_set_playlist_internal(L, playlist);
-    vlclua_extension_set(L, p_ext);
+        L = luaL_newstate();
+        if( !L )
+        {
+            msg_Err( p_mgr, "Could not create new Lua State" );
+            return NULL;
+        }
+        vlclua_set_this( L, p_mgr );
+        vlclua_set_playlist_internal( L,
+            pl_Get((intf_thread_t *)(p_mgr->obj.parent)) );
+        vlclua_extension_set( L, p_ext );
 
-    luaL_openlibs(L);
-    luaL_register_namespace(L, "vlc", p_reg);
-    luaopen_msg(L);
+        luaL_openlibs( L );
+        luaL_register_namespace( L, "vlc", p_reg );
+        luaopen_msg( L );
 
-    /* Load more libraries */
-    luaopen_config(L);
-    luaopen_dialog(L, p_ext);
-    luaopen_input(L);
-    luaopen_msg(L);
-    if (vlclua_fd_init(L, &sys->dtable))
-    {
-        lua_close(L);
-        return NULL;
-    }
-    luaopen_object(L);
-    luaopen_osd(L);
-    luaopen_playlist(L);
-    luaopen_stream(L);
-    luaopen_strings(L);
-    luaopen_variables(L);
-    luaopen_video(L);
-    luaopen_vlm(L);
-    luaopen_volume(L);
-    luaopen_xml(L);
-    luaopen_vlcio(L);
-    luaopen_errno(L);
-    luaopen_rand(L);
-    luaopen_rd(L);
-    luaopen_ml(L);
-#if defined(_WIN32) && !defined(VLC_WINSTORE_APP)
-    luaopen_win(L);
+        /* Load more libraries */
+        luaopen_config( L );
+        luaopen_dialog( L, p_ext );
+        luaopen_input( L );
+        luaopen_msg( L );
+        if( vlclua_fd_init( L, &p_ext->p_sys->dtable ) )
+        {
+            lua_close( L );
+            return NULL;
+        }
+        luaopen_object( L );
+        luaopen_osd( L );
+        luaopen_playlist( L );
+        luaopen_sd_intf( L );
+        luaopen_stream( L );
+        luaopen_strings( L );
+        luaopen_variables( L );
+        luaopen_video( L );
+        luaopen_vlm( L );
+        luaopen_volume( L );
+        luaopen_xml( L );
+        luaopen_vlcio( L );
+        luaopen_errno( L );
+#if defined(_WIN32) && !VLC_WINSTORE_APP
+        luaopen_win( L );
 #endif
 
-    /* Register extension specific functions */
-    lua_getglobal(L, "vlc");
-    lua_pushcfunction(L, vlclua_extension_deactivate);
-    lua_setfield(L, -2, "deactivate");
-    lua_pushcfunction(L, vlclua_extension_keep_alive);
-    lua_setfield(L, -2, "keep_alive");
+        /* Register extension specific functions */
+        lua_getglobal( L, "vlc" );
+        lua_pushcfunction( L, vlclua_extension_deactivate );
+        lua_setfield( L, -2, "deactivate" );
+        lua_pushcfunction( L, vlclua_extension_keep_alive );
+        lua_setfield( L, -2, "keep_alive" );
 
-    /* Setup the module search path */
-    if (!strncmp(p_ext->psz_name, "zip://", 6))
-    {
-        /* Load all required modules manually */
-        lua_register(L, "require", &vlclua_extension_require);
-    }
-    else if (vlclua_add_modules_path(L, p_ext->psz_name))
-    {
-        msg_Warn(p_mgr, "Error while setting the module "
-                "search path for %s", p_ext->psz_name);
-        vlclua_fd_cleanup(&sys->dtable);
-        lua_close(L);
-        return NULL;
-    }
+        /* Setup the module search path */
+        if( !strncmp( p_ext->psz_name, "zip://", 6 ) )
+        {
+            /* Load all required modules manually */
+            lua_register( L, "require", &vlclua_extension_require );
+        }
+        else
+        {
+            if( vlclua_add_modules_path( L, p_ext->psz_name ) )
+            {
+                msg_Warn( p_mgr, "Error while setting the module "
+                          "search path for %s", p_ext->psz_name );
+                vlclua_fd_cleanup( &p_ext->p_sys->dtable );
+                lua_close( L );
+                return NULL;
+            }
+        }
+        /* Load and run the script(s) */
+        if( vlclua_dofile( VLC_OBJECT( p_mgr ), L, p_ext->psz_name ) )
+        {
+            msg_Warn( p_mgr, "Error loading script %s: %s", p_ext->psz_name,
+                      lua_tostring( L, lua_gettop( L ) ) );
+            vlclua_fd_cleanup( &p_ext->p_sys->dtable );
+            lua_close( L );
+            return NULL;
+        }
 
-    /* Load and run the script(s) */
-    if (vlclua_dofile(VLC_OBJECT(p_mgr), L, p_ext->psz_name))
-    {
-        msg_Warn(p_mgr, "Error loading script %s: %s", p_ext->psz_name,
-                 lua_tostring(L, lua_gettop(L)));
-        vlclua_fd_cleanup(&sys->dtable);
-        lua_close(L);
-        return NULL;
+        p_ext->p_sys->L = L;
     }
-
-    sys->L = L;
 
     return L;
 }
@@ -850,11 +945,11 @@ int lua_ExecuteFunctionVa( extensions_manager_t *p_mgr, extension_t *p_ext,
     {
         if( type == LUA_NUM )
         {
-            lua_pushnumber( L , va_arg( args, int ) );
+            lua_pushnumber( L , ( int ) va_arg( args, int ) );
         }
         else if( type == LUA_TEXT )
         {
-            lua_pushstring( L , va_arg( args, char* ) );
+            lua_pushstring( L , ( char * ) va_arg( args, char* ) );
         }
         else
         {
@@ -937,17 +1032,15 @@ int lua_ExtensionTriggerMenu( extensions_manager_t *p_mgr,
 static int TriggerExtension( extensions_manager_t *p_mgr,
                              extension_t *p_ext )
 {
-    struct lua_extension *sys = p_ext->p_sys;
-
     int i_ret = lua_ExecuteFunction( p_mgr, p_ext, "trigger", LUA_END );
 
     /* Close lua state for trigger-only extensions */
-    if (sys->L)
+    if( p_ext->p_sys->L )
     {
-        vlclua_fd_cleanup(&sys->dtable);
-        lua_close(sys->L);
+        vlclua_fd_cleanup( &p_ext->p_sys->dtable );
+        lua_close( p_ext->p_sys->L );
     }
-    sys->L = NULL;
+    p_ext->p_sys->L = NULL;
 
     return i_ret;
 }
@@ -984,11 +1077,9 @@ extension_t *vlclua_extension_get( lua_State *L )
 int vlclua_extension_deactivate( lua_State *L )
 {
     extension_t *p_ext = vlclua_extension_get( L );
-    struct lua_extension *sys = p_ext->p_sys;
-
-    vlc_mutex_lock(&sys->command_lock);
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
     bool b_ret = QueueDeactivateCommand( p_ext );
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
     return ( b_ret == true ) ? 1 : 0;
 }
 
@@ -999,17 +1090,15 @@ int vlclua_extension_deactivate( lua_State *L )
 int vlclua_extension_keep_alive( lua_State *L )
 {
     extension_t *p_ext = vlclua_extension_get( L );
-    struct lua_extension *sys = p_ext->p_sys;
 
-    vlc_mutex_lock(&sys->command_lock);
-    if (sys->p_progress_id != NULL)
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
+    if( p_ext->p_sys->p_progress_id != NULL )
     {
-        vlc_dialog_release(sys->p_mgr, sys->p_progress_id);
-        sys->p_progress_id = NULL;
+        vlc_dialog_release( p_ext->p_sys->p_mgr, p_ext->p_sys->p_progress_id );
+        p_ext->p_sys->p_progress_id = NULL;
     }
-    vlc_timer_schedule(sys->timer, false, WATCH_TIMER_PERIOD,
-                       VLC_TIMER_FIRE_ONCE);
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_timer_schedule( p_ext->p_sys->timer, false, WATCH_TIMER_PERIOD, 0 );
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
     return 1;
 }
@@ -1059,62 +1148,72 @@ static int vlclua_extension_dialog_callback( vlc_object_t *p_this,
     return VLC_SUCCESS;
 }
 
+/** Callback on vlc_InputItemMetaChanged event
+ **/
+static void inputItemMetaChanged( const vlc_event_t *p_event,
+                                  void *data )
+{
+    assert( p_event && p_event->type == vlc_InputItemMetaChanged );
+
+    extension_t *p_ext = ( extension_t* ) data;
+    assert( p_ext != NULL );
+
+    PushCommandUnique( p_ext, CMD_UPDATE_META );
+}
+
 /** Watch timer callback
  * The timer expired, Lua may be stuck, ask the user what to do now
  **/
 static void WatchTimerCallback( void *data )
 {
     extension_t *p_ext = data;
-    struct lua_extension *sys = p_ext->p_sys;
-    extensions_manager_t *p_mgr = sys->p_mgr;
+    extensions_manager_t *p_mgr = p_ext->p_sys->p_mgr;
 
-    vlc_mutex_lock(&sys->command_lock);
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
 
-    for( struct command_t *cmd = sys->command;
+    for( struct command_t *cmd = p_ext->p_sys->command;
          cmd != NULL;
          cmd = cmd->next )
         if( cmd->i_command == CMD_DEACTIVATE )
         {   /* We have a pending Deactivate command... */
-            if (sys->p_progress_id != NULL)
+            if( p_ext->p_sys->p_progress_id != NULL )
             {
-                vlc_dialog_release(p_mgr, sys->p_progress_id);
-                sys->p_progress_id = NULL;
+                vlc_dialog_release( p_mgr, p_ext->p_sys->p_progress_id );
+                p_ext->p_sys->p_progress_id = NULL;
             }
-            KillExtension(p_ext);
-            vlc_mutex_unlock(&sys->command_lock);
+            KillExtension( p_mgr, p_ext );
+            vlc_mutex_unlock( &p_ext->p_sys->command_lock );
             return;
         }
 
-    if (sys->p_progress_id == NULL)
+    if( p_ext->p_sys->p_progress_id == NULL )
     {
-        sys->p_progress_id =
+        p_ext->p_sys->p_progress_id =
             vlc_dialog_display_progress( p_mgr, true, 0.0,
                                          _( "Yes" ),
                                          _( "Extension not responding!" ),
                                          _( "Extension '%s' does not respond.\n"
                                          "Do you want to kill it now? " ),
                                          p_ext->psz_title );
-        if (sys->p_progress_id == NULL)
+        if( p_ext->p_sys->p_progress_id == NULL )
         {
-            KillExtension(p_ext);
-            vlc_mutex_unlock(&sys->command_lock);
+            KillExtension( p_mgr, p_ext );
+            vlc_mutex_unlock( &p_ext->p_sys->command_lock );
             return;
         }
-        vlc_timer_schedule(sys->timer, false, VLC_TICK_FROM_MS(100),
-                           VLC_TIMER_FIRE_ONCE);
+        vlc_timer_schedule( p_ext->p_sys->timer, false, 100000, 0 );
     }
     else
     {
-        if (vlc_dialog_is_cancelled(p_mgr, sys->p_progress_id))
+        if( vlc_dialog_is_cancelled( p_mgr, p_ext->p_sys->p_progress_id ) )
         {
-            vlc_dialog_release(p_mgr, sys->p_progress_id);
-            sys->p_progress_id = NULL;
-            KillExtension(p_ext);
-            vlc_mutex_unlock(&sys->command_lock);
+            vlc_dialog_release( p_mgr, p_ext->p_sys->p_progress_id );
+            p_ext->p_sys->p_progress_id = NULL;
+            KillExtension( p_mgr, p_ext );
+            vlc_mutex_unlock( &p_ext->p_sys->command_lock );
             return;
         }
-        vlc_timer_schedule(sys->timer, false, VLC_TICK_FROM_MS(100),
-                           VLC_TIMER_FIRE_ONCE);
+        vlc_timer_schedule( p_ext->p_sys->timer, false, 100000, 0 );
     }
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 }

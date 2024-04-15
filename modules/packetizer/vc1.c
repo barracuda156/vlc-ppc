@@ -2,6 +2,7 @@
  * vc1.c
  *****************************************************************************
  * Copyright (C) 2001, 2002, 2006 VLC authors and VideoLAN
+ * $Id: 8f70154d8a605fe47883c2a817d72ed27a14078b $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -39,9 +40,7 @@
 #include "../codec/cc.h"
 #include "packetizer_helper.h"
 #include "hxxx_nal.h"
-#include "hxxx_ep3b.h"
 #include "startcode_helper.h"
-#include "iso_color_tables.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -50,6 +49,7 @@ static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
 vlc_module_begin ()
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_PACKETIZER )
     set_description( N_("VC-1 packetizer") )
     set_capability( "packetizer", 50 )
@@ -59,7 +59,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Input properties
@@ -91,9 +91,9 @@ typedef struct
     vlc_tick_t i_frame_pts;
     block_t    *p_frame;
     block_t    **pp_last;
-    date_t     dts;
 
 
+    vlc_tick_t i_interpolated_dts;
     bool    b_check_startcode;
 
     /* */
@@ -103,7 +103,7 @@ typedef struct
     cc_data_t cc;
 
     cc_data_t cc_next;
-} decoder_sys_t;
+};
 
 typedef enum
 {
@@ -127,9 +127,7 @@ static void Flush( decoder_t * );
 static void PacketizeReset( void *p_private, bool b_broken );
 static block_t *PacketizeParse( void *p_private, bool *pb_ts_used, block_t * );
 static int PacketizeValidate( void *p_private, block_t * );
-static block_t *PacketizeDrain( void *p_private );
 
-static block_t *OutputFrame( decoder_t *p_dec );
 static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag );
 static block_t *GetCc( decoder_t *p_dec, decoder_cc_desc_t * );
 
@@ -145,23 +143,23 @@ static int Open( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec !=  VLC_CODEC_VC1 )
+    if( p_dec->fmt_in.i_codec !=  VLC_CODEC_VC1 )
         return VLC_EGENERIC;
 
-    p_dec->p_sys = p_sys = malloc( sizeof( decoder_sys_t ) );
-    if( unlikely( !p_sys ) )
-        return VLC_ENOMEM;
-
-    /* Create the output format */
-    es_format_Copy( &p_dec->fmt_out, p_dec->fmt_in );
     p_dec->pf_packetize = Packetize;
     p_dec->pf_flush = Flush;
     p_dec->pf_get_cc = GetCc;
 
+    /* Create the output format */
+    es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );
+    p_dec->p_sys = p_sys = malloc( sizeof( decoder_sys_t ) );
+    if( unlikely( !p_sys ) )
+        return VLC_ENOMEM;
+
     packetizer_Init( &p_sys->packetizer,
                      p_vc1_startcode, sizeof(p_vc1_startcode), startcode_FindAnnexB,
                      NULL, 0, 4,
-                     PacketizeReset, PacketizeParse, PacketizeValidate, PacketizeDrain,
+                     PacketizeReset, PacketizeParse, PacketizeValidate, NULL,
                      p_dec );
 
     p_sys->b_sequence_header = false;
@@ -176,12 +174,8 @@ static int Open( vlc_object_t *p_this )
     p_sys->p_frame = NULL;
     p_sys->pp_last = &p_sys->p_frame;
 
-    if( p_dec->fmt_in->video.i_frame_rate && p_dec->fmt_in->video.i_frame_rate_base )
-        date_Init( &p_sys->dts, p_dec->fmt_in->video.i_frame_rate * 2,
-                                p_dec->fmt_in->video.i_frame_rate_base );
-    else
-        date_Init( &p_sys->dts, 30000*2, 1000 );
-    p_sys->b_check_startcode = p_dec->fmt_in->b_packetized;
+    p_sys->i_interpolated_dts = VLC_TICK_INVALID;
+    p_sys->b_check_startcode = p_dec->fmt_in.b_packetized;
 
     if( p_dec->fmt_out.i_extra > 0 )
     {
@@ -267,7 +261,7 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
 
     block_t *p_au = packetizer_Packetize( &p_sys->packetizer, pp_block );
     if( !p_au )
-        p_sys->b_check_startcode = p_dec->fmt_in->b_packetized;
+        p_sys->b_check_startcode = p_dec->fmt_in.b_packetized;
 
     return p_au;
 }
@@ -279,12 +273,12 @@ static void Flush( decoder_t *p_dec )
     packetizer_Flush( &p_sys->packetizer );
 }
 
-static void PacketizeReset( void *p_private, bool b_flush )
+static void PacketizeReset( void *p_private, bool b_broken )
 {
     decoder_t *p_dec = p_private;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( b_flush )
+    if( b_broken )
     {
         if( p_sys->p_frame )
             block_ChainRelease( p_sys->p_frame );
@@ -295,7 +289,7 @@ static void PacketizeReset( void *p_private, bool b_flush )
 
     p_sys->i_frame_dts = VLC_TICK_INVALID;
     p_sys->i_frame_pts = VLC_TICK_INVALID;
-    date_Set( &p_sys->dts, VLC_TICK_INVALID );
+    p_sys->i_interpolated_dts = VLC_TICK_INVALID;
 }
 static block_t *PacketizeParse( void *p_private, bool *pb_ts_used, block_t *p_block )
 {
@@ -309,20 +303,13 @@ static int PacketizeValidate( void *p_private, block_t *p_au )
     decoder_t *p_dec = p_private;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( date_Get( &p_sys->dts ) == VLC_TICK_INVALID )
+    if( p_sys->i_interpolated_dts <= VLC_TICK_INVALID )
     {
         msg_Dbg( p_dec, "need a starting pts/dts" );
         return VLC_EGENERIC;
     }
     VLC_UNUSED(p_au);
     return VLC_SUCCESS;
-}
-
-static block_t * PacketizeDrain( void *p_private )
-{
-    decoder_t *p_dec = p_private;
-    decoder_sys_t *p_sys = p_dec->p_sys;
-    return p_sys->b_frame ? OutputFrame( p_dec ) : NULL;
 }
 
 /* BuildExtraData: gather sequence header and entry point */
@@ -345,87 +332,11 @@ static void BuildExtraData( decoder_t *p_dec )
     memcpy( (uint8_t*)p_es->p_extra + p_sys->sh.p_sh->i_buffer,
             p_sys->ep.p_ep->p_buffer, p_sys->ep.p_ep->i_buffer );
 }
-
-static block_t *OutputFrame( decoder_t *p_dec )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-    const int i_pic_flags = p_sys->p_frame->i_flags;
-
-    /* Prepend SH and EP on I */
-    if( i_pic_flags & BLOCK_FLAG_TYPE_I )
-    {
-        block_t *p_list = block_Duplicate( p_sys->sh.p_sh );
-        block_t *p_ep = block_Duplicate( p_sys->ep.p_ep );
-        if( p_ep )
-            block_ChainAppend( &p_list, p_ep );
-        block_ChainAppend( &p_list, p_sys->p_frame );
-        p_list->i_flags = i_pic_flags;
-        p_sys->p_frame = p_list;
-    }
-
-    vlc_tick_t i_dts = p_sys->i_frame_dts;
-    vlc_tick_t i_pts = p_sys->i_frame_pts;
-
-    /* */
-    block_t *p_pic = block_ChainGather( p_sys->p_frame );
-    if( p_pic )
-    {
-        p_pic->i_dts = p_sys->i_frame_dts;
-        p_pic->i_pts = p_sys->i_frame_pts;
-    }
-
-    /* */
-    if( i_dts == VLC_TICK_INVALID )
-        i_dts = date_Get( &p_sys->dts );
-    else
-        date_Set( &p_sys->dts, i_dts );
-
-    if( i_pts == VLC_TICK_INVALID )
-    {
-        if( !p_sys->sh.b_has_bframe || (i_pic_flags & BLOCK_FLAG_TYPE_B ) )
-            i_pts = i_dts;
-        /* TODO compute pts for other case */
-    }
-
-    if( p_pic )
-    {
-        p_pic->i_dts = i_dts;
-        p_pic->i_pts = i_pts;
-    }
-
-    //msg_Dbg( p_dec, "-------------- dts=%"PRId64" pts=%"PRId64, i_dts, i_pts );
-
-    /* We can interpolate dts/pts only if we have a frame rate */
-    if( p_dec->fmt_out.video.i_frame_rate && p_dec->fmt_out.video.i_frame_rate_base )
-    {
-        date_Increment( &p_sys->dts, 2 );
-    //    msg_Dbg( p_dec, "-------------- XXX0 dts=%"PRId64" pts=%"PRId64" interpolated=%"PRId64,
-    //             i_dts, i_pts, date_Get( &p_sys->dts ) );
-    }
-
-    /* CC */
-    p_sys->i_cc_pts = i_pts;
-    p_sys->i_cc_dts = i_dts;
-    p_sys->i_cc_flags = i_pic_flags;
-
-    p_sys->cc = p_sys->cc_next;
-    cc_Flush( &p_sys->cc_next );
-
-    /* Reset context */
-    p_sys->b_frame = false;
-    p_sys->i_frame_dts = VLC_TICK_INVALID;
-    p_sys->i_frame_pts = VLC_TICK_INVALID;
-    p_sys->p_frame = NULL;
-    p_sys->pp_last = &p_sys->p_frame;
-
-    return p_pic;
-}
-
 /* ParseIDU: parse an Independent Decoding Unit */
 static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    block_t *p_pic = NULL;
+    block_t *p_pic;
     const idu_type_t idu = p_frag->p_buffer[3];
 
     *pb_ts_used = false;
@@ -445,17 +356,75 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
      * But It should not be a problem for decoder */
 
     /* Do we have completed a frame */
+    p_pic = NULL;
     if( p_sys->b_frame &&
         idu != IDU_TYPE_FRAME_USER_DATA &&
         idu != IDU_TYPE_FIELD && idu != IDU_TYPE_FIELD_USER_DATA &&
         idu != IDU_TYPE_SLICE && idu != IDU_TYPE_SLICE_USER_DATA &&
         idu != IDU_TYPE_END_OF_SEQUENCE )
     {
-        p_pic = OutputFrame( p_dec );
+        /* Prepend SH and EP on I */
+        if( p_sys->p_frame->i_flags & BLOCK_FLAG_TYPE_I )
+        {
+            block_t *p_list = block_Duplicate( p_sys->sh.p_sh );
+            block_ChainAppend( &p_list, block_Duplicate( p_sys->ep.p_ep ) );
+            block_ChainAppend( &p_list, p_sys->p_frame );
+
+            p_list->i_flags = p_sys->p_frame->i_flags;
+
+            p_sys->p_frame = p_list;
+        }
+
+        /* */
+        p_pic = block_ChainGather( p_sys->p_frame );
+        p_pic->i_dts = p_sys->i_frame_dts;
+        p_pic->i_pts = p_sys->i_frame_pts;
+
+        /* */
+        if( p_pic->i_dts > VLC_TICK_INVALID )
+            p_sys->i_interpolated_dts = p_pic->i_dts;
+
+        /* We can interpolate dts/pts only if we have a frame rate */
+        if( p_dec->fmt_out.video.i_frame_rate != 0 && p_dec->fmt_out.video.i_frame_rate_base != 0 )
+        {
+            if( p_sys->i_interpolated_dts > VLC_TICK_INVALID )
+                p_sys->i_interpolated_dts += INT64_C(1000000) *
+                                             p_dec->fmt_out.video.i_frame_rate_base /
+                                             p_dec->fmt_out.video.i_frame_rate;
+
+            //msg_Dbg( p_dec, "-------------- XXX0 dts=%"PRId64" pts=%"PRId64" interpolated=%"PRId64,
+            //         p_pic->i_dts, p_pic->i_pts, p_sys->i_interpolated_dts );
+            if( p_pic->i_dts <= VLC_TICK_INVALID )
+                p_pic->i_dts = p_sys->i_interpolated_dts;
+
+            if( p_pic->i_pts <= VLC_TICK_INVALID )
+            {
+                if( !p_sys->sh.b_has_bframe || (p_pic->i_flags & BLOCK_FLAG_TYPE_B ) )
+                    p_pic->i_pts = p_pic->i_dts;
+                /* TODO compute pts for other case */
+            }
+        }
+
+        //msg_Dbg( p_dec, "-------------- dts=%"PRId64" pts=%"PRId64, p_pic->i_dts, p_pic->i_pts );
+
+        /* CC */
+        p_sys->i_cc_pts = p_pic->i_pts;
+        p_sys->i_cc_dts = p_pic->i_dts;
+        p_sys->i_cc_flags = p_pic->i_flags;
+
+        p_sys->cc = p_sys->cc_next;
+        cc_Flush( &p_sys->cc_next );
+
+        /* Reset context */
+        p_sys->b_frame = false;
+        p_sys->i_frame_dts = VLC_TICK_INVALID;
+        p_sys->i_frame_pts = VLC_TICK_INVALID;
+        p_sys->p_frame = NULL;
+        p_sys->pp_last = &p_sys->p_frame;
     }
 
     /*  */
-    if( p_sys->i_frame_dts == VLC_TICK_INVALID && p_sys->i_frame_pts == VLC_TICK_INVALID )
+    if( p_sys->i_frame_dts <= VLC_TICK_INVALID && p_sys->i_frame_pts <= VLC_TICK_INVALID )
     {
         p_sys->i_frame_dts = p_frag->i_dts;
         p_sys->i_frame_pts = p_frag->i_pts;
@@ -474,6 +443,8 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
     {
         es_format_t *p_es = &p_dec->fmt_out;
         bs_t s;
+        unsigned i_bitflow = 0;
+        int i_profile;
 
         /* */
         if( p_sys->sh.p_sh )
@@ -484,7 +455,7 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
          * TODO find a test case and valid it */
         if( p_frag->i_buffer > 8 && (p_frag->p_buffer[4]&0x80) == 0 ) /* for advanced profile, the first bit is 1 */
         {
-            const video_format_t *p_v = &p_dec->fmt_in->video;
+            video_format_t *p_v = &p_dec->fmt_in.video;
             const size_t i_potential_width  = GetWBE( &p_frag->p_buffer[4] );
             const size_t i_potential_height = GetWBE( &p_frag->p_buffer[6] );
 
@@ -507,15 +478,14 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
         }
 
         /* Parse it */
-        struct hxxx_bsfw_ep3b_ctx_s bsctx;
-        hxxx_bsfw_ep3b_ctx_init( &bsctx );
-        bs_init_custom( &s, &p_frag->p_buffer[4], p_frag->i_buffer - 4,
-                        &hxxx_bsfw_ep3b_callbacks, &bsctx );
+        bs_init( &s, &p_frag->p_buffer[4], p_frag->i_buffer - 4 );
+        s.p_fwpriv = &i_bitflow;
+        s.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */
 
-        p_dec->fmt_out.i_profile = bs_read( &s, 2 );
-        if( p_dec->fmt_out.i_profile == 3 )
+        i_profile = bs_read( &s, 2 );
+        if( i_profile == 3 )
         {
-            p_dec->fmt_out.i_level = bs_read( &s, 3 );
+            const int i_level = bs_read( &s, 3 );
 
             /* Advanced profile */
             p_sys->sh.b_advanced_profile = true;
@@ -529,7 +499,7 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
 
             if( !p_sys->b_sequence_header )
                 msg_Dbg( p_dec, "found sequence header for advanced profile level L%d resolution %dx%d",
-                         p_dec->fmt_out.i_level, p_es->video.i_width, p_es->video.i_height);
+                         i_level, p_es->video.i_width, p_es->video.i_height);
 
             bs_skip( &s, 1 );// pulldown
             p_sys->sh.b_interlaced = bs_read( &s, 1 );
@@ -604,24 +574,41 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
                     case 2: i_fps_den = 1001; break;
                     }
                 }
-
-                if( i_fps_num != 0 && i_fps_den != 0 &&
-                   (p_dec->fmt_in->video.i_frame_rate == 0 ||
-                    p_dec->fmt_in->video.i_frame_rate_base == 0) )
+                if( i_fps_num != 0 && i_fps_den != 0 )
                     vlc_ureduce( &p_es->video.i_frame_rate, &p_es->video.i_frame_rate_base, i_fps_num, i_fps_den, 0 );
 
                 if( !p_sys->b_sequence_header )
-                {
                     msg_Dbg( p_dec, "frame rate %d/%d", p_es->video.i_frame_rate, p_es->video.i_frame_rate_base );
-                    date_Change( &p_sys->dts, p_es->video.i_frame_rate * 2, p_es->video.i_frame_rate_base );
-                }
             }
-            if( bs_read1( &s ) && /* Color Format */
-                p_dec->fmt_in->video.primaries == COLOR_PRIMARIES_UNDEF )
+            if( bs_read1( &s ) ) /* Color Format */
             {
-                p_es->video.primaries = iso_23001_8_cp_to_vlc_primaries( bs_read( &s, 8 ) );
-                p_es->video.transfer = iso_23001_8_tc_to_vlc_xfer( bs_read( &s, 8 ) );
-                p_es->video.space = iso_23001_8_mc_to_vlc_coeffs( bs_read( &s, 8 ) );
+                switch( bs_read( &s, 8 ) ) /* Color Primaries */
+                {
+                    case 1:  p_es->video.primaries = COLOR_PRIMARIES_BT709; break;
+                    case 4:  p_es->video.primaries = COLOR_PRIMARIES_BT470_M; break;
+                    case 5:  p_es->video.primaries = COLOR_PRIMARIES_BT470_BG; break;
+                    case 6:  p_es->video.primaries = COLOR_PRIMARIES_SMTPE_RP145; break;
+                    default: p_es->video.primaries = COLOR_PRIMARIES_UNDEF; break;
+                }
+
+                switch( bs_read( &s, 8 ) ) /* Transfert Chars */
+                {
+                    case 1:  p_es->video.transfer = TRANSFER_FUNC_BT709; break;
+                    case 4:  p_es->video.transfer = TRANSFER_FUNC_BT470_M; break;
+                    case 5:  p_es->video.transfer = TRANSFER_FUNC_BT470_BG; break;
+                    case 6:  p_es->video.transfer = TRANSFER_FUNC_SMPTE_170; break;
+                    case 7:  p_es->video.transfer = TRANSFER_FUNC_SMPTE_240; break;
+                    case 8:  p_es->video.transfer = TRANSFER_FUNC_LINEAR; break;
+                    default: p_es->video.transfer = TRANSFER_FUNC_UNDEF; break;
+                }
+
+                switch( bs_read( &s, 8 ) ) /* Matrix Coef */
+                {
+                    case 1:  p_es->video.space = COLOR_SPACE_BT709; break;
+                    case 6:  p_es->video.space = COLOR_SPACE_BT601; break;
+                    case 7:  p_es->video.space = COLOR_SPACE_SMPTE_240; break;
+                    default: p_es->video.space = COLOR_SPACE_UNDEF; break;
+                }
             }
         }
         else
@@ -631,7 +618,7 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
             p_sys->sh.b_interlaced = false;
 
             if( !p_sys->b_sequence_header )
-                msg_Dbg( p_dec, "found sequence header for %s profile", p_dec->fmt_out.i_profile == 0 ? "simple" : "main" );
+                msg_Dbg( p_dec, "found sequence header for %s profile", i_profile == 0 ? "simple" : "main" );
 
             bs_skip( &s, 2+3+5+1+1+     // reserved + frame rate Q + bit rate Q + loop filter + reserved
                          1+1+1+1+2+     // multiresolution + reserved + fast uv mc + extended mv + dquant
@@ -663,12 +650,12 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
     else if( idu == IDU_TYPE_FRAME )
     {
         bs_t s;
+        unsigned i_bitflow = 0;
 
         /* Parse it + interpolate pts/dts if possible */
-        struct hxxx_bsfw_ep3b_ctx_s bsctx;
-        hxxx_bsfw_ep3b_ctx_init( &bsctx );
-        bs_init_custom( &s, &p_frag->p_buffer[4], p_frag->i_buffer - 4,
-                        &hxxx_bsfw_ep3b_callbacks, &bsctx );
+        bs_init( &s, &p_frag->p_buffer[4], p_frag->i_buffer - 4 );
+        s.p_fwpriv = &i_bitflow;
+        s.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */
 
         if( p_sys->sh.b_advanced_profile )
         {
@@ -742,22 +729,19 @@ static block_t *ParseIDU( decoder_t *p_dec, bool *pb_ts_used, block_t *p_frag )
     else if( idu == IDU_TYPE_FRAME_USER_DATA )
     {
         bs_t s;
+        unsigned i_bitflow = 0;
         const size_t i_size = p_frag->i_buffer - 4;
-        struct hxxx_bsfw_ep3b_ctx_s bsctx;
-        hxxx_bsfw_ep3b_ctx_init( &bsctx );
-        bs_init_custom( &s, &p_frag->p_buffer[4], i_size, &hxxx_bsfw_ep3b_callbacks, &bsctx );
+        bs_init( &s, &p_frag->p_buffer[4], i_size );
+        s.p_fwpriv = &i_bitflow;
+        s.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */
 
         unsigned i_data;
         uint8_t *p_data = malloc( i_size );
         if( p_data )
         {
             /* store converted data */
-            for( i_data = 0; i_data + 1 /* trailing 0x80 flush byte */<i_size; i_data++ )
-            {
+            for( i_data = 0; i_data<i_size && bs_remain( &s ) >= 16 /* trailing 0x80 flush byte */; i_data++ )
                 p_data[i_data] = bs_read( &s, 8 );
-                if( bs_error(&s) )
-                    break;
-            }
 
             /* TS 101 154 Auxiliary Data and VC-1 video */
             static const uint8_t p_DVB1_user_identifier[] = {

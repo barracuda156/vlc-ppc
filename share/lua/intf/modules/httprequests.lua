@@ -92,7 +92,7 @@ processcommands = function ()
         --]]
         vlc.playlist.add({{path=vlc.strings.make_uri(input),options=options,name=name,duration=duration}})
     elseif command == "addsubtitle" then
-        vlc.player.add_subtitle(val)
+        vlc.input.add_subtitle (val)
     elseif command == "in_enqueue" then
         vlc.playlist.enqueue({{path=vlc.strings.make_uri(input),options=options,name=name,duration=duration}})
     elseif command == "pl_play" then
@@ -134,9 +134,21 @@ processcommands = function ()
     elseif command == "pl_random" then
         vlc.playlist.random()
     elseif command == "pl_loop" then
-        vlc.playlist.loop()
+        --if loop is set true, then repeat needs to be set false
+        if vlc.playlist.loop() then
+            vlc.playlist.repeat_("off")
+        end
     elseif command == "pl_repeat" then
-        vlc.playlist.repeat_()
+        --if repeat is set true, then loop needs to be set false
+        if vlc.playlist.repeat_() then
+            vlc.playlist.loop("off")
+        end
+    elseif command == "pl_sd" then
+        if vlc.sd.is_loaded(val) then
+            vlc.sd.remove(val)
+        else
+            vlc.sd.add(val)
+        end
     elseif command == "fullscreen" then
         if vlc.object.vout() then
             vlc.video.fullscreen()
@@ -150,16 +162,20 @@ processcommands = function ()
     elseif command == "key" then
         common.hotkey("key-"..val)
     elseif command == "audiodelay" then
-        val = common.us_tonumber(val)
-        vlc.player.set_audio_delay(val)
+        if vlc.object.input() and val then
+            val = common.us_tonumber(val)
+            vlc.var.set(vlc.object.input(),"audio-delay",val * 1000000)
+        end
     elseif command == "rate" then
         val = common.us_tonumber(val)
-        if val >= 0 then
-            vlc.player.set_rate(val)
+        if vlc.object.input() and val >= 0 then
+            vlc.var.set(vlc.object.input(),"rate",val)
         end
     elseif command == "subdelay" then
-        val = common.us_tonumber(val)
-        vlc.player.set_subtitle_delay(val)
+        if vlc.object.input() then
+            val = common.us_tonumber(val)
+            vlc.var.set(vlc.object.input(),"spu-delay",val * 1000000)
+        end
     elseif command == "aspectratio" then
         if vlc.object.vout() then
             vlc.var.set(vlc.object.vout(),"aspect-ratio",val)
@@ -175,23 +191,15 @@ processcommands = function ()
     elseif command == "setpreset" then
         vlc.equalizer.setpreset(val)
     elseif command == "title" then
-        vlc.player.title_goto(val)
+        vlc.var.set(vlc.object.input(), "title", val)
     elseif command == "chapter" then
-        vlc.player.chapter_goto(val)
+        vlc.var.set(vlc.object.input(), "chapter", val)
     elseif command == "audio_track" then
-        vlc.player.toggle_audio_track(val)
+        vlc.var.set(vlc.object.input(), "audio-es", val)
     elseif command == "video_track" then
-        vlc.player.toggle_video_track(val)
+        vlc.var.set(vlc.object.input(), "video-es", val)
     elseif command == "subtitle_track" then
-        vlc.player.toggle_spu_track(val)
-    elseif command == "set_renderer" then
-        local rd = get_renderer_discovery()
-        if not rd then
-            return
-        end
-        rd:select(id)
-    elseif command == "unset_renderer" then
-        rd:select(-1)
+        vlc.var.set(vlc.object.input(), "spu-es", val)
     end
 
     local input = nil
@@ -247,15 +255,7 @@ local printXmlKeyValue = function (k,v,indent)
     print("\n")
     for i=1,indent do print(" ") end
     if (k) then
-        --XML element naming rules: this is a bit more conservative
-        --than it strictly needs to be
-        if not string.match(k, "^[a-zA-Z_][a-zA-Z0-9_%-%.]*$")
-            or string.match(k, "^[xX][mM][lL]") then
-            print('<element name="'..xmlString(k)..'">')
-            k = "element"
-        else
-            print("<"..k..">")
-        end
+        print("<"..k..">")
     end
 
     if (type(v)=="table") then
@@ -265,7 +265,14 @@ local printXmlKeyValue = function (k,v,indent)
     end
 
     if (k) then
-        print("</"..k..">")
+        xs=xmlString(k)
+        space_loc=string.find(xs," ")
+        if space_loc == nil then
+            print("</"..xs..">")
+        else
+            xs=string.sub(xs,1,space_loc)
+            print("</"..xs..">")
+        end
     end
 end
 httprequests.printXmlKeyValue = printXmlKeyValue
@@ -293,6 +300,7 @@ end
 
 getplaylist = function ()
     local p
+
     if _GET["search"] then
         if _GET["search"] ~= "" then
             _G.search_key = _GET["search"]
@@ -302,7 +310,7 @@ getplaylist = function ()
         local key = vlc.strings.decode_uri(_GET["search"])
         p = vlc.playlist.search(key)
     else
-        p = vlc.playlist.list()
+        p = vlc.playlist.get()
     end
 
     --logTable(p) --Uncomment to debug
@@ -311,14 +319,34 @@ getplaylist = function ()
 end
 httprequests.getplaylist = getplaylist
 
-parseplaylist = function (list)
-    local playlist = {}
-    local current_item_id = vlc.playlist.current()
-    for i, item in ipairs(list) do
-        local result={}
+parseplaylist = function (item)
+    if item.flags.disabled then return end
 
+    if (item.children) then
+        local result={}
+        local name = (item.name or "")
+
+        result["type"]="node"
+        result.id=tostring(item.id)
+        result.name=tostring(name)
+        result.ro=item.flags.ro and "ro" or "rw"
+
+        --store children in an array
+        --we use _array as a proxy for arrays
+        result.children={}
+        result.children._array={}
+
+        for _, child in ipairs(item.children) do
+            local nextChild=parseplaylist(child)
+            table.insert(result.children._array,nextChild)
+        end
+
+        return result
+    else
+        local result={}
         local name, path = item.name or ""
         local path = item.path or ""
+        local current_item_id = vlc.playlist.current()
 
         -- Is the item the one currently played
         if(current_item_id ~= nil) then
@@ -326,14 +354,16 @@ parseplaylist = function (list)
                 result.current = "current"
             end
         end
+
         result["type"]="leaf"
         result.id=tostring(item.id)
         result.uri=tostring(path)
         result.name=name
+        result.ro=item.flags.ro and "ro" or "rw"
         result.duration=math.floor(item.duration)
-        playlist[i] = result
+
+        return result
     end
-    return playlist
 
 end
 httprequests.parseplaylist = parseplaylist
@@ -428,7 +458,8 @@ httprequests.getbrowsetable = getbrowsetable
 getstatus = function (includecategories)
 
 
-    local item = vlc.player.item()
+    local input = vlc.object.input()
+    local item = vlc.input.item()
     local playlist = vlc.object.playlist()
     local vout = vlc.object.vout()
     local aout = vlc.object.aout()
@@ -436,16 +467,26 @@ getstatus = function (includecategories)
     local s ={}
 
     --update api version when new data/commands added
-    s.apiversion=4
+    s.apiversion=3
     s.version=vlc.misc.version()
     s.volume=vlc.volume.get()
+    s.seek_sec = vlc.config.get("short-jump-size")
 
-    s.time = vlc.player.get_time() / 1000000
-    s.position = vlc.player.get_position()
-    s.currentplid = vlc.playlist.current()
-    s.audiodelay = vlc.player.get_audio_delay()
-    s.rate = vlc.player.get_rate()
-    s.subtitledelay = vlc.player.get_subtitle_delay()
+    if input then
+        s.time=math.floor(vlc.var.get(input,"time") / 1000000)
+        s.position=vlc.var.get(input,"position")
+        s.currentplid=vlc.playlist.current()
+        s.audiodelay=vlc.var.get(input,"audio-delay") / 1000000
+        s.rate=vlc.var.get(input,"rate")
+        s.subtitledelay=vlc.var.get(input,"spu-delay") / 1000000
+    else
+        s.time=0
+        s.position=0
+        s.currentplid=-1
+        s.audiodelay=0
+        s.rate=1
+        s.subtitledelay=0
+    end
 
     if item then
         s.length=math.floor(item:duration())
@@ -480,9 +521,9 @@ getstatus = function (includecategories)
     s.videoeffects.gamma=round(vlc.config.get("gamma"),2)
 
     s.state=vlc.playlist.status()
-    s.random = vlc.playlist.get_random()
-    s.loop = vlc.playlist.get_loop()
-    s["repeat"] = vlc.playlist.get_repeat()
+    s.random=vlc.var.get(playlist,"random")
+    s.loop=vlc.var.get(playlist,"loop")
+    s["repeat"]=vlc.var.get(playlist,"repeat")
 
     s.equalizer={}
     s.equalizer.preamp=round(vlc.equalizer.preampget(),2)
@@ -516,25 +557,16 @@ getstatus = function (includecategories)
             s.stats[tag]=v
         end
 
-        s.information.chapter = vlc.player.get_chapter_index()
-        s.information.title = vlc.player.get_title_index()
+        s.information.chapter=vlc.var.get(input, "chapter")
+        s.information.title=vlc.var.get(input, "title")
 
-        s.information.chapters_count = vlc.player.get_chapters_count()
-        s.information.titles_count = vlc.player.get_titles_count()
+        s.information.chapters=vlc.var.get_list(input, "chapter")
+        s.information.titles=vlc.var.get_list(input, "title")
 
     end
     return s
 end
 httprequests.getstatus = getstatus
-
-get_renderers = function()
-    local rd = get_renderer_discovery()
-    if not rd then
-        return {}
-    end
-    return rd:list()
-end
-httprequests.get_renderers = get_renderers
 
 _G.httprequests = httprequests
 return httprequests

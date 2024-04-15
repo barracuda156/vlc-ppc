@@ -2,6 +2,7 @@
  * headers.c: Test for public headers usability
  *****************************************************************************
  * Copyright (C) 2007 Rémi Denis-Courmont
+ * $Id: 7c396c843980b50b3d00ef5236bde6d61d7dea1f $
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -25,10 +26,10 @@
 
 #define PACKAGE "vlc"
 
-/* Because we are from src/ LIBVLC_INTERNAL_ is defined, but we don't want that,
+/* Because we are from src/ __LIBVLC__ is defined, but we don't want that,
  * as we act here as a third-party program just linking to libvlc */
-#ifdef LIBVLC_INTERNAL_
-# undef LIBVLC_INTERNAL_
+#ifdef __LIBVLC__
+# undef __LIBVLC__
 #endif
 
 #include <vlc/vlc.h>
@@ -37,9 +38,11 @@
 #include <vlc/libvlc_events.h>
 #include <vlc/libvlc_media.h>
 #include <vlc/libvlc_media_discoverer.h>
+#include <vlc/libvlc_media_library.h>
 #include <vlc/libvlc_media_list.h>
 #include <vlc/libvlc_media_list_player.h>
 #include <vlc/libvlc_media_player.h>
+#include <vlc/libvlc_vlm.h>
 
 #include <stdio.h>
 

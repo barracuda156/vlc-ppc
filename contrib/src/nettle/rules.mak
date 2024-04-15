@@ -3,17 +3,15 @@
 NETTLE_VERSION := 3.7.3
 NETTLE_URL := $(GNU)/nettle/nettle-$(NETTLE_VERSION).tar.gz
 
-ifeq ($(call need_pkg,"nettle >= 3.4.1"),)
+ifeq ($(call need_pkg,"nettle >= 2.7"),)
 PKGS_FOUND += nettle
 endif
 
 ifdef HAVE_WIN32
-NETTLE_CONF += --disable-pic
 ifeq ($(ARCH),arm)
 NETTLE_CONF += --disable-assembler
 endif
 endif
-NETTLE_CONF += --disable-documentation
 
 $(TARBALLS)/nettle-$(NETTLE_VERSION).tar.gz:
 	$(call download_pkg,$(NETTLE_URL),nettle)
@@ -32,7 +30,6 @@ ifndef GPL
 	$(REQUIRE_GNUV3)
 endif
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(NETTLE_CONF)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) $(NETTLE_CONF)
+	cd $< && $(MAKE) install
 	touch $@

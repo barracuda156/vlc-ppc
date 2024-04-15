@@ -4,6 +4,7 @@
  *****************************************************************************
  * Copyright (C) 2003 ANEVIA
  * Copyright (C) 2003-2009 VLC authors and VideoLAN
+ * $Id: beb8e26d5a62fd2d20397b0badab4cfe2e0e8d6e $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Damien LUCAS <damien.lucas@anevia.com>
@@ -111,7 +112,7 @@ static void Flush( decoder_t * );
 
 #ifdef ENABLE_SOUT
 static int OpenEncoder  ( vlc_object_t * );
-static void CloseEncoder( encoder_t * );
+static void CloseEncoder( vlc_object_t * );
 static block_t *Encode  ( encoder_t *, subpicture_t * );
 #endif
 
@@ -120,23 +121,24 @@ vlc_module_begin ()
     set_description( N_("DVB subtitles decoder") )
     set_shortname( N_("DVB subtitles") )
     set_capability( "spu decoder", 80 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
     set_callbacks( Open, Close )
 
-    add_integer( DVBSUB_CFG_PREFIX "position", 8, POS_TEXT, POS_LONGTEXT )
+    add_integer( DVBSUB_CFG_PREFIX "position", 8, POS_TEXT, POS_LONGTEXT, true )
         change_integer_list( pi_pos_values, ppsz_pos_descriptions )
-    add_integer( DVBSUB_CFG_PREFIX "x", -1, POSX_TEXT, POSX_LONGTEXT )
-    add_integer( DVBSUB_CFG_PREFIX "y", -1, POSY_TEXT, POSY_LONGTEXT )
+    add_integer( DVBSUB_CFG_PREFIX "x", -1, POSX_TEXT, POSX_LONGTEXT, false )
+    add_integer( DVBSUB_CFG_PREFIX "y", -1, POSY_TEXT, POSY_LONGTEXT, false )
 
 #ifdef ENABLE_SOUT
 #   define ENC_CFG_PREFIX "sout-dvbsub-"
     add_submodule ()
     set_description( N_("DVB subtitles encoder") )
-    set_capability( "spu encoder", 100 )
-    set_callback( OpenEncoder )
+    set_capability( "encoder", 100 )
+    set_callbacks( OpenEncoder, CloseEncoder )
 
-    add_integer( ENC_CFG_PREFIX "x", -1, ENC_POSX_TEXT, ENC_POSX_LONGTEXT )
-    add_integer( ENC_CFG_PREFIX "y", -1, ENC_POSY_TEXT, ENC_POSY_LONGTEXT )
+    add_integer( ENC_CFG_PREFIX "x", -1, ENC_POSX_TEXT, ENC_POSX_LONGTEXT, false )
+    add_integer( ENC_CFG_PREFIX "y", -1, ENC_POSY_TEXT, ENC_POSY_LONGTEXT, false )
 #endif
 vlc_module_end ()
 
@@ -202,7 +204,7 @@ typedef struct dvbsub_clut_s
 
 } dvbsub_clut_t;
 
-/* The Region is an area on the image [7.2.3]
+/* The Region is an aera on the image [7.2.3]
  * with a list of the object definitions associated and a CLUT */
 typedef struct dvbsub_region_s
 {
@@ -247,7 +249,7 @@ typedef struct
 
 } dvbsub_page_t;
 
-typedef struct
+struct decoder_sys_t
 {
     bs_t               bs;
 
@@ -268,7 +270,7 @@ typedef struct
     /* this is very small, so keep forever */
     dvbsub_display_t   display;
     dvbsub_clut_t      default_clut;
-} decoder_sys_t;
+};
 
 
 /* List of different SEGMENT TYPES */
@@ -303,11 +305,11 @@ typedef struct
  * Local prototypes
  *****************************************************************************/
 static void decode_segment( decoder_t *, bs_t * );
-static void decode_page_composition( decoder_t *, bs_t *, uint16_t );
-static void decode_region_composition( decoder_t *, bs_t *, uint16_t );
-static void decode_object( decoder_t *, bs_t *, uint16_t );
-static void decode_display_definition( decoder_t *, bs_t *, uint16_t );
-static void decode_clut( decoder_t *, bs_t *, uint16_t );
+static void decode_page_composition( decoder_t *, bs_t * );
+static void decode_region_composition( decoder_t *, bs_t * );
+static void decode_object( decoder_t *, bs_t * );
+static void decode_display_definition( decoder_t *, bs_t * );
+static void decode_clut( decoder_t *, bs_t * );
 static void free_all( decoder_t * );
 
 static void default_clut_init( decoder_t * );
@@ -327,7 +329,7 @@ static int Open( vlc_object_t *p_this )
     decoder_sys_t *p_sys;
     int i_posx, i_posy;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_DVBS )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_DVBS )
     {
         return VLC_EGENERIC;
     }
@@ -339,8 +341,8 @@ static int Open( vlc_object_t *p_this )
         return VLC_ENOMEM;
 
     p_sys->i_pts          = VLC_TICK_INVALID;
-    p_sys->i_id           = p_dec->fmt_in->subs.dvb.i_id & 0xFFFF;
-    p_sys->i_ancillary_id = p_dec->fmt_in->subs.dvb.i_id >> 16;
+    p_sys->i_id           = p_dec->fmt_in.subs.dvb.i_id & 0xFFFF;
+    p_sys->i_ancillary_id = p_dec->fmt_in.subs.dvb.i_id >> 16;
 
     p_sys->p_regions      = NULL;
     p_sys->p_cluts        = NULL;
@@ -424,7 +426,7 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
         default_dds_init( p_dec );
 
     p_sys->i_pts = p_block->i_pts;
-    if( p_sys->i_pts == VLC_TICK_INVALID )
+    if( p_sys->i_pts <= VLC_TICK_INVALID )
     {
 #ifdef DEBUG_DVBSUB
         /* Some DVB channels send stuffing segments in non-dated packets so
@@ -456,15 +458,12 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
 #endif
 
     p_sys->b_page = false;
-
-    uint8_t i_sync_byte = bs_read( &p_sys->bs, 8 );
-    while( i_sync_byte == 0x0f ) /* Sync byte */
+    while( bs_show( &p_sys->bs, 8 ) == 0x0f ) /* Sync byte */
     {
         decode_segment( p_dec, &p_sys->bs );
-        i_sync_byte = bs_read( &p_sys->bs, 8 );
     }
 
-    if( ( i_sync_byte & 0x3f ) != 0x3f ) /* End marker */
+    if( ( bs_read( &p_sys->bs, 8 ) & 0x3f ) != 0x3f ) /* End marker */
     {
         msg_Warn( p_dec, "end marker not found (corrupted subtitle ?)" );
         block_Release( p_block );
@@ -557,7 +556,7 @@ static void decode_segment( decoder_t *p_dec, bs_t *s )
     int i_size;
 
     /* sync_byte (already checked) */
-    //bs_skip( s, 8 );
+    bs_skip( s, 8 );
 
     /* segment type */
     i_type = bs_read( s, 8 );
@@ -566,7 +565,7 @@ static void decode_segment( decoder_t *p_dec, bs_t *s )
     i_page_id = bs_read( s, 16 );
 
     /* segment size */
-    i_size = bs_read( s, 16 );
+    i_size = bs_show( s, 16 );
 
     if( ( i_page_id != p_sys->i_id ) &&
         ( i_page_id != p_sys->i_ancillary_id ) )
@@ -575,7 +574,7 @@ static void decode_segment( decoder_t *p_dec, bs_t *s )
         msg_Dbg( p_dec, "subtitle skipped (page id: %i, %i)",
                  i_page_id, p_sys->i_id );
 #endif
-        bs_skip( s,  8 * i_size );
+        bs_skip( s,  8 * ( 2 + i_size ) );
         return;
     }
 
@@ -586,7 +585,7 @@ static void decode_segment( decoder_t *p_dec, bs_t *s )
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "skipped invalid ancillary subtitle packet" );
 #endif
-        bs_skip( s,  8 * i_size );
+        bs_skip( s,  8 * ( 2 + i_size ) );
         return;
     }
 
@@ -603,65 +602,67 @@ static void decode_segment( decoder_t *p_dec, bs_t *s )
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "decode_page_composition" );
 #endif
-        decode_page_composition( p_dec, s, i_size );
+        decode_page_composition( p_dec, s );
         break;
 
     case DVBSUB_ST_REGION_COMPOSITION:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "decode_region_composition" );
 #endif
-        decode_region_composition( p_dec, s, i_size );
+        decode_region_composition( p_dec, s );
         break;
 
     case DVBSUB_ST_CLUT_DEFINITION:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "decode_clut" );
 #endif
-        decode_clut( p_dec, s, i_size );
+        decode_clut( p_dec, s );
         break;
 
     case DVBSUB_ST_OBJECT_DATA:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "decode_object" );
 #endif
-        decode_object( p_dec, s, i_size );
+        decode_object( p_dec, s );
         break;
 
     case DVBSUB_ST_DISPLAY_DEFINITION:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "decode_display_definition" );
 #endif
-        decode_display_definition( p_dec, s, i_size );
+        decode_display_definition( p_dec, s );
         break;
 
     case DVBSUB_ST_ENDOFDISPLAY:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "end of display" );
 #endif
-        bs_skip( s,  8 * i_size );
+        bs_skip( s,  8 * ( 2 + i_size ) );
         break;
 
     case DVBSUB_ST_STUFFING:
 #ifdef DEBUG_DVBSUB
         msg_Dbg( p_dec, "skip stuffing" );
 #endif
-        bs_skip( s,  8 * i_size );
+        bs_skip( s,  8 * ( 2 + i_size ) );
         break;
 
     default:
         msg_Warn( p_dec, "unsupported segment type: (%04x)", i_type );
-        bs_skip( s,  8 * i_size );
+        bs_skip( s,  8 * ( 2 + i_size ) );
         break;
     }
 }
 
-static void decode_clut( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
+static void decode_clut( decoder_t *p_dec, bs_t *s )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
+    uint16_t      i_segment_length;
     uint16_t      i_processed_length;
     dvbsub_clut_t *p_clut, *p_next;
     int           i_id, i_version;
 
+    i_segment_length = bs_read( s, 16 );
     i_id             = bs_read( s, 8 );
     i_version        = bs_read( s, 4 );
 
@@ -762,12 +763,13 @@ static void decode_clut( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
     }
 }
 
-static void decode_page_composition( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
+static void decode_page_composition( decoder_t *p_dec, bs_t *s )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    int i_version, i_state, i_timeout, i;
+    int i_version, i_state, i_segment_length, i_timeout, i;
 
     /* A page is composed by 0 or more region */
+    i_segment_length = bs_read( s, 16 );
     i_timeout = bs_read( s, 8 );
     i_version = bs_read( s, 4 );
     i_state = bs_read( s, 2 );
@@ -853,15 +855,16 @@ static void decode_page_composition( decoder_t *p_dec, bs_t *s, uint16_t i_segme
     }
 }
 
-static void decode_region_composition( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
+static void decode_region_composition( decoder_t *p_dec, bs_t *s )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     dvbsub_region_t *p_region, **pp_region = &p_sys->p_regions;
-    int i_processed_length, i_id, i_version;
+    int i_segment_length, i_processed_length, i_id, i_version;
     int i_width, i_height, i_level_comp, i_depth, i_clut;
     int i_8_bg, i_4_bg, i_2_bg;
     bool b_fill;
 
+    i_segment_length = bs_read( s, 16 );
     i_id = bs_read( s, 8 );
     i_version = bs_read( s, 4 );
 
@@ -992,12 +995,14 @@ static void decode_region_composition( decoder_t *p_dec, bs_t *s, uint16_t i_seg
 }
 
 /* ETSI 300 743 [7.2.1] */
-static void decode_display_definition( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
+static void decode_display_definition( decoder_t *p_dec, bs_t *s )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
+    uint16_t      i_segment_length;
     uint16_t      i_processed_length = 40;
     int           i_version;
 
+    i_segment_length = bs_read( s, 16 );
     i_version        = bs_read( s, 4 );
 
     /* Check version number */
@@ -1062,15 +1067,16 @@ static void dvbsub_pdata2bpp( bs_t *, uint8_t *, int, int * );
 static void dvbsub_pdata4bpp( bs_t *, uint8_t *, int, int * );
 static void dvbsub_pdata8bpp( bs_t *, uint8_t *, int, int * );
 
-static void decode_object( decoder_t *p_dec, bs_t *s, uint16_t i_segment_length )
+static void decode_object( decoder_t *p_dec, bs_t *s )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     dvbsub_region_t *p_region;
-    int i_coding_method, i_id, i;
+    int i_segment_length, i_coding_method, i_id, i;
 
-    /* ETSI 300-743 v1.5.1 section 7.2.5 'Object data segment'
-     * sync_byte, segment_type, page_id and i_segment_length have already been processed.
+    /* ETSI 300-743 paragraph 7.2.4
+     * sync_byte, segment_type and page_id have already been processed.
      */
+    i_segment_length = bs_read( s, 16 );
     i_id             = bs_read( s, 16 );
     bs_skip( s, 4 ); /* version */
     i_coding_method  = bs_read( s, 2 );
@@ -1342,12 +1348,15 @@ static void dvbsub_pdata4bpp( bs_t *s, uint8_t *p, int i_width, int *pi_off )
         {
             if( bs_read( s, 1 ) == 0x00 )           // Switch1
             {
-                i_count = bs_read( s, 3 );
-                if( i_count != 0x00 )
+                if( bs_show( s, 3 ) != 0x00 )
                 {
-                    i_count += 2;
+                    i_count = 2 + bs_read( s, 3 );
                 }
-                else b_stop = true;
+                else
+                {
+                    bs_skip( s, 3 );
+                    b_stop = true;
+                }
             }
             else
             {
@@ -1411,9 +1420,15 @@ static void dvbsub_pdata8bpp( bs_t *s, uint8_t *p, int i_width, int *pi_off )
         {
             if( bs_read( s, 1 ) == 0x00 )           // Switch1
             {
-                i_count = bs_read( s, 7 );
-                if( i_count == 0x00 )
+                if( bs_show( s, 7 ) != 0x00 )
+                {
+                    i_count = bs_read( s, 7 );
+                }
+                else
+                {
+                    bs_skip( s, 7 );
                     b_stop = true;
+                }
             }
             else
             {
@@ -1667,13 +1682,13 @@ typedef struct encoder_region_t
 
 } encoder_region_t;
 
-typedef struct
+struct encoder_sys_t
 {
     unsigned int i_page_ver;
     unsigned int i_region_ver;
     unsigned int i_clut_ver;
 
-    unsigned int i_regions;
+    int i_regions;
     encoder_region_t *p_regions;
 
     vlc_tick_t i_pts;
@@ -1681,7 +1696,7 @@ typedef struct
     /* subpicture positioning */
     int i_offset_x;
     int i_offset_y;
-} encoder_sys_t;
+};
 
 #ifdef ENABLE_SOUT
 static void encode_page_composition( encoder_t *, bs_t *, subpicture_t * );
@@ -1708,6 +1723,7 @@ static int OpenEncoder( vlc_object_t *p_this )
         return VLC_ENOMEM;
     p_enc->p_sys = p_sys;
 
+    p_enc->pf_encode_sub = Encode;
     p_enc->fmt_out.i_codec = VLC_CODEC_DVBS;
     p_enc->fmt_out.subs.dvb.i_id  = 1 << 16 | 1;
 
@@ -1721,13 +1737,6 @@ static int OpenEncoder( vlc_object_t *p_this )
 
     p_sys->i_offset_x = var_CreateGetInteger( p_this, ENC_CFG_PREFIX "x" );
     p_sys->i_offset_y = var_CreateGetInteger( p_this, ENC_CFG_PREFIX "y" );
-
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = CloseEncoder,
-        .encode_sub = Encode,
-    };
-    p_enc->ops = &ops;
 
     return VLC_SUCCESS;
 }
@@ -2037,7 +2046,7 @@ static block_t *Encode( encoder_t *p_enc, subpicture_t *p_subpic )
         p_block_stop->i_buffer = bs_pos( s ) / 8;
         p_block_stop->i_pts = p_block_stop->i_dts = p_subpic->i_stop;
         block_ChainAppend( &p_block, p_block_stop );
-        p_block_stop->i_length = VLC_TICK_FROM_MS(100); /* p_subpic->i_stop - p_subpic->i_start; */
+        p_block_stop->i_length = 100000; /* p_subpic->i_stop - p_subpic->i_start; */
     }
 #ifdef DEBUG_DVBSUB
     msg_Dbg( p_enc, "subpicture encoded properly" );
@@ -2048,12 +2057,14 @@ static block_t *Encode( encoder_t *p_enc, subpicture_t *p_subpic )
 /*****************************************************************************
  * CloseEncoder: encoder destruction
  *****************************************************************************/
-static void CloseEncoder( encoder_t *p_enc )
+static void CloseEncoder( vlc_object_t *p_this )
 {
+    encoder_t *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys = p_enc->p_sys;
 
-    var_Destroy( p_enc , ENC_CFG_PREFIX "x" );
-    var_Destroy( p_enc , ENC_CFG_PREFIX "y" );
+    var_Destroy( p_this , ENC_CFG_PREFIX "x" );
+    var_Destroy( p_this , ENC_CFG_PREFIX "y" );
+    var_Destroy( p_this , ENC_CFG_PREFIX "timeout" );
 
     if( p_sys->i_regions ) free( p_sys->p_regions );
     free( p_sys );
@@ -2065,8 +2076,7 @@ static void encode_page_composition( encoder_t *p_enc, bs_t *s,
     encoder_sys_t *p_sys = p_enc->p_sys;
     subpicture_region_t *p_region;
     bool b_mode_change = false;
-    unsigned int i_regions;
-    int i_timeout;
+    int i_regions, i_timeout;
 
     bs_write( s, 8, 0x0f ); /* Sync byte */
     bs_write( s, 8, DVBSUB_ST_PAGE_COMPOSITION ); /* Segment type */
@@ -2090,7 +2100,7 @@ static void encode_page_composition( encoder_t *p_enc, bs_t *s,
               (int)p_region->fmt.i_visible_width ) )
         {
             b_mode_change = true;
-            msg_Dbg( p_enc, "region %u width change: %i -> %i",
+            msg_Dbg( p_enc, "region %i width change: %i -> %i",
                      i_regions, p_sys->p_regions[i_regions].i_width,
                      p_region->fmt.i_visible_width );
             p_sys->p_regions[i_regions].i_width =
@@ -2100,7 +2110,7 @@ static void encode_page_composition( encoder_t *p_enc, bs_t *s,
              (int)p_region->fmt.i_visible_height )
         {
             b_mode_change = true;
-            msg_Dbg( p_enc, "region %u height change: %i -> %i",
+            msg_Dbg( p_enc, "region %i height change: %i -> %i",
                      i_regions, p_sys->p_regions[i_regions].i_height,
                      p_region->fmt.i_visible_height );
             p_sys->p_regions[i_regions].i_height =
@@ -2114,7 +2124,7 @@ static void encode_page_composition( encoder_t *p_enc, bs_t *s,
     if( p_subpic && !p_subpic->b_ephemer &&
         ( p_subpic->i_stop > p_subpic->i_start ) )
     {
-        i_timeout = SEC_FROM_VLC_TICK(p_subpic->i_stop - p_subpic->i_start);
+        i_timeout = (p_subpic->i_stop - p_subpic->i_start) / 1000000;
     }
 
     bs_write( s, 8, i_timeout ); /* Timeout */

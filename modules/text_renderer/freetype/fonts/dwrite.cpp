@@ -2,6 +2,7 @@
  * dwrite.cpp : DirectWrite font functions
  *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id: 21711a31b853726b3b03023aa40a7c285c5a5573 $
  *
  * Authors: Salah-Eddin Shaban <salah@videolan.org>
  *
@@ -35,7 +36,6 @@
 #include <regex>
 
 #include "../platform_fonts.h"
-#include "backends.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace std;
@@ -57,28 +57,30 @@ struct dw_sys_t
     dw_sys_t( HMODULE p_dw_dll ) : p_dw_dll( p_dw_dll )
     {
         /* This will fail on versions of Windows prior to 8.1 */
-        DWriteCreateFactoryProc pf;
-#ifdef VLC_WINSTORE_APP
-        pf = DWriteCreateFactory;
+#if VLC_WINSTORE_APP
+        if( DWriteCreateFactory( DWRITE_FACTORY_TYPE_SHARED, __uuidof( IDWriteFactory2 ),
+                reinterpret_cast<IUnknown **>( p_dw_factory.GetAddressOf() ) ) )
+            throw runtime_error( "failed to create DWrite factory" );
 #else
-        pf = ( DWriteCreateFactoryProc ) GetProcAddress( p_dw_dll, "DWriteCreateFactory" );
+        DWriteCreateFactoryProc pf =
+                ( DWriteCreateFactoryProc ) GetProcAddress( p_dw_dll, "DWriteCreateFactory" );
 
         if( pf == NULL )
             throw runtime_error( "GetProcAddress() failed" );
-#endif
 
         if( pf( DWRITE_FACTORY_TYPE_SHARED, __uuidof( IDWriteFactory2 ),
-                &p_dw_factory ) )
+                reinterpret_cast<IUnknown **>( p_dw_factory.GetAddressOf() ) ) )
             throw runtime_error( "failed to create DWrite factory" );
+#endif
 
-        if( p_dw_factory->GetSystemFontCollection( &p_dw_system_fonts ) )
+        if( p_dw_factory->GetSystemFontCollection( p_dw_system_fonts.GetAddressOf() ) )
             throw runtime_error( "GetSystemFontCollection() failed" );
 
-        if( p_dw_factory->GetSystemFontFallback( &p_dw_fallbacks ) )
+        if( p_dw_factory->GetSystemFontFallback( p_dw_fallbacks.GetAddressOf() ) )
             throw runtime_error( "GetSystemFontFallback() failed" );
 
         if( p_dw_factory->CreateNumberSubstitution( DWRITE_NUMBER_SUBSTITUTION_METHOD_CONTEXTUAL,
-                L"en-US", true, &p_dw_substitution ) )
+                L"en-US", true, p_dw_substitution.GetAddressOf() ) )
             throw runtime_error( "CreateNumberSubstitution() failed" );
     }
 
@@ -94,32 +96,6 @@ struct dw_sys_t
     }
 };
 
-static const struct
-{
-    const char *psz_generic;
-    const char *psz_local;
-}
-DWriteGenericMapping[] =
-{
-    { "cursive",   "comic sans ms" },
-    { "fantasy",   "impact" },
-    { "monospace", "courier new" },
-    { "sans",      "arial" },
-    { "sans-serif","arial" },
-    { "serif",     "times new roman" },
-    { "system-ui", "ms ui gothic" },
-};
-
-static const char *DWrite_TranslateGenericFamily( const char *psz_family )
-{
-    for( size_t i=0; i<ARRAY_SIZE(DWriteGenericMapping); i++ )
-    {
-        if( !strcasecmp( DWriteGenericMapping[i].psz_generic, psz_family ) )
-            return DWriteGenericMapping[i].psz_local;
-    }
-    return psz_family;
-}
-
 static inline void AppendFamily( vlc_family_t **pp_list, vlc_family_t *p_family )
 {
     while( *pp_list )
@@ -128,14 +104,14 @@ static inline void AppendFamily( vlc_family_t **pp_list, vlc_family_t *p_family 
     *pp_list = p_family;
 }
 
-extern "C" int InitDWrite( vlc_font_select_t *fs )
+extern "C" int InitDWrite( filter_t *p_filter )
 {
     dw_sys_t *p_dw_sys;
     HMODULE p_dw_dll = NULL;
 
     try
     {
-#ifdef VLC_WINSTORE_APP
+#if VLC_WINSTORE_APP
         p_dw_sys = new dw_sys_t( p_dw_dll );
 #else
         p_dw_dll = LoadLibrary( TEXT( "Dwrite.dll" ) );
@@ -147,26 +123,27 @@ extern "C" int InitDWrite( vlc_font_select_t *fs )
     }
     catch( const exception &e )
     {
-#ifndef VLC_WINSTORE_APP
+#if !VLC_WINSTORE_APP
         FreeLibrary( p_dw_dll );
         (void)e;
 #else
-        msg_Err( fs->p_obj, "InitDWrite(): %s", e.what() );
+        msg_Err( p_filter, "InitDWrite(): %s", e.what() );
 #endif
 
         return VLC_EGENERIC;
     }
 
-    fs->p_dw_sys = p_dw_sys;
-    msg_Dbg( fs->p_obj, "Using DWrite backend" );
+    p_filter->p_sys->p_dw_sys = p_dw_sys;
+    msg_Dbg( p_filter, "Using DWrite backend" );
     return VLC_SUCCESS;
 }
 
-extern "C" int ReleaseDWrite( vlc_font_select_t *fs )
+extern "C" int ReleaseDWrite( filter_t *p_filter )
 {
-    dw_sys_t *p_dw_sys = ( dw_sys_t * ) fs->p_dw_sys;
+    filter_sys_t *p_sys = p_filter->p_sys;
+    dw_sys_t *p_dw_sys = ( dw_sys_t * ) p_sys->p_dw_sys;
 
-#ifdef VLC_WINSTORE_APP
+#if VLC_WINSTORE_APP
     delete p_dw_sys;
 #else
     HMODULE p_dw_dll = NULL;
@@ -180,12 +157,12 @@ extern "C" int ReleaseDWrite( vlc_font_select_t *fs )
     return VLC_SUCCESS;
 }
 
-extern "C" int DWrite_GetFontStream( vlc_font_select_t *fs, int i_index, FT_Stream *pp_stream )
+extern "C" int DWrite_GetFontStream( filter_t *p_filter, int i_index, FT_Stream *pp_stream )
 {
-    dw_sys_t *p_dw_sys = ( dw_sys_t * ) fs->p_dw_sys;
+    dw_sys_t *p_dw_sys = ( dw_sys_t * ) p_filter->p_sys->p_dw_sys;
 
     if( i_index < 0 || i_index >= ( int ) p_dw_sys->streams.size() )
-        return VLC_EINVAL;
+        return VLC_ENOITEM;
 
     *pp_stream = p_dw_sys->streams.at( i_index );
 
@@ -234,15 +211,16 @@ extern "C" void DWrite_Close( FT_Stream )
 
 class TextSource : public IDWriteTextAnalysisSource
 {
+    IDWriteFactory              *mp_factory;
     IDWriteNumberSubstitution   *mp_substitution;
     wchar_t                      mpwsz_text[ 3 ];
     uint32_t                     mi_text_length;
     LONG                         ml_ref_count;
 
 public:
-    TextSource( IDWriteNumberSubstitution *p_substitution,
+    TextSource( IDWriteFactory *p_factory, IDWriteNumberSubstitution *p_substitution,
                 const wchar_t *pwsz_text, uint32_t i_text_length )
-              : mp_substitution( p_substitution ), ml_ref_count( 0 )
+              : mp_factory( p_factory ), mp_substitution( p_substitution ), ml_ref_count( 0 )
     {
         memset( mpwsz_text, 0, sizeof( mpwsz_text ) );
         mi_text_length = i_text_length < 2 ? i_text_length : 2;
@@ -353,7 +331,7 @@ static wstring SanitizeName( const wstring &name )
  * Also used for face names, in which case Thin will match Thin,
  * Thin Italic, Thin Oblique...
  */
-static bool DWrite_PartialMatch( vlc_font_select_t *fs, const wstring &full_name,
+static bool DWrite_PartialMatch( filter_t *p_filter, const wstring &full_name,
                                  const wstring &partial_name, wstring *p_unmatched = nullptr )
 {
     auto pattern = wstring{ L"^" } + SanitizeName( partial_name ) + wstring{ L"\\s*(.*)$" };
@@ -364,7 +342,7 @@ static bool DWrite_PartialMatch( vlc_font_select_t *fs, const wstring &full_name
     if( !regex_match( full_name, match, rx ) )
         return false;
 
-    msg_Dbg( fs->p_obj, "DWrite_PartialMatch(): %S matches %S", full_name.c_str(), partial_name.c_str() );
+    msg_Dbg( p_filter, "DWrite_PartialMatch(): %S matches %S", full_name.c_str(), partial_name.c_str() );
 
     if( p_unmatched )
         *p_unmatched = match[ 1 ].str();
@@ -377,14 +355,31 @@ static bool DWrite_PartialMatch( vlc_font_select_t *fs, const wstring &full_name
  * The 3 locales tested are en-US and the user and system default locales. b_partial determines
  * which parameter has the partial string, p_names or name.
  */
-static bool DWrite_PartialMatch( vlc_font_select_t *fs, ComPtr< IDWriteLocalizedStrings > &p_names,
+static bool DWrite_PartialMatch( filter_t *p_filter, ComPtr< IDWriteLocalizedStrings > &p_names,
                                  const wstring &name, bool b_partial, wstring *p_unmatched = nullptr )
 {
     wchar_t buff_sys[ LOCALE_NAME_MAX_LENGTH ] = {};
     wchar_t buff_usr[ LOCALE_NAME_MAX_LENGTH ] = {};
 
+#if _WIN32_WINNT < _WIN32_WINNT_VISTA
+    HMODULE h_dll = GetModuleHandle(_T("kernel32.dll"));
+
+    typedef int ( WINAPI *GetUserDefaultLocaleName )( LPWSTR lpLocaleName, int cchLocaleName );
+    GetUserDefaultLocaleName OurGetUserDefaultLocaleName =
+        (GetUserDefaultLocaleName) GetProcAddress( h_dll, "GetUserDefaultLocaleName" );
+
+    typedef int ( WINAPI *GetSystemDefaultLocaleName )( LPWSTR lpLocaleName, int cchLocaleName );
+    GetSystemDefaultLocaleName OurGetSystemDefaultLocaleName =
+        (GetSystemDefaultLocaleName) GetProcAddress( h_dll, "GetSystemDefaultLocaleName" );
+
+    if( OurGetSystemDefaultLocaleName )
+        OurGetSystemDefaultLocaleName( buff_sys, LOCALE_NAME_MAX_LENGTH );
+    if( OurGetUserDefaultLocaleName )
+        OurGetUserDefaultLocaleName( buff_usr, LOCALE_NAME_MAX_LENGTH );
+#else
     GetSystemDefaultLocaleName( buff_sys, LOCALE_NAME_MAX_LENGTH );
     GetUserDefaultLocaleName( buff_usr, LOCALE_NAME_MAX_LENGTH );
+#endif
 
     const wchar_t *pp_locales[] = { L"en-US", buff_sys, buff_usr };
 
@@ -413,9 +408,9 @@ static bool DWrite_PartialMatch( vlc_font_select_t *fs, ComPtr< IDWriteLocalized
                     {
                         bool b_result;
                         if( b_partial )
-                            b_result = DWrite_PartialMatch( fs, locale_name, name, p_unmatched );
+                            b_result = DWrite_PartialMatch( p_filter, locale_name, name, p_unmatched );
                         else
-                            b_result = DWrite_PartialMatch( fs, name, locale_name, p_unmatched );
+                            b_result = DWrite_PartialMatch( p_filter, name, locale_name, p_unmatched );
 
                         if( b_result )
                             return true;
@@ -431,7 +426,7 @@ static bool DWrite_PartialMatch( vlc_font_select_t *fs, ComPtr< IDWriteLocalized
     return false;
 }
 
-static vector< ComPtr< IDWriteFont > > DWrite_GetFonts( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_family,
+static vector< ComPtr< IDWriteFont > > DWrite_GetFonts( filter_t *p_filter, IDWriteFontFamily *p_dw_family,
                                                         const wstring &face_name )
 {
     vector< ComPtr< IDWriteFont > > result;
@@ -444,13 +439,13 @@ static vector< ComPtr< IDWriteFont > > DWrite_GetFonts( vlc_font_select_t *fs, I
             ComPtr< IDWriteFont > p_dw_font;
             ComPtr< IDWriteLocalizedStrings > p_dw_names;
 
-            if( FAILED( p_dw_family->GetFont( i, &p_dw_font ) ) )
+            if( FAILED( p_dw_family->GetFont( i, p_dw_font.GetAddressOf() ) ) )
                 throw runtime_error( "GetFont() failed" );
 
-            if( FAILED( p_dw_font->GetFaceNames( &p_dw_names ) ) )
+            if( FAILED( p_dw_font->GetFaceNames( p_dw_names.GetAddressOf() ) ) )
                 throw runtime_error( "GetFaceNames() failed" );
 
-            if( DWrite_PartialMatch( fs, p_dw_names, face_name, true ) )
+            if( DWrite_PartialMatch( p_filter, p_dw_names, face_name, true ) )
                 result.push_back( p_dw_font );
         }
     }
@@ -478,7 +473,7 @@ static vector< ComPtr< IDWriteFont > > DWrite_GetFonts( vlc_font_select_t *fs, I
                 break;
             }
 
-            if( FAILED( p_dw_family->GetFirstMatchingFont( weight, DWRITE_FONT_STRETCH_NORMAL, style, &p_dw_font ) ) )
+            if( FAILED( p_dw_family->GetFirstMatchingFont( weight, DWRITE_FONT_STRETCH_NORMAL, style, p_dw_font.GetAddressOf() ) ) )
                 throw runtime_error( "GetFirstMatchingFont() failed" );
 
             result.push_back( p_dw_font );
@@ -488,10 +483,10 @@ static vector< ComPtr< IDWriteFont > > DWrite_GetFonts( vlc_font_select_t *fs, I
     return result;
 }
 
-static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_family, const wstring &face_name,
+static void DWrite_ParseFamily( filter_t *p_filter, IDWriteFontFamily *p_dw_family, const wstring &face_name,
                                 vlc_family_t *p_family, vector< FT_Stream > &streams )
 {
-    vector< ComPtr< IDWriteFont > > fonts = DWrite_GetFonts( fs, p_dw_family, face_name );
+    vector< ComPtr< IDWriteFont > > fonts = DWrite_GetFonts( p_filter, p_dw_family, face_name );
 
     /*
      * We select at most 4 fonts to add to p_family, one for each style. So in case of
@@ -519,14 +514,14 @@ static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_f
             int i_weight = b_bold ? 700 : 400;
             if( abs( ( *pp_font )->GetWeight() - i_weight ) > abs( p_dw_font->GetWeight() - i_weight ) )
             {
-                msg_Dbg( fs->p_obj, "DWrite_ParseFamily(): using font at index %u with weight %u for bold: %d, italic: %d",
+                msg_Dbg( p_filter, "DWrite_ParseFamily(): using font at index %u with weight %u for bold: %d, italic: %d",
                          ( unsigned ) i, p_dw_font->GetWeight(), b_bold, b_italic );
                 *pp_font = p_dw_font.Get();
             }
         }
         else
         {
-            msg_Dbg( fs->p_obj, "DWrite_ParseFamily(): using font at index %u with weight %u for bold: %d, italic: %d",
+            msg_Dbg( p_filter, "DWrite_ParseFamily(): using font at index %u with weight %u for bold: %d, italic: %d",
                      ( unsigned ) i, p_dw_font->GetWeight(), b_bold, b_italic );
             *pp_font = p_dw_font.Get();
         }
@@ -543,13 +538,10 @@ static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_f
         if( !p_dw_font )
             continue;
 
-        int i_flags = 0;
-        if( i & 1 )
-            i_flags |= VLC_FONT_FLAG_BOLD;
-        if( i & 2 )
-            i_flags |= VLC_FONT_FLAG_ITALIC;
+        bool b_bold = i & 1;
+        bool b_italic = i & 2;
 
-        if( p_dw_font->CreateFontFace( &p_dw_face ) )
+        if( p_dw_font->CreateFontFace( p_dw_face.GetAddressOf() ) )
             throw runtime_error( "CreateFontFace() failed" );
 
         UINT32 i_num_files = 0;
@@ -557,12 +549,12 @@ static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_f
             throw runtime_error( "GetFiles() failed" );
 
         i_num_files = 1;
-        if( p_dw_face->GetFiles( &i_num_files, &p_dw_file ) )
+        if( p_dw_face->GetFiles( &i_num_files, p_dw_file.GetAddressOf() ) )
             throw runtime_error( "GetFiles() failed" );
 
         UINT32 i_font_index = p_dw_face->GetIndex();
 
-        if( p_dw_file->GetLoader( &p_dw_loader ) )
+        if( p_dw_file->GetLoader( p_dw_loader.GetAddressOf() ) )
             throw runtime_error( "GetLoader() failed" );
 
         const void  *key;
@@ -571,7 +563,7 @@ static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_f
             throw runtime_error( "GetReferenceKey() failed" );
 
         ComPtr< IDWriteFontFileStream > p_dw_stream;
-        if( p_dw_loader->CreateStreamFromKey( key, keySize, &p_dw_stream ) )
+        if( p_dw_loader->CreateStreamFromKey( key, keySize, p_dw_stream.GetAddressOf() ) )
             throw runtime_error( "CreateStreamFromKey() failed" );
 
         UINT64 i_stream_size;
@@ -594,58 +586,59 @@ static void DWrite_ParseFamily( vlc_font_select_t *fs, IDWriteFontFamily *p_dw_f
         if( asprintf( &psz_font_path, ":dw/%d", ( int ) streams.size() - 1 ) < 0 )
             throw bad_alloc();
 
-        NewFont( psz_font_path, i_font_index, i_flags, p_family );
+        NewFont( psz_font_path, i_font_index, b_bold, b_italic, p_family );
     }
 }
 
-extern "C" int DWrite_GetFamily( vlc_font_select_t *fs, const char *psz_lcname,
-                                 const vlc_family_t **pp_result )
+extern "C" const vlc_family_t *DWrite_GetFamily( filter_t *p_filter, const char *psz_family )
 {
-    dw_sys_t                     *p_dw_sys     = ( dw_sys_t * ) fs->p_dw_sys;
+    filter_sys_t                 *p_sys        = p_filter->p_sys;
+    dw_sys_t                     *p_dw_sys     = ( dw_sys_t * ) p_sys->p_dw_sys;
     ComPtr< IDWriteFontFamily >   p_dw_family;
 
     UINT32 i_index;
     BOOL b_exists = false;
 
-    psz_lcname = DWrite_TranslateGenericFamily( psz_lcname );
+    char *psz_lc = ToLower( psz_family );
+    if( unlikely( !psz_lc ) )
+        return NULL;
 
     vlc_family_t *p_family =
-        ( vlc_family_t * ) vlc_dictionary_value_for_key( &fs->family_map, psz_lcname );
+        ( vlc_family_t * ) vlc_dictionary_value_for_key( &p_sys->family_map, psz_lc );
+
+    free( psz_lc );
 
     if( p_family )
-    {
-        *pp_result = p_family;
-        return VLC_SUCCESS;
-    }
+        return p_family;
 
-    p_family = NewFamily( fs, psz_lcname, &fs->p_families,
-                          &fs->family_map, psz_lcname );
+    p_family = NewFamily( p_filter, psz_family, &p_sys->p_families,
+                          &p_sys->family_map, psz_family );
 
     if( unlikely( !p_family ) )
-        return VLC_EGENERIC;
+        return NULL;
 
-    msg_Dbg( fs->p_obj, "DWrite_GetFamily(): family name: %s", psz_lcname );
+    msg_Dbg( p_filter, "DWrite_GetFamily(): family name: %s", psz_family );
 
-    wchar_t *pwsz_family = ToWide( psz_lcname );
+    wchar_t *pwsz_family = ToWide( psz_family );
     if( unlikely( !pwsz_family ) )
         goto done;
 
     /* Try to find an exact match first */
     if( SUCCEEDED( p_dw_sys->p_dw_system_fonts->FindFamilyName( pwsz_family, &i_index, &b_exists ) ) && b_exists )
     {
-        if( FAILED( p_dw_sys->p_dw_system_fonts->GetFontFamily( i_index, &p_dw_family ) ) )
+        if( FAILED( p_dw_sys->p_dw_system_fonts->GetFontFamily( i_index, p_dw_family.GetAddressOf() ) ) )
         {
-            msg_Err( fs->p_obj, "DWrite_GetFamily: GetFontFamily() failed" );
+            msg_Err( p_filter, "DWrite_GetFamily: GetFontFamily() failed" );
             goto done;
         }
 
         try
         {
-            DWrite_ParseFamily( fs, p_dw_family.Get(), wstring{}, p_family, p_dw_sys->streams );
+            DWrite_ParseFamily( p_filter, p_dw_family.Get(), wstring{}, p_family, p_dw_sys->streams );
         }
         catch( const exception &e )
         {
-            msg_Err( fs->p_obj, "DWrite_GetFamily(): %s", e.what() );
+            msg_Err( p_filter, "DWrite_GetFamily(): %s", e.what() );
             goto done;
         }
     }
@@ -669,28 +662,28 @@ extern "C" int DWrite_GetFamily( vlc_font_select_t *fs, const char *psz_lcname,
         for( i_index = 0; i_index < i_count; ++i_index )
         {
             ComPtr< IDWriteFontFamily > p_cur_family;
-            if( FAILED( p_dw_sys->p_dw_system_fonts->GetFontFamily( i_index, &p_cur_family ) ) )
+            if( FAILED( p_dw_sys->p_dw_system_fonts->GetFontFamily( i_index, p_cur_family.GetAddressOf() ) ) )
             {
-                msg_Err( fs->p_obj, "DWrite_GetFamily: GetFontFamily() failed" );
+                msg_Err( p_filter, "DWrite_GetFamily: GetFontFamily() failed" );
                 continue;
             }
 
-            if( FAILED( p_cur_family->GetFamilyNames( &p_names ) ) )
+            if( FAILED( p_cur_family->GetFamilyNames( p_names.GetAddressOf() ) ) )
             {
-                msg_Err( fs->p_obj, "DWrite_GetFamily: GetFamilyNames() failed" );
+                msg_Err( p_filter, "DWrite_GetFamily: GetFamilyNames() failed" );
                 continue;
             }
 
-            if( !DWrite_PartialMatch( fs, p_names, wstring{ pwsz_family }, false, &face_name ) )
+            if( !DWrite_PartialMatch( p_filter, p_names, wstring{ pwsz_family }, false, &face_name ) )
                 continue;
 
             try
             {
-                DWrite_ParseFamily( fs, p_cur_family.Get(), face_name, p_family, p_dw_sys->streams );
+                DWrite_ParseFamily( p_filter, p_cur_family.Get(), face_name, p_family, p_dw_sys->streams );
             }
             catch( const exception &e )
             {
-                msg_Err( fs->p_obj, "DWrite_GetFamily(): %s", e.what() );
+                msg_Err( p_filter, "DWrite_GetFamily(): %s", e.what() );
             }
 
             /*
@@ -707,14 +700,14 @@ extern "C" int DWrite_GetFamily( vlc_font_select_t *fs, const char *psz_lcname,
 
 done:
     free( pwsz_family );
-    *pp_result = p_family;
-    return VLC_SUCCESS;
+    return p_family;
 }
 
-static char *DWrite_Fallback( vlc_font_select_t *fs, const char *psz_lcname,
+static char *DWrite_Fallback( filter_t *p_filter, const char *psz_family,
                               uni_char_t codepoint )
 {
-    dw_sys_t                         *p_dw_sys          = ( dw_sys_t * ) fs->p_dw_sys;
+    filter_sys_t                     *p_sys             = p_filter->p_sys;
+    dw_sys_t                         *p_dw_sys          = ( dw_sys_t * ) p_sys->p_dw_sys;
     wchar_t                          *pwsz_buffer       = NULL;
     char                             *psz_result        = NULL;
     UINT32                            i_string_length   = 0;
@@ -724,43 +717,43 @@ static char *DWrite_Fallback( vlc_font_select_t *fs, const char *psz_lcname,
     ComPtr< IDWriteFontFamily >       p_dw_family;
     ComPtr< IDWriteLocalizedStrings > p_names;
 
-    msg_Dbg( fs->p_obj, "DWrite_Fallback(): family: %s, codepoint: 0x%x", psz_lcname, codepoint );
+    msg_Dbg( p_filter, "DWrite_Fallback(): family: %s, codepoint: 0x%x", psz_family, codepoint );
 
     wchar_t p_text[2];
     UINT32  i_text_length;
     ToUTF16( codepoint, p_text, &i_text_length );
 
-    wchar_t *pwsz_family = ToWide( psz_lcname );
+    wchar_t *pwsz_family = ToWide( psz_family );
     if( unlikely( !pwsz_family ) ) return NULL;
 
     ComPtr< TextSource > p_ts;
-    p_ts = new(std::nothrow) TextSource( p_dw_sys->p_dw_substitution.Get(), p_text, i_text_length );
+    p_ts = new(std::nothrow) TextSource( p_dw_sys->p_dw_factory.Get(), p_dw_sys->p_dw_substitution.Get(), p_text, i_text_length );
     if( unlikely( p_ts == NULL ) ) { goto done; }
 
     if( p_dw_sys->p_dw_fallbacks->MapCharacters( p_ts.Get(), 0, i_text_length, p_dw_sys->p_dw_system_fonts.Get(), pwsz_family,
                                   DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                  &i_mapped_length, &p_dw_font, &f_scale )
+                                  &i_mapped_length, p_dw_font.GetAddressOf(), &f_scale )
      || !p_dw_font )
     {
-        msg_Warn( fs->p_obj, "DWrite_Fallback(): MapCharacters() failed" );
+        msg_Warn( p_filter, "DWrite_Fallback(): MapCharacters() failed" );
         goto done;
     }
 
-    if( p_dw_font->GetFontFamily( &p_dw_family ) )
+    if( p_dw_font->GetFontFamily( p_dw_family.GetAddressOf() ) )
     {
-        msg_Err( fs->p_obj, "DWrite_Fallback(): GetFontFamily() failed" );
+        msg_Err( p_filter, "DWrite_Fallback(): GetFontFamily() failed" );
         goto done;
     }
 
-    if( p_dw_family->GetFamilyNames( &p_names ) )
+    if( p_dw_family->GetFamilyNames( p_names.GetAddressOf() ) )
     {
-        msg_Err( fs->p_obj, "DWrite_Fallback(): GetFamilyNames() failed" );
+        msg_Err( p_filter, "DWrite_Fallback(): GetFamilyNames() failed" );
         goto done;
     }
 
     if( p_names->GetStringLength( 0, &i_string_length ) )
     {
-        msg_Err( fs->p_obj, "DWrite_Fallback(): GetStringLength() failed" );
+        msg_Err( p_filter, "DWrite_Fallback(): GetStringLength() failed" );
         goto done;
     }
 
@@ -770,13 +763,12 @@ static char *DWrite_Fallback( vlc_font_select_t *fs, const char *psz_lcname,
 
     if( p_names->GetString( 0, pwsz_buffer, i_string_length + 1 ) )
     {
-        msg_Err( fs->p_obj, "DWrite_Fallback(): GetString() failed" );
+        msg_Err( p_filter, "DWrite_Fallback(): GetString() failed" );
         goto done;
     }
 
     psz_result = FromWide( pwsz_buffer );
-    LowercaseTransform( psz_result );
-    msg_Dbg( fs->p_obj, "DWrite_Fallback(): returning %s", psz_result );
+    msg_Dbg( p_filter, "DWrite_Fallback(): returning %s", psz_result );
 
 done:
     free( pwsz_buffer );
@@ -784,18 +776,24 @@ done:
     return psz_result;
 }
 
-extern "C" int DWrite_GetFallbacks( vlc_font_select_t *fs, const char *psz_lcname,
-                                    uni_char_t codepoint, vlc_family_t **pp_result )
+extern "C" vlc_family_t *DWrite_GetFallbacks( filter_t *p_filter, const char *psz_family,
+                                              uni_char_t codepoint )
 {
+    filter_sys_t  *p_sys         = p_filter->p_sys;
     vlc_family_t  *p_family      = NULL;
     vlc_family_t  *p_fallbacks   = NULL;
     char          *psz_fallback  = NULL;
-    int            i_ret         = VLC_EGENERIC;
 
-    p_fallbacks = ( vlc_family_t * ) vlc_dictionary_value_for_key( &fs->fallback_map, psz_lcname );
+
+    char *psz_lc = ToLower( psz_family );
+
+    if( unlikely( !psz_lc ) )
+        return NULL;
+
+    p_fallbacks = ( vlc_family_t * ) vlc_dictionary_value_for_key( &p_sys->fallback_map, psz_lc );
 
     if( p_fallbacks )
-        p_family = SearchFallbacks( fs, p_fallbacks, codepoint );
+        p_family = SearchFallbacks( p_filter, p_fallbacks, codepoint );
 
     /*
      * If the fallback list of psz_family has no family which contains the requested
@@ -805,23 +803,21 @@ extern "C" int DWrite_GetFallbacks( vlc_font_select_t *fs, const char *psz_lcnam
      */
     if( !p_family )
     {
-        psz_fallback = DWrite_Fallback( fs, psz_lcname, codepoint );
+        psz_fallback = DWrite_Fallback( p_filter, psz_lc, codepoint );
 
         if( !psz_fallback )
             goto done;
 
-        const vlc_family_t *p_fallback = NULL;
-        if( DWrite_GetFamily( fs, psz_fallback, &p_fallback ) != VLC_SUCCESS )
+        const vlc_family_t *p_fallback = DWrite_GetFamily( p_filter, psz_fallback );
+        if( !p_fallback || !p_fallback->p_fonts )
             goto done;
 
-        if( !p_fallback || !p_fallback->p_fonts ||
-           !CheckFace( fs, p_fallback->p_fonts, codepoint ) )
-        {
-            i_ret = VLC_SUCCESS;
-            goto done;
-        }
+        FT_Face p_face = GetFace( p_filter, p_fallback->p_fonts );
 
-        p_family = NewFamily( fs, psz_fallback, NULL, NULL, NULL );
+        if( !p_face || !FT_Get_Char_Index( p_face, codepoint ) )
+            goto done;
+
+        p_family = NewFamily( p_filter, psz_fallback, NULL, NULL, NULL );
 
         if( unlikely( !p_family ) )
             goto done;
@@ -831,15 +827,12 @@ extern "C" int DWrite_GetFallbacks( vlc_font_select_t *fs, const char *psz_lcnam
         if( p_fallbacks )
             AppendFamily( &p_fallbacks, p_family );
         else
-            vlc_dictionary_insert( &fs->fallback_map,
-                                   psz_lcname, p_family );
+            vlc_dictionary_insert( &p_sys->fallback_map,
+                                   psz_lc, p_family );
     }
 
-    i_ret = VLC_SUCCESS;
-
 done:
+    free( psz_lc );
     free( psz_fallback );
-
-    *pp_result = p_family;
-    return i_ret;
+    return p_family;
 }

@@ -2,6 +2,7 @@
  * cmd_callbacks.hpp
  *****************************************************************************
  * Copyright (C) 2009 the VideoLAN team
+ * $Id: 945a4e777c3ed5002260e1b3897a87056de783f9 $
  *
  * Author: Erwan Tulou      <erwan10 aT videolan doT org >
  *         JP Dinger        <jpd (at) videolan (dot) org>
@@ -31,27 +32,39 @@
 class CmdCallback : public CmdGeneric
 {
 public:
-    CmdCallback( intf_thread_t *pIntf, vlc_value_t newVal,
-                 void (VlcProc::*func)(vlc_value_t),
+    CmdCallback( intf_thread_t *pIntf, vlc_object_t *pObj, vlc_value_t newVal,
+                 void (VlcProc::*func)(vlc_object_t *,vlc_value_t),
                  std::string label )
-        : CmdGeneric( pIntf ), m_newVal( newVal ),
+        : CmdGeneric( pIntf ), m_pObj( pObj ), m_newVal( newVal ),
           m_label( label ), m_pfExecute( func )
     {
+        if( m_pObj )
+            vlc_object_hold( m_pObj );
+    }
+    virtual ~CmdCallback()
+    {
+        if( m_pObj )
+            vlc_object_release( m_pObj );
     }
     virtual void execute()
     {
-        if( !m_pfExecute )
+        if( !m_pObj || !m_pfExecute )
             return;
 
-        (VlcProc::instance( getIntf() )->*m_pfExecute)( m_newVal );
+        (VlcProc::instance( getIntf() )->*m_pfExecute)( m_pObj, m_newVal );
+
+        vlc_object_release( m_pObj );
+        m_pObj = NULL;
     }
     virtual std::string getType() const { return m_label; }
 
 private:
+    vlc_object_t* m_pObj;
     vlc_value_t   m_newVal;
     std::string   m_label;
-    void (VlcProc::*m_pfExecute)(vlc_value_t);
+    void (VlcProc::*m_pfExecute)(vlc_object_t *,vlc_value_t);
 };
+
 
 class CmdExecuteBlock : public CmdGeneric
 {
@@ -63,6 +76,16 @@ public:
     {
         vlc_mutex_init( &m_lock );
         vlc_cond_init( &m_wait );
+        if( m_pObj )
+            vlc_object_hold( m_pObj );
+    }
+
+    virtual ~CmdExecuteBlock()
+    {
+        if( m_pObj )
+            vlc_object_release( m_pObj );
+        vlc_cond_destroy( &m_wait );
+        vlc_mutex_destroy( &m_lock );
     }
 
     static void executeWait( const CmdGenericPtr& rcCommand  )
@@ -109,5 +132,6 @@ private:
     vlc_mutex_t   m_lock;
     vlc_cond_t    m_wait;
 };
+
 
 #endif

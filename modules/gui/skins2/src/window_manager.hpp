@@ -2,6 +2,7 @@
  * window_manager.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: ede1f878ac8296eb85065c3a107d8bb8043b9904 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -31,7 +32,6 @@
 #include <map>
 #include <set>
 #include <utility>
-#include <memory>
 
 
 class GenericFont;
@@ -220,7 +220,7 @@ private:
     /// Rect of the last maximized window
     SkinsRect m_maximizeRect;
     /// Tooltip
-    std::unique_ptr<Tooltip> m_pTooltip;
+    Tooltip *m_pTooltip;
     /// Active popup, if any
     Popup *m_pPopup;
 

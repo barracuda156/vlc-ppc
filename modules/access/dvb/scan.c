@@ -421,7 +421,7 @@ scan_t *scan_New( vlc_object_t *p_obj, const scan_parameter_t *p_parameter,
     p_scan->b_multiplexes_from_nit = false;
     scan_parameter_Init( &p_scan->parameter );
     scan_parameter_Copy( p_parameter, &p_scan->parameter );
-    p_scan->i_time_start = vlc_tick_now();
+    p_scan->i_time_start = mdate();
     p_scan->p_scanlist = NULL;
     p_scan->i_scanlist = 0;
 
@@ -790,7 +790,7 @@ static int Scan_GetNextTunerConfig( scan_t *p_scan, scan_tuner_config_t *p_cfg, 
         }
     }
 
-    return VLC_ENOENT;
+    return VLC_ENOITEM;
 }
 
 static int scan_Next( scan_t *p_scan, scan_tuner_config_t *p_cfg )
@@ -812,13 +812,12 @@ static int scan_Next( scan_t *p_scan, scan_tuner_config_t *p_cfg )
     //while( !scan_tuner_config_ParametersValidate( &p_scan->parameter, p_cfg ) );
 
     const size_t i_total_services = scan_CountServices( p_scan );
-    const vlc_tick_t i_eta = f_position > 0.005 ? (vlc_tick_now() - p_scan->i_time_start) * ( 1.0 / f_position - 1.0 ) : -1;
+    const vlc_tick_t i_eta = f_position > 0.005 ? (mdate() - p_scan->i_time_start) * ( 1.0 / f_position - 1.0 ) : -1;
     char psz_eta[MSTRTIME_MAX_SIZE];
     const char *psz_fmt = _("%.1f MHz (%d services)\n~%s remaining");
-    vlc_tick_to_str( psz_eta, i_eta );
 
     if( i_eta >= 0 )
-        msg_Info( p_scan->p_obj, "Scan ETA %s | %f", psz_eta, f_position * 100 );
+        msg_Info( p_scan->p_obj, "Scan ETA %s | %f", secstotimestr( psz_eta, i_eta/1000000 ), f_position * 100 );
 
     if( p_scan->p_dialog_id == NULL )
     {
@@ -828,7 +827,7 @@ static int scan_Next( scan_t *p_scan, scan_tuner_config_t *p_cfg )
                                          _("Scanning DVB"), psz_fmt,
                                          (double)p_cfg->i_frequency / 1000000,
                                          i_total_services,
-                                         psz_eta);
+                                         secstotimestr( psz_eta, i_eta/1000000 ) );
     }
     else
     {
@@ -836,7 +835,7 @@ static int scan_Next( scan_t *p_scan, scan_tuner_config_t *p_cfg )
                                          f_position, psz_fmt,
                                          (double)p_cfg->i_frequency / 1000000,
                                          i_total_services,
-                                         psz_eta );
+                                         secstotimestr( psz_eta, i_eta/1000000 ) );
     }
 
     return VLC_SUCCESS;
@@ -853,7 +852,7 @@ int scan_Run( scan_t *p_scan )
 {
     scan_tuner_config_t cfg;
     if( scan_Next( p_scan, &cfg ) )
-        return VLC_ENOENT;
+        return VLC_ENOITEM;
 
     scan_session_t *session = scan_session_New( p_scan, &cfg );
     if( unlikely(session == NULL) )
@@ -872,12 +871,12 @@ int scan_Run( scan_t *p_scan )
 
     /* */
     uint8_t packet[TS_PACKET_SIZE * SCAN_READ_BUFFER_COUNT];
-    int64_t i_scan_start = vlc_tick_now();
+    int64_t i_scan_start = mdate();
 
     for( ;; )
     {
         unsigned i_timeout = scan_session_GetTablesTimeout( session );
-        vlc_tick_t i_remaining = vlc_tick_now() - i_scan_start;
+        vlc_tick_t i_remaining = mdate() - i_scan_start;
         if( i_remaining > i_timeout )
             break;
 

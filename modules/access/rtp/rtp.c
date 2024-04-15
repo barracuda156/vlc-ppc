@@ -31,601 +31,15 @@
 #include <vlc_demux.h>
 #include <vlc_network.h>
 #include <vlc_plugin.h>
-#include "vlc_dtls.h"
-#include <vlc_modules.h> /* module_exists() */
+#include <vlc_dialog.h>
+#include <vlc_aout.h> /* aout_FormatPrepare() */
 
 #include "rtp.h"
 #ifdef HAVE_SRTP
-# include "srtp.h"
+# include <srtp.h>
 # include <gcrypt.h>
 # include <vlc_gcrypt.h>
 #endif
-#include "sdp.h"
-
-/*
- * TODO: so much stuff
- * - send RTCP-RR and RTCP-BYE
- * - multiple medias (need SDP parser, and RTCP-SR parser for lip-sync)
- * - support for stream_filter in case of chained demux (MPEG-TS)
- */
-
-#ifndef IPPROTO_DCCP
-# define IPPROTO_DCCP 33 /* IANA */
-#endif
-
-#ifndef IPPROTO_UDPLITE
-# define IPPROTO_UDPLITE 136 /* from IANA */
-#endif
-
-struct vlc_rtp_es_id {
-    struct vlc_rtp_es es;
-    es_out_t *out;
-    es_out_id_t *id;
-};
-
-static void vlc_rtp_es_id_destroy(struct vlc_rtp_es *es)
-{
-    struct vlc_rtp_es_id *ei = container_of(es, struct vlc_rtp_es_id, es);
-
-    es_out_Del(ei->out, ei->id);
-    free(ei);
-}
-
-static void vlc_rtp_es_id_send(struct vlc_rtp_es *es, block_t *block)
-{
-    struct vlc_rtp_es_id *ei = container_of(es, struct vlc_rtp_es_id, es);
-
-    /* TODO: Don't set PCR here. Breaks multiple sources (in a session)
-     * and more importantly eventually multiple sessions. */
-    if (block->i_pts != VLC_TICK_INVALID)
-        es_out_SetPCR(ei->out, block->i_pts);
-    es_out_Send(ei->out, ei->id, block);
-}
-
-static const struct vlc_rtp_es_operations vlc_rtp_es_id_ops = {
-    vlc_rtp_es_id_destroy, vlc_rtp_es_id_send,
-};
-
-static struct vlc_rtp_es *vlc_rtp_es_request(struct vlc_rtp_pt *pt,
-                                             const es_format_t *restrict fmt)
-{
-    demux_t *demux = pt->owner.data;
-
-    struct vlc_rtp_es_id *ei = malloc(sizeof (*ei));
-    if (unlikely(ei == NULL))
-        return vlc_rtp_es_dummy;
-
-    ei->es.ops = &vlc_rtp_es_id_ops;
-    ei->out = demux->out;
-    ei->id = es_out_Add(demux->out, fmt);
-    if (ei->id == NULL) {
-        free(ei);
-        return vlc_rtp_es_dummy;
-    }
-    return &ei->es;
-}
-
-struct vlc_rtp_es_mux {
-    struct vlc_rtp_es es;
-    vlc_demux_chained_t *chained_demux;
-};
-
-static void vlc_rtp_es_mux_destroy(struct vlc_rtp_es *es)
-{
-    struct vlc_rtp_es_mux *em = container_of(es, struct vlc_rtp_es_mux, es);
-
-    vlc_demux_chained_Delete(em->chained_demux);
-    free(em);
-}
-
-static void vlc_rtp_es_mux_send(struct vlc_rtp_es *es, block_t *block)
-{
-    struct vlc_rtp_es_mux *em = container_of(es, struct vlc_rtp_es_mux, es);
-
-    vlc_demux_chained_Send(em->chained_demux, block);
-}
-
-static const struct vlc_rtp_es_operations vlc_rtp_es_mux_ops = {
-    vlc_rtp_es_mux_destroy, vlc_rtp_es_mux_send,
-};
-
-static struct vlc_rtp_es *vlc_rtp_mux_request(struct vlc_rtp_pt *pt,
-                                              const char *name)
-{
-    demux_t *demux = pt->owner.data;
-
-    struct vlc_rtp_es_mux *em = malloc(sizeof (*em));
-    if (unlikely(em == NULL))
-        return vlc_rtp_es_dummy;
-
-    em->es.ops = &vlc_rtp_es_mux_ops;
-    em->chained_demux = vlc_demux_chained_New(VLC_OBJECT(demux), name,
-                                              demux->out);
-    if (em->chained_demux == NULL) {
-        free(em);
-        return NULL;
-    }
-    return &em->es;
-}
-
-static const struct vlc_rtp_pt_owner_operations vlc_rtp_pt_owner_ops = {
-    vlc_rtp_es_request, vlc_rtp_mux_request,
-};
-
-int vlc_rtp_pt_instantiate(vlc_object_t *obj, struct vlc_rtp_pt *restrict pt,
-                           const struct vlc_sdp_pt *restrict desc)
-{
-    char modname[32];
-    int ret = VLC_ENOTSUP;
-
-    if (strchr(desc->name, ',') != NULL)
-        /* Comma has special meaning in vlc_module_match(), forbid it */
-        return VLC_EINVAL;
-    if ((size_t)snprintf(modname, sizeof (modname), "%s/%s",
-                         desc->media->type, desc->name) >= sizeof (modname))
-        return VLC_ENOTSUP; /* Outlandish media type with long name */
-
-    module_t **mods;
-    ssize_t n = vlc_module_match("rtp parser", modname, true, &mods, NULL);
-
-    for (ssize_t i = 0; i < n; i++) {
-        vlc_rtp_parser_cb cb = vlc_module_map(vlc_object_logger(obj), mods[i]);
-        if (cb == NULL)
-            continue;
-
-        ret = cb(obj, pt, desc);
-        if (ret == VLC_SUCCESS) {
-            msg_Dbg(obj, "- module \"%s\"", module_get_name(mods[i], true));
-            assert(pt->ops != NULL);
-            ret = 0;
-            break;
-        }
-    }
-
-    free(mods);
-    return ret;
-}
-
-/**
- * Extracts port number from "[host]:port" or "host:port" strings,
- * and remove brackets from the host name.
- * @param phost pointer to the string upon entry,
- * pointer to the hostname upon return.
- * @return port number, 0 if missing.
- */
-static int extract_port (char **phost)
-{
-    char *host = *phost, *port;
-
-    if (host[0] == '[')
-    {
-        host = ++*phost; /* skip '[' */
-        port = strchr (host, ']');
-        if (port)
-            *port++ = '\0'; /* skip ']' */
-    }
-    else
-        port = strchr (host, ':');
-
-    if (port == NULL)
-        return 0;
-    *port++ = '\0'; /* skip ':' */
-    return atoi (port);
-}
-
-/**
- * Control callback
- */
-static int Control (demux_t *demux, int query, va_list args)
-{
-    demux_sys_t *sys = demux->p_sys;
-
-    switch (query)
-    {
-        case DEMUX_GET_PTS_DELAY:
-        {
-            *va_arg (args, vlc_tick_t *) =
-                VLC_TICK_FROM_MS( var_InheritInteger (demux, "network-caching") );
-            return VLC_SUCCESS;
-        }
-
-        case DEMUX_CAN_PAUSE:
-        case DEMUX_CAN_SEEK:
-        case DEMUX_CAN_CONTROL_PACE:
-        {
-            bool *v = va_arg( args, bool * );
-            *v = false;
-            return VLC_SUCCESS;
-        }
-    }
-
-    if (sys->chained_demux != NULL)
-        return vlc_demux_chained_ControlVa (sys->chained_demux, query, args);
-
-    switch (query)
-    {
-        case DEMUX_GET_POSITION:
-        {
-            float *v = va_arg (args, float *);
-            *v = 0.;
-            return VLC_SUCCESS;
-        }
-
-        case DEMUX_GET_LENGTH:
-        case DEMUX_GET_TIME:
-        {
-            *va_arg (args, vlc_tick_t *) = 0;
-            return VLC_SUCCESS;
-        }
-    }
-
-    return VLC_EGENERIC;
-}
-
-/**
- * Releases resources
- */
-static void Close (vlc_object_t *obj)
-{
-    demux_t *demux = (demux_t *)obj;
-    demux_sys_t *p_sys = demux->p_sys;
-
-    vlc_cancel(p_sys->thread);
-    vlc_join(p_sys->thread, NULL);
-#ifdef HAVE_SRTP
-    if (p_sys->srtp)
-        srtp_destroy (p_sys->srtp);
-#endif
-    rtp_session_destroy (demux, p_sys->session);
-    if (p_sys->rtcp_sock != NULL)
-        vlc_dtls_Close(p_sys->rtcp_sock);
-    vlc_dtls_Close(p_sys->rtp_sock);
-}
-
-static int OpenSDP(vlc_object_t *obj)
-{
-    demux_t *demux = (demux_t *)obj;
-    uint64_t size;
-    const unsigned char *peek;
-
-    assert(demux->out != NULL);
-
-    if (vlc_stream_Peek(demux->s, &peek, 3) < 3 || memcmp(peek, "v=0", 3))
-        return VLC_EGENERIC; /* not an SDP */
-
-    if (vlc_stream_GetSize(demux->s, &size))
-        size = 65536;
-    else if (size > 65536) {
-        msg_Err(obj, "SDP description too large: %" PRIu64 " bytes", size);
-        return VLC_EGENERIC;
-    }
-
-    /* We must peek so that fallback to another plugin works. */
-    ssize_t sdplen = vlc_stream_Peek(demux->s, &peek, size);
-    if (sdplen < 0)
-        return sdplen;
-
-    demux_sys_t *sys = vlc_obj_malloc(obj, sizeof (*sys));
-    if (unlikely(sys == NULL))
-        return VLC_ENOMEM;
-
-    sys->rtp_sock = NULL;
-    sys->rtcp_sock = NULL;
-    sys->session = NULL;
-#ifdef HAVE_SRTP
-    sys->srtp = NULL;
-#endif
-
-    struct vlc_sdp *sdp = vlc_sdp_parse((const char *)peek, sdplen);
-    if (sdp == NULL) {
-        msg_Err(obj, "SDP description parse error");
-        return VLC_EGENERIC;
-    }
-
-    struct vlc_sdp_media *media = sdp->media;
-    if (media == NULL || media->next != NULL) {
-        msg_Dbg(obj, "only one SDP m= line supported");
-        goto error;
-    }
-
-    if (vlc_sdp_media_attr_value(media, "control") != NULL
-     || vlc_sdp_attr_value(sdp, "control") != NULL) {
-        msg_Dbg(obj, "RTSP not supported");
-        goto error;
-    }
-
-    struct vlc_sdp_conn *conn = media->conns;
-    if (conn != NULL && conn->next != NULL) {
-        msg_Dbg(obj, "only one SDP c= line supported");
-        goto error;
-    }
-
-    if (conn == NULL)
-        conn = sdp->conn;
-    if (conn == NULL) {
-        msg_Err(obj, "missing SDP c= line");
-        goto error;
-    }
-
-    /* Determine destination port numbers */
-    unsigned int rtp_port, rtcp_port;
-
-    if (!vlc_sdp_media_attr_present(media, "rtcp-mux")) {
-        const char *rtcp = vlc_sdp_media_attr_value(media, "rtcp");
-
-        if (rtcp != NULL) {
-            /* Explicit RTCP port */
-            char *end;
-            unsigned long x = strtoul(rtcp, &end, 10);
-
-            if (*end || x == 0 || x > 65535) {
-                msg_Err(obj, "invalid RTCP port specification %s", rtcp);
-                goto error;
-            }
-
-            rtp_port = media->port;
-            rtcp_port = x;
-        } else {
-            /* Implicit RTCP port (next odd) */
-            rtp_port = (media->port + 1) & ~1;
-            rtcp_port = media->port | 1;
-        }
-    } else {
-        /* RTCP muxed on same port RTP */
-        rtp_port = media->port;
-        rtcp_port = 0;
-    }
-
-    /* TODO: support other protocols */
-    if (strcmp(media->proto, "RTP/AVP") != 0) {
-        msg_Dbg(obj, "unsupported protocol %s", media->proto);
-        goto error;
-    }
-
-    /* Determine source address */
-    char srcbuf[256], *src = NULL;
-    const char *sfilter = vlc_sdp_media_attr_value(media, "source-filter");
-    if (sfilter == NULL)
-        sfilter = vlc_sdp_attr_value(sdp, "source-filter");
-    /* FIXME: handle multiple source-filter attributes, match destination,
-     * check IP version */
-    if (sfilter != NULL
-     && sscanf(sfilter, " incl IN IP%*1[46] %*s %255s", srcbuf) == 1)
-        src = srcbuf;
-
-    /* FIXME: enforce address family */
-    int fd = net_OpenDgram(obj, conn->addr, rtp_port, src, 0, IPPROTO_UDP);
-    if (fd == -1)
-        goto error;
-
-    sys->rtp_sock = vlc_datagram_CreateFD(fd);
-    if (unlikely(sys->rtp_sock == NULL)) {
-        net_Close(fd);
-        goto error;
-    }
-
-    if (rtcp_port > 0) {
-        fd = net_OpenDgram(obj, conn->addr, rtcp_port, src, 0, IPPROTO_UDP);
-        if (fd == -1)
-            goto error;
-
-        sys->rtcp_sock = vlc_datagram_CreateFD(fd);
-        if (unlikely(sys->rtcp_sock == NULL)) {
-            net_Close(fd);
-            goto error;
-        }
-    }
-
-    sys->chained_demux = NULL;
-    sys->max_src = var_InheritInteger(obj, "rtp-max-src");
-    sys->timeout = vlc_tick_from_sec(var_InheritInteger(obj, "rtp-timeout"));
-    sys->max_dropout  = var_InheritInteger(obj, "rtp-max-dropout");
-    sys->max_misorder = -var_InheritInteger(obj, "rtp-max-misorder");
-
-    demux->pf_demux = NULL;
-    demux->pf_control = Control;
-    demux->p_sys = sys;
-
-    sys->session = rtp_session_create(demux);
-    if (sys->session == NULL)
-        goto error;
-
-    /* Parse payload types */
-    const struct vlc_rtp_pt_owner pt_owner = { &vlc_rtp_pt_owner_ops, demux };
-    int err = vlc_rtp_add_media_types(obj, sys->session, media, &pt_owner);
-    if (err < 0) {
-        msg_Err(obj, "SDP description parse error");
-        goto error;
-    }
-    if (err > 0 && module_exists("live555")) /* Bail out to live555 */
-        goto error;
-
-    if (vlc_clone(&sys->thread, rtp_dgram_thread, demux)) {
-        rtp_session_destroy(demux, sys->session);
-        goto error;
-    }
-
-    vlc_sdp_free(sdp);
-    return VLC_SUCCESS;
-
-error:
-    if (sys->rtcp_sock != NULL)
-        vlc_dtls_Close(sys->rtcp_sock);
-    if (sys->rtp_sock != NULL)
-        vlc_dtls_Close(sys->rtp_sock);
-    vlc_sdp_free(sdp);
-    return VLC_EGENERIC;
-}
-
-/**
- * Probes and initializes.
- */
-static int OpenURL(vlc_object_t *obj)
-{
-    demux_t *demux = (demux_t *)obj;
-    int tp; /* transport protocol */
-
-    if (demux->out == NULL)
-        return VLC_EGENERIC;
-
-    if (!strcasecmp(demux->psz_name, "dccp"))
-        tp = IPPROTO_DCCP;
-    else
-    if (!strcasecmp(demux->psz_name, "rtp"))
-        tp = IPPROTO_UDP;
-    else
-    if (!strcasecmp(demux->psz_name, "udplite"))
-        tp = IPPROTO_UDPLITE;
-    else
-        return VLC_EGENERIC;
-
-    demux_sys_t *p_sys = vlc_obj_malloc(obj, sizeof (*p_sys));
-    if (unlikely(p_sys == NULL))
-        return VLC_ENOMEM;
-
-    char *tmp = strdup (demux->psz_location);
-    if (tmp == NULL)
-        return VLC_ENOMEM;
-
-    char *shost;
-    char *dhost = strchr (tmp, '@');
-    if (dhost != NULL)
-    {
-        *(dhost++) = '\0';
-        shost = tmp;
-    }
-    else
-    {
-        dhost = tmp;
-        shost = NULL;
-    }
-
-    /* Parses the port numbers */
-    int sport = 0, dport = 0;
-    if (shost != NULL)
-        sport = extract_port (&shost);
-    if (dhost != NULL)
-        dport = extract_port (&dhost);
-    if (dport == 0)
-        dport = 5004; /* avt-profile-1 port */
-
-    int rtcp_dport = var_CreateGetInteger (obj, "rtcp-port");
-
-    /* Try to connect */
-    int fd = -1, rtcp_fd = -1;
-    bool co = false;
-
-    switch (tp)
-    {
-        case IPPROTO_UDP:
-        case IPPROTO_UDPLITE:
-            fd = net_OpenDgram (obj, dhost, dport, shost, sport, tp);
-            if (fd == -1)
-                break;
-            if (rtcp_dport > 0) /* XXX: source port is unknown */
-                rtcp_fd = net_OpenDgram (obj, dhost, rtcp_dport, shost, 0, tp);
-            break;
-
-         case IPPROTO_DCCP:
-#ifndef SOCK_DCCP /* provisional API (FIXME) */
-# ifdef __linux__
-#  define SOCK_DCCP 6
-# endif
-#endif
-#ifdef SOCK_DCCP
-            var_Create (obj, "dccp-service", VLC_VAR_STRING);
-            var_SetString (obj, "dccp-service", "RTPV"); /* FIXME: RTPA? */
-            fd = net_Connect (obj, dhost, dport, SOCK_DCCP, tp);
-            co = true;
-#else
-            msg_Err (obj, "DCCP support not included");
-#endif
-            break;
-    }
-
-    free (tmp);
-
-    if(fd == -1)
-        return VLC_EGENERIC;
-
-    p_sys->rtp_sock = (co ? vlc_dccp_CreateFD : vlc_datagram_CreateFD)(fd);
-    if (p_sys->rtp_sock == NULL) {
-        if (rtcp_fd != -1)
-            net_Close(rtcp_fd);
-        return VLC_EGENERIC;
-    }
-    net_SetCSCov (fd, -1, 12);
-
-    if (rtcp_fd != -1) {
-        p_sys->rtcp_sock = vlc_datagram_CreateFD(rtcp_fd);
-        if (p_sys->rtcp_sock == NULL)
-            net_Close (rtcp_fd);
-    } else
-        p_sys->rtcp_sock = NULL;
-
-    /* Initializes demux */
-    p_sys->chained_demux = NULL;
-#ifdef HAVE_SRTP
-    p_sys->srtp         = NULL;
-#endif
-    p_sys->max_src      = var_CreateGetInteger (obj, "rtp-max-src");
-    p_sys->timeout      = vlc_tick_from_sec( var_CreateGetInteger (obj, "rtp-timeout") );
-    p_sys->max_dropout  = var_CreateGetInteger (obj, "rtp-max-dropout");
-    p_sys->max_misorder = -var_CreateGetInteger (obj, "rtp-max-misorder");
-
-    demux->pf_demux   = NULL;
-    demux->pf_control = Control;
-    demux->p_sys      = p_sys;
-
-    p_sys->session = rtp_session_create (demux);
-    if (p_sys->session == NULL)
-        goto error;
-
-    const struct vlc_rtp_pt_owner pt_owner = { &vlc_rtp_pt_owner_ops, demux };
-    rtp_autodetect(VLC_OBJECT(demux), p_sys->session, &pt_owner);
-
-#ifdef HAVE_SRTP
-    char *key = var_CreateGetNonEmptyString (demux, "srtp-key");
-    if (key)
-    {
-        vlc_gcrypt_init ();
-        p_sys->srtp = srtp_create (SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, 10,
-                                   SRTP_PRF_AES_CM, SRTP_RCC_MODE1);
-        if (p_sys->srtp == NULL)
-        {
-            free (key);
-            goto error;
-        }
-
-        char *salt = var_CreateGetNonEmptyString (demux, "srtp-salt");
-        int val = srtp_setkeystring (p_sys->srtp, key, salt ? salt : "");
-        free (salt);
-        free (key);
-        if (val)
-        {
-            msg_Err (obj, "bad SRTP key/salt combination (%s)",
-                     vlc_strerror_c(val));
-            goto error;
-        }
-    }
-#endif
-
-    if (vlc_clone (&p_sys->thread, rtp_dgram_thread, demux))
-        goto error;
-    return VLC_SUCCESS;
-
-error:
-#ifdef HAVE_SRTP
-    if (p_sys->srtp != NULL)
-        srtp_destroy(p_sys->srtp);
-#endif
-    if (p_sys->session != NULL)
-        rtp_session_destroy(demux, p_sys->session);
-    if (p_sys->rtcp_sock != NULL)
-        vlc_dtls_Close(p_sys->rtcp_sock);
-    vlc_dtls_Close(p_sys->rtp_sock);
-    return VLC_EGENERIC;
-}
 
 #define RTCP_PORT_TEXT N_("RTCP (local) port")
 #define RTCP_PORT_LONGTEXT N_( \
@@ -661,45 +75,711 @@ error:
     "RTP packets will be discarded if they are too far behind (i.e. in the " \
     "past) by this many packets from the last received packet." )
 
+#define RTP_DYNAMIC_PT_TEXT N_("RTP payload format assumed for dynamic " \
+                               "payloads")
+#define RTP_DYNAMIC_PT_LONGTEXT N_( \
+    "This payload format will be assumed for dynamic payload types " \
+    "(between 96 and 127) if it can't be determined otherwise with " \
+    "out-of-band mappings (SDP)" )
+
+static const char *const dynamic_pt_list[] = { "theora" };
+static const char *const dynamic_pt_list_text[] = { "Theora Encoded Video" };
+
+static int  Open (vlc_object_t *);
+static void Close (vlc_object_t *);
+
 /*
  * Module descriptor
  */
-vlc_module_begin()
-    set_shortname(N_("RTP"))
-    set_description(N_("Real-Time Protocol (RTP) input"))
-    set_subcategory(SUBCAT_INPUT_DEMUX)
-    set_capability("demux", 55)
-    set_callbacks(OpenSDP, Close)
+vlc_module_begin ()
+    set_shortname (N_("RTP"))
+    set_description (N_("Real-Time Protocol (RTP) input"))
+    set_category (CAT_INPUT)
+    set_subcategory (SUBCAT_INPUT_DEMUX)
+    set_capability ("access_demux", 0)
+    set_callbacks (Open, Close)
 
-    add_submodule()
-    set_capability("access", 0)
-    set_callbacks(OpenURL, Close)
-
-    add_integer("rtcp-port", 0, RTCP_PORT_TEXT,
-                 RTCP_PORT_LONGTEXT)
-        change_integer_range(0, 65535)
-        change_safe()
+    add_integer ("rtcp-port", 0, RTCP_PORT_TEXT,
+                 RTCP_PORT_LONGTEXT, false)
+        change_integer_range (0, 65535)
+        change_safe ()
 #ifdef HAVE_SRTP
     add_string ("srtp-key", "",
-                SRTP_KEY_TEXT, SRTP_KEY_LONGTEXT)
+                SRTP_KEY_TEXT, SRTP_KEY_LONGTEXT, false)
         change_safe ()
-    add_string("srtp-salt", "",
-               SRTP_SALT_TEXT, SRTP_SALT_LONGTEXT)
-        change_safe()
+    add_string ("srtp-salt", "",
+                SRTP_SALT_TEXT, SRTP_SALT_LONGTEXT, false)
+        change_safe ()
 #endif
-    add_integer("rtp-max-src", 1, RTP_MAX_SRC_TEXT,
-                RTP_MAX_SRC_LONGTEXT)
+    add_integer ("rtp-max-src", 1, RTP_MAX_SRC_TEXT,
+                 RTP_MAX_SRC_LONGTEXT, true)
         change_integer_range (1, 255)
-    add_integer("rtp-timeout", 5, RTP_TIMEOUT_TEXT,
-                RTP_TIMEOUT_LONGTEXT)
-    add_integer("rtp-max-dropout", 3000, RTP_MAX_DROPOUT_TEXT,
-                RTP_MAX_DROPOUT_LONGTEXT)
+    add_integer ("rtp-timeout", 5, RTP_TIMEOUT_TEXT,
+                 RTP_TIMEOUT_LONGTEXT, true)
+    add_integer ("rtp-max-dropout", 3000, RTP_MAX_DROPOUT_TEXT,
+                 RTP_MAX_DROPOUT_LONGTEXT, true)
         change_integer_range (0, 32767)
-    add_integer("rtp-max-misorder", 100, RTP_MAX_MISORDER_TEXT,
-                RTP_MAX_MISORDER_LONGTEXT)
+    add_integer ("rtp-max-misorder", 100, RTP_MAX_MISORDER_TEXT,
+                 RTP_MAX_MISORDER_LONGTEXT, true)
         change_integer_range (0, 32767)
-    add_obsolete_string("rtp-dynamic-pt") /* since 4.0.0 */
+    add_string ("rtp-dynamic-pt", NULL, RTP_DYNAMIC_PT_TEXT,
+                RTP_DYNAMIC_PT_LONGTEXT, true)
+        change_string_list (dynamic_pt_list, dynamic_pt_list_text)
 
     /*add_shortcut ("sctp")*/
-    add_shortcut("dccp", "rtp", "udplite")
-vlc_module_end()
+    add_shortcut ("dccp", "rtptcp", /* "tcp" is already taken :( */
+                  "rtp", "udplite")
+vlc_module_end ()
+
+/*
+ * TODO: so much stuff
+ * - send RTCP-RR and RTCP-BYE
+ * - dynamic payload types (need SDP parser)
+ * - multiple medias (need SDP parser, and RTCP-SR parser for lip-sync)
+ * - support for stream_filter in case of chained demux (MPEG-TS)
+ */
+
+#ifndef IPPROTO_DCCP
+# define IPPROTO_DCCP 33 /* IANA */
+#endif
+
+#ifndef IPPROTO_UDPLITE
+# define IPPROTO_UDPLITE 136 /* from IANA */
+#endif
+
+
+/*
+ * Local prototypes
+ */
+static int Control (demux_t *, int i_query, va_list args);
+static int extract_port (char **phost);
+
+/**
+ * Probes and initializes.
+ */
+static int Open (vlc_object_t *obj)
+{
+    demux_t *demux = (demux_t *)obj;
+    int tp; /* transport protocol */
+
+    if (!strcmp (demux->psz_access, "dccp"))
+        tp = IPPROTO_DCCP;
+    else
+    if (!strcmp (demux->psz_access, "rtptcp"))
+        tp = IPPROTO_TCP;
+    else
+    if (!strcmp (demux->psz_access, "rtp"))
+        tp = IPPROTO_UDP;
+    else
+    if (!strcmp (demux->psz_access, "udplite"))
+        tp = IPPROTO_UDPLITE;
+    else
+        return VLC_EGENERIC;
+
+    char *tmp = strdup (demux->psz_location);
+    if (tmp == NULL)
+        return VLC_ENOMEM;
+
+    char *shost;
+    char *dhost = strchr (tmp, '@');
+    if (dhost != NULL)
+    {
+        *(dhost++) = '\0';
+        shost = tmp;
+    }
+    else
+    {
+        dhost = tmp;
+        shost = NULL;
+    }
+
+    /* Parses the port numbers */
+    int sport = 0, dport = 0;
+    if (shost != NULL)
+        sport = extract_port (&shost);
+    if (dhost != NULL)
+        dport = extract_port (&dhost);
+    if (dport == 0)
+        dport = 5004; /* avt-profile-1 port */
+
+    int rtcp_dport = var_CreateGetInteger (obj, "rtcp-port");
+
+    /* Try to connect */
+    int fd = -1, rtcp_fd = -1;
+
+    switch (tp)
+    {
+        case IPPROTO_UDP:
+        case IPPROTO_UDPLITE:
+            fd = net_OpenDgram (obj, dhost, dport, shost, sport, tp);
+            if (fd == -1)
+                break;
+            if (rtcp_dport > 0) /* XXX: source port is unknown */
+                rtcp_fd = net_OpenDgram (obj, dhost, rtcp_dport, shost, 0, tp);
+            break;
+
+         case IPPROTO_DCCP:
+#ifndef SOCK_DCCP /* provisional API (FIXME) */
+# ifdef __linux__
+#  define SOCK_DCCP 6
+# endif
+#endif
+#ifdef SOCK_DCCP
+            var_Create (obj, "dccp-service", VLC_VAR_STRING);
+            var_SetString (obj, "dccp-service", "RTPV"); /* FIXME: RTPA? */
+            fd = net_Connect (obj, dhost, dport, SOCK_DCCP, tp);
+#else
+            msg_Err (obj, "DCCP support not included");
+#endif
+            break;
+
+        case IPPROTO_TCP:
+            fd = net_Connect (obj, dhost, dport, SOCK_STREAM, tp);
+            break;
+    }
+
+    free (tmp);
+    if (fd == -1) {
+        if (rtcp_fd != -1)
+            net_Close(rtcp_fd);
+        return VLC_EGENERIC;
+    }
+    net_SetCSCov (fd, -1, 12);
+
+    /* Initializes demux */
+    demux_sys_t *p_sys = malloc (sizeof (*p_sys));
+    if (p_sys == NULL)
+    {
+        net_Close (fd);
+        if (rtcp_fd != -1)
+            net_Close (rtcp_fd);
+        return VLC_EGENERIC;
+    }
+
+    p_sys->chained_demux = NULL;
+#ifdef HAVE_SRTP
+    p_sys->srtp         = NULL;
+#endif
+    p_sys->fd           = fd;
+    p_sys->rtcp_fd      = rtcp_fd;
+    p_sys->max_src      = var_CreateGetInteger (obj, "rtp-max-src");
+    p_sys->timeout      = var_CreateGetInteger (obj, "rtp-timeout")
+                        * CLOCK_FREQ;
+    p_sys->max_dropout  = var_CreateGetInteger (obj, "rtp-max-dropout");
+    p_sys->max_misorder = var_CreateGetInteger (obj, "rtp-max-misorder");
+    p_sys->thread_ready = false;
+    p_sys->autodetect   = true;
+
+    demux->pf_demux   = NULL;
+    demux->pf_control = Control;
+    demux->p_sys      = p_sys;
+
+    p_sys->session = rtp_session_create (demux);
+    if (p_sys->session == NULL)
+        goto error;
+
+#ifdef HAVE_SRTP
+    char *key = var_CreateGetNonEmptyString (demux, "srtp-key");
+    if (key)
+    {
+        vlc_gcrypt_init ();
+        p_sys->srtp = srtp_create (SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, 10,
+                                   SRTP_PRF_AES_CM, SRTP_RCC_MODE1);
+        if (p_sys->srtp == NULL)
+        {
+            free (key);
+            goto error;
+        }
+
+        char *salt = var_CreateGetNonEmptyString (demux, "srtp-salt");
+        int val = srtp_setkeystring (p_sys->srtp, key, salt ? salt : "");
+        free (salt);
+        free (key);
+        if (val)
+        {
+            msg_Err (obj, "bad SRTP key/salt combination (%s)",
+                     vlc_strerror_c(val));
+            goto error;
+        }
+    }
+#endif
+
+    if (vlc_clone (&p_sys->thread,
+                   (tp != IPPROTO_TCP) ? rtp_dgram_thread : rtp_stream_thread,
+                   demux, VLC_THREAD_PRIORITY_INPUT))
+        goto error;
+    p_sys->thread_ready = true;
+    return VLC_SUCCESS;
+
+error:
+    Close (obj);
+    return VLC_EGENERIC;
+}
+
+
+/**
+ * Releases resources
+ */
+static void Close (vlc_object_t *obj)
+{
+    demux_t *demux = (demux_t *)obj;
+    demux_sys_t *p_sys = demux->p_sys;
+
+    if (p_sys->thread_ready)
+    {
+        vlc_cancel (p_sys->thread);
+        vlc_join (p_sys->thread, NULL);
+    }
+
+#ifdef HAVE_SRTP
+    if (p_sys->srtp)
+        srtp_destroy (p_sys->srtp);
+#endif
+    if (p_sys->session)
+        rtp_session_destroy (demux, p_sys->session);
+    if (p_sys->rtcp_fd != -1)
+        net_Close (p_sys->rtcp_fd);
+    net_Close (p_sys->fd);
+    free (p_sys);
+}
+
+
+/**
+ * Extracts port number from "[host]:port" or "host:port" strings,
+ * and remove brackets from the host name.
+ * @param phost pointer to the string upon entry,
+ * pointer to the hostname upon return.
+ * @return port number, 0 if missing.
+ */
+static int extract_port (char **phost)
+{
+    char *host = *phost, *port;
+
+    if (host[0] == '[')
+    {
+        host = ++*phost; /* skip '[' */
+        port = strchr (host, ']');
+        if (port)
+            *port++ = '\0'; /* skip ']' */
+    }
+    else
+        port = strchr (host, ':');
+
+    if (port == NULL)
+        return 0;
+    *port++ = '\0'; /* skip ':' */
+    return atoi (port);
+}
+
+
+/**
+ * Control callback
+ */
+static int Control (demux_t *demux, int query, va_list args)
+{
+    demux_sys_t *sys = demux->p_sys;
+
+    switch (query)
+    {
+        case DEMUX_GET_PTS_DELAY:
+        {
+            int64_t *v = va_arg (args, int64_t *);
+            *v = INT64_C(1000) * var_InheritInteger (demux, "network-caching");
+            return VLC_SUCCESS;
+        }
+
+        case DEMUX_CAN_PAUSE:
+        case DEMUX_CAN_SEEK:
+        case DEMUX_CAN_CONTROL_PACE:
+        {
+            bool *v = va_arg( args, bool * );
+            *v = false;
+            return VLC_SUCCESS;
+        }
+    }
+
+    if (sys->chained_demux != NULL)
+        return vlc_demux_chained_ControlVa (sys->chained_demux, query, args);
+
+    switch (query)
+    {
+        case DEMUX_GET_POSITION:
+        {
+            float *v = va_arg (args, float *);
+            *v = 0.;
+            return VLC_SUCCESS;
+        }
+
+        case DEMUX_GET_LENGTH:
+        case DEMUX_GET_TIME:
+        {
+            int64_t *v = va_arg (args, int64_t *);
+            *v = 0;
+            return VLC_SUCCESS;
+        }
+    }
+
+    return VLC_EGENERIC;
+}
+
+
+/*
+ * Generic packet handlers
+ */
+
+void *codec_init (demux_t *demux, es_format_t *fmt)
+{
+    if (fmt->i_cat == AUDIO_ES)
+        aout_FormatPrepare (&fmt->audio);
+    return es_out_Add (demux->out, fmt);
+}
+
+void codec_destroy (demux_t *demux, void *data)
+{
+    if (data)
+        es_out_Del (demux->out, (es_out_id_t *)data);
+}
+
+/* Send a packet to decoder */
+void codec_decode (demux_t *demux, void *data, block_t *block)
+{
+    if (data)
+    {
+        block->i_dts = VLC_TICK_INVALID; /* RTP does not specify this */
+        es_out_SetPCR(demux->out, block->i_pts);
+        es_out_Send (demux->out, (es_out_id_t *)data, block);
+    }
+    else
+        block_Release (block);
+}
+
+static void *stream_init (demux_t *demux, const char *name)
+{
+    demux_sys_t *p_sys = demux->p_sys;
+
+    if (p_sys->chained_demux != NULL)
+        return NULL;
+    p_sys->chained_demux = vlc_demux_chained_New(VLC_OBJECT(demux), name,
+                                                 demux->out);
+    return p_sys->chained_demux;
+}
+
+static void stream_destroy (demux_t *demux, void *data)
+{
+    demux_sys_t *p_sys = demux->p_sys;
+
+    if (data)
+    {
+        vlc_demux_chained_Delete(data);
+        p_sys->chained_demux = NULL;
+    }
+}
+
+static void stream_header (demux_t *demux, void *data, block_t *block)
+{
+    VLC_UNUSED(demux);
+    VLC_UNUSED(data);
+    if(block->p_buffer[1] & 0x80) /* TS M-bit == discontinuity (RFC 2250, 2.1) */
+    {
+        block->i_flags |= BLOCK_FLAG_DISCONTINUITY;
+    }
+}
+
+/* Send a packet to a chained demuxer */
+static void stream_decode (demux_t *demux, void *data, block_t *block)
+{
+    if (data)
+        vlc_demux_chained_Send(data, block);
+    else
+        block_Release (block);
+    (void)demux;
+}
+
+static void *demux_init (demux_t *demux)
+{
+    return stream_init (demux, demux->psz_demux);
+}
+
+/*
+ * Static payload types handler
+ */
+
+/* PT=0
+ * PCMU: G.711 µ-law (RFC3551)
+ */
+static void *pcmu_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_MULAW);
+    fmt.audio.i_rate = 8000;
+    fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
+    return codec_init (demux, &fmt);
+}
+
+/* PT=3
+ * GSM
+ */
+static void *gsm_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_GSM);
+    fmt.audio.i_rate = 8000;
+    fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
+    return codec_init (demux, &fmt);
+}
+
+/* PT=8
+ * PCMA: G.711 A-law (RFC3551)
+ */
+static void *pcma_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_ALAW);
+    fmt.audio.i_rate = 8000;
+    fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
+    return codec_init (demux, &fmt);
+}
+
+/* PT=10,11
+ * L16: 16-bits (network byte order) PCM
+ */
+static void *l16s_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_S16B);
+    fmt.audio.i_rate = 44100;
+    fmt.audio.i_physical_channels = AOUT_CHANS_STEREO;
+    return codec_init (demux, &fmt);
+}
+
+static void *l16m_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_S16B);
+    fmt.audio.i_rate = 44100;
+    fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
+    return codec_init (demux, &fmt);
+}
+
+/* PT=12
+ * QCELP
+ */
+static void *qcelp_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_QCELP);
+    fmt.audio.i_rate = 8000;
+    fmt.audio.i_physical_channels = AOUT_CHAN_CENTER;
+    return codec_init (demux, &fmt);
+}
+
+/* PT=14
+ * MPA: MPEG Audio (RFC2250, §3.4)
+ */
+static void *mpa_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, AUDIO_ES, VLC_CODEC_MPGA);
+    fmt.audio.i_physical_channels = AOUT_CHANS_STEREO;
+    fmt.b_packetized = false;
+    return codec_init (demux, &fmt);
+}
+
+static void mpa_decode (demux_t *demux, void *data, block_t *block)
+{
+    if (block->i_buffer < 4)
+    {
+        block_Release (block);
+        return;
+    }
+
+    block->i_buffer -= 4; /* 32-bits RTP/MPA header */
+    block->p_buffer += 4;
+
+    codec_decode (demux, data, block);
+}
+
+
+/* PT=32
+ * MPV: MPEG Video (RFC2250, §3.5)
+ */
+static void *mpv_init (demux_t *demux)
+{
+    es_format_t fmt;
+
+    es_format_Init (&fmt, VIDEO_ES, VLC_CODEC_MPGV);
+    fmt.b_packetized = false;
+    return codec_init (demux, &fmt);
+}
+
+static void mpv_decode (demux_t *demux, void *data, block_t *block)
+{
+    if (block->i_buffer < 4)
+    {
+        block_Release (block);
+        return;
+    }
+
+    block->i_buffer -= 4; /* 32-bits RTP/MPV header */
+    block->p_buffer += 4;
+#if 0
+    if (block->p_buffer[-3] & 0x4)
+    {
+        /* MPEG2 Video extension header */
+        /* TODO: shouldn't we skip this too ? */
+    }
+#endif
+    codec_decode (demux, data, block);
+}
+
+
+/* PT=33
+ * MP2: MPEG TS (RFC2250, §2)
+ */
+static void *ts_init (demux_t *demux)
+{
+    char const* name = demux->psz_demux;
+
+    if (*name == '\0' || !strcasecmp(name, "any"))
+        name = NULL;
+
+    return stream_init (demux, name ? name : "ts");
+}
+
+
+/* Not using SDP, we need to guess the payload format used */
+/* see http://www.iana.org/assignments/rtp-parameters */
+void rtp_autodetect (demux_t *demux, rtp_session_t *session,
+                     const block_t *block)
+{
+    uint8_t ptype = rtp_ptype (block);
+    rtp_pt_t pt = {
+        .init = NULL,
+        .destroy = codec_destroy,
+        .header = NULL,
+        .decode = codec_decode,
+        .frequency = 0,
+        .number = ptype,
+    };
+
+    /* Remember to keep this in sync with modules/services_discovery/sap.c */
+    switch (ptype)
+    {
+      case 0:
+        msg_Dbg (demux, "detected G.711 mu-law");
+        pt.init = pcmu_init;
+        pt.frequency = 8000;
+        break;
+
+      case 3:
+        msg_Dbg (demux, "detected GSM");
+        pt.init = gsm_init;
+        pt.frequency = 8000;
+        break;
+
+      case 8:
+        msg_Dbg (demux, "detected G.711 A-law");
+        pt.init = pcma_init;
+        pt.frequency = 8000;
+        break;
+
+      case 10:
+        msg_Dbg (demux, "detected stereo PCM");
+        pt.init = l16s_init;
+        pt.frequency = 44100;
+        break;
+
+      case 11:
+        msg_Dbg (demux, "detected mono PCM");
+        pt.init = l16m_init;
+        pt.frequency = 44100;
+        break;
+
+      case 12:
+        msg_Dbg (demux, "detected QCELP");
+        pt.init = qcelp_init;
+        pt.frequency = 8000;
+        break;
+
+      case 14:
+        msg_Dbg (demux, "detected MPEG Audio");
+        pt.init = mpa_init;
+        pt.decode = mpa_decode;
+        pt.frequency = 90000;
+        break;
+
+      case 32:
+        msg_Dbg (demux, "detected MPEG Video");
+        pt.init = mpv_init;
+        pt.decode = mpv_decode;
+        pt.frequency = 90000;
+        break;
+
+      case 33:
+        msg_Dbg (demux, "detected MPEG2 TS");
+        pt.init = ts_init;
+        pt.destroy = stream_destroy;
+        pt.header = stream_header;
+        pt.decode = stream_decode;
+        pt.frequency = 90000;
+        break;
+
+      default:
+        /*
+         * If the rtp payload type is unknown then check demux if it is specified
+         */
+        if (!strcmp(demux->psz_demux, "h264")
+         || !strcmp(demux->psz_demux, "ts"))
+        {
+            msg_Dbg (demux, "dynamic payload format %s specified by demux",
+                     demux->psz_demux);
+            pt.init = demux_init;
+            pt.destroy = stream_destroy;
+            pt.decode = stream_decode;
+            pt.frequency = 90000;
+            break;
+        }
+        if (ptype >= 96)
+        {
+            char *dynamic = var_InheritString(demux, "rtp-dynamic-pt");
+            if (dynamic == NULL)
+                ;
+            else if (!strcmp(dynamic, "theora"))
+            {
+                msg_Dbg (demux, "assuming Theora Encoded Video");
+                pt.init = theora_init;
+                pt.destroy = xiph_destroy;
+                pt.decode = xiph_decode;
+                pt.frequency = 90000;
+
+                free (dynamic);
+                break;
+            }
+            else
+                msg_Err (demux, "unknown dynamic payload format `%s' "
+                                "specified", dynamic);
+            free (dynamic);
+        }
+
+        msg_Err (demux, "unspecified payload format (type %"PRIu8")", ptype);
+        msg_Info (demux, "A valid SDP is needed to parse this RTP stream.");
+        vlc_dialog_display_error (demux, N_("SDP required"),
+             N_("A description in SDP format is required to receive the RTP "
+                "stream. Note that rtp:// URIs cannot work with dynamic "
+                "RTP payload format (%"PRIu8")."), ptype);
+        return;
+    }
+    rtp_add_type (demux, session, &pt);
+}
+
+/*
+ * Dynamic payload type handlers
+ * Hmm, none implemented yet apart from Xiph ones.
+ */

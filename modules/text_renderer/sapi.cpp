@@ -38,16 +38,14 @@
 #include <vlc_charset.h>
 #include <vlc_subpicture.h>
 
+#define INITGUID
+
 #include <windows.h>
 #include <sapi.h>
 #include <sphelper.h>
 
-#include <initguid.h>
-// not available in standard libraries and used in inline functions without __uuidof()
-DEFINE_GUID(CLSID_SpObjectTokenCategory, 0xa910187f, 0x0c7a, 0x45ac, 0x92,0xcc, 0x59,0xed,0xaf,0xb7,0x7b,0x53);
-
-static int Create (filter_t *);
-static void Destroy(filter_t *);
+static int Create (vlc_object_t *);
+static void Destroy(vlc_object_t *);
 static int RenderText(filter_t *,
                       subpicture_region_t *,
                       subpicture_region_t *,
@@ -56,11 +54,12 @@ static int RenderText(filter_t *,
 vlc_module_begin ()
  set_description(N_("Speech synthesis for Windows"))
 
+ set_category(CAT_VIDEO)
  set_subcategory(SUBCAT_VIDEO_SUBPIC)
 
- set_callback_text_renderer(Create, 0)
- /* Note: Skip label translation - too technical */
- add_integer("sapi-voice", -1, "Voice Index", nullptr)
+ set_capability("text renderer", 0)
+ set_callbacks(Create, Destroy)
+ add_integer("sapi-voice", -1, "Voice Index", "Voice index", false)
 vlc_module_end ()
 
 struct filter_sys_t
@@ -75,7 +74,7 @@ static int TryEnterMTA(vlc_object_t *obj)
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (unlikely(FAILED(hr)))
     {
-        msg_Err (obj, "cannot initialize COM (error 0x%lX)", hr);
+        msg_Err (obj, "cannot initialize COM (error 0x%lx)", hr);
         return -1;
     }
     return 0;
@@ -94,21 +93,13 @@ static void LeaveMTA(void)
     CoUninitialize();
 }
 
-static const struct FilterOperationInitializer {
-    struct vlc_filter_operations ops {};
-    FilterOperationInitializer()
-    {
-        ops.render = RenderText;
-        ops.close  = Destroy;
-    };
-} filter_ops;
-
-static int Create (filter_t *p_filter)
+static int Create (vlc_object_t *p_this)
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
     HRESULT hr;
 
-    if (TryEnterMTA(p_filter))
+    if (TryEnterMTA(p_this))
         return VLC_EGENERIC;
 
     p_filter->p_sys = p_sys = (filter_sys_t*) malloc(sizeof(filter_sys_t));
@@ -118,7 +109,7 @@ static int Create (filter_t *p_filter)
     p_sys->cpVoice = NULL;
     p_sys->lastString = NULL;
 
-    hr = CoCreateInstance(__uuidof(SpVoice), NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&p_sys->cpVoice));
+    hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_INPROC_SERVER, IID_ISpVoice, (void**) &p_sys->cpVoice);
     if (SUCCEEDED(hr)) {
         ISpObjectToken*        cpVoiceToken = NULL;
         IEnumSpObjectTokens*   cpEnum = NULL;
@@ -131,7 +122,7 @@ static int Create (filter_t *p_filter)
             hr = cpEnum->GetCount(&ulCount);
             if (SUCCEEDED (hr))
             {
-                int voiceIndex = var_InheritInteger(p_filter, "sapi-voice");
+                int voiceIndex = var_InheritInteger(p_this, "sapi-voice");
                 if (voiceIndex > -1)
                 {
                     if ((unsigned)voiceIndex < ulCount) {
@@ -139,17 +130,17 @@ static int Create (filter_t *p_filter)
                         if (SUCCEEDED(hr)) {
                             hr = p_sys->cpVoice->SetVoice(cpVoiceToken);
                             if (SUCCEEDED(hr)) {
-                                msg_Dbg(p_filter, "Selected voice %d", voiceIndex);
+                                msg_Dbg(p_this, "Selected voice %d", voiceIndex);
                             }
                             else {
-                                msg_Err(p_filter, "Failed to set voice %d", voiceIndex);
+                                msg_Err(p_this, "Failed to set voice %d", voiceIndex);
                             }
                             cpVoiceToken->Release();
                             cpVoiceToken = NULL;
                         }
                     }
                     else
-                        msg_Err(p_filter, "Voice index exceeds available count");
+                        msg_Err(p_this, "Voice index exceeds available count");
                 }
             }
             cpEnum->Release();
@@ -166,7 +157,7 @@ static int Create (filter_t *p_filter)
 
     LeaveMTA();
 
-    p_filter->ops = &filter_ops.ops;
+    p_filter->pf_render = RenderText;
 
     return VLC_SUCCESS;
 
@@ -176,9 +167,10 @@ error:
     return VLC_EGENERIC;
 }
 
-static void Destroy(filter_t *p_filter)
+static void Destroy(vlc_object_t *p_this)
 {
-    filter_sys_t *p_sys = reinterpret_cast<filter_sys_t *>( p_filter->p_sys );
+    filter_t *p_filter = (filter_t *)p_this;
+    filter_sys_t *p_sys = p_filter->p_sys;
 
     if (p_sys->cpVoice)
         p_sys->cpVoice->Release();
@@ -192,7 +184,7 @@ static int RenderText(filter_t *p_filter,
         subpicture_region_t *p_region_in,
         const vlc_fourcc_t *)
 {
-    filter_sys_t *p_sys = reinterpret_cast<filter_sys_t *>( p_filter->p_sys );
+    filter_sys_t *p_sys = p_filter->p_sys;
     text_segment_t *p_segment = p_region_in->p_text;
 
     if (!p_segment)

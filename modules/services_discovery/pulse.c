@@ -24,7 +24,9 @@
 # include <config.h>
 #endif
 
+#ifdef HAVE_SEARCH_H
 #include <search.h>
+#endif
 #include <assert.h>
 
 #include <vlc_common.h>
@@ -41,6 +43,7 @@ VLC_SD_PROBE_HELPER("pulse", N_("Audio capture"), SD_CAT_DEVICES);
 vlc_module_begin ()
     set_shortname (N_("Audio capture"))
     set_description (N_("Audio capture (PulseAudio)"))
+    set_category (CAT_PLAYLIST)
     set_subcategory (SUBCAT_PLAYLIST_SD)
     set_capability ("services_discovery", 0)
     set_callbacks (Open, Close)
@@ -49,12 +52,12 @@ vlc_module_begin ()
     VLC_SD_PROBE_SUBMODULE
 vlc_module_end ()
 
-typedef struct
+struct services_discovery_sys_t
 {
     void                 *root;
     pa_context           *context;
     pa_threaded_mainloop *mainloop;
-} services_discovery_sys_t;
+};
 
 static void SourceCallback(pa_context *, const pa_source_info *, int, void *);
 static void ContextCallback(pa_context *, pa_subscription_event_type_t,
@@ -162,7 +165,7 @@ static int AddSource (services_discovery_t *sd, const pa_source_info *info)
     d->index = info->index;
     d->item = item;
 
-    void **dp = tsearch (d, &sys->root, cmpsrc);
+    struct device **dp = tsearch (d, &sys->root, cmpsrc);
     if (dp == NULL) /* Out-of-memory */
     {
         free (d);
@@ -204,7 +207,7 @@ static void RemoveSource (services_discovery_t *sd, uint32_t idx)
 {
     services_discovery_sys_t *sys = sd->p_sys;
 
-    void **dp = tfind (&idx, &sys->root, cmpsrc);
+    struct device **dp = tfind (&idx, &sys->root, cmpsrc);
     if (dp == NULL)
         return;
 

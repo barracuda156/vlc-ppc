@@ -30,7 +30,6 @@
 
 #include <vlc_common.h>
 #include <vlc_fs.h>
-#include <vlc_sort.h>
 
 #include <assert.h>
 
@@ -106,19 +105,11 @@ static int dummy_select( const char *str )
     return 1;
 }
 
-static int compar_void(const void *a, const void *b, void *data)
-{
-    const char *sa = a, *sb = b;
-    int (*cmp)(const char **, const char **) = data;
-
-    return cmp(&sa, &sb);
-}
-
 /**
  * Does the same as vlc_scandir(), but takes an open directory pointer
  * instead of a directory path.
  */
-int vlc_loaddir( vlc_DIR *dir, char ***namelist,
+int vlc_loaddir( DIR *dir, char ***namelist,
                   int (*select)( const char * ),
                   int (*compar)( const char **, const char ** ) )
 {
@@ -130,7 +121,7 @@ int vlc_loaddir( vlc_DIR *dir, char ***namelist,
     char **tab = NULL;
     unsigned num = 0;
 
-    vlc_rewinddir (dir);
+    rewinddir (dir);
 
     for (unsigned size = 0;;)
     {
@@ -162,7 +153,8 @@ int vlc_loaddir( vlc_DIR *dir, char ***namelist,
     }
 
     if (compar != NULL && num > 0)
-        vlc_qsort(tab, num, sizeof (*tab), compar_void, compar);
+        qsort (tab, num, sizeof (*tab),
+               (int (*)( const void *, const void *))compar);
     *namelist = tab;
     return num;
 
@@ -176,7 +168,7 @@ error:
 /**
  * Selects file entries from a directory, as GNU C scandir().
  *
- * @param dirname UTF-8 directory path
+ * @param dirname UTF-8 diretory path
  * @param pointer [OUT] pointer set, on successful completion, to the address
  * of a table of UTF-8 filenames. All filenames must be freed with free().
  * The table itself must be freed with free() as well.
@@ -188,35 +180,34 @@ int vlc_scandir( const char *dirname, char ***namelist,
                   int (*select)( const char * ),
                   int (*compar)( const char **, const char ** ) )
 {
-    vlc_DIR *dir = vlc_opendir (dirname);
+    DIR *dir = vlc_opendir (dirname);
     int val = -1;
 
     if (dir != NULL)
     {
         val = vlc_loaddir (dir, namelist, select, compar);
-        vlc_closedir (dir);
+        closedir (dir);
     }
     return val;
 }
 
+#if defined (_WIN32) || defined (__OS2__)
 # include <vlc_rand.h>
 
-VLC_WEAK int vlc_mkstemp(char *template)
+int vlc_mkstemp( char *template )
 {
-    static const char bytes[] =
-        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqstruvwxyz_-";
-    static const size_t nbytes = ARRAY_SIZE(bytes) - 1;
-    char *pattern;
+    static const char digits[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    static const int i_digits = sizeof(digits)/sizeof(*digits) - 1;
 
-    static_assert(((ARRAY_SIZE(bytes) - 1) & (ARRAY_SIZE(bytes) - 2)) == 0,
-                  "statistical bias");
+    /* */
+    assert( template );
 
     /* Check template validity */
-    assert(template != NULL);
+    const size_t i_length = strlen( template );
+    char *psz_rand = &template[i_length-6];
 
-    const size_t len = strlen(template);
-    if (len < 6
-     || strcmp(pattern = template + len - 6, "XXXXXX")) {
+    if( i_length < 6 || strcmp( psz_rand, "XXXXXX" ) )
+    {
         errno = EINVAL;
         return -1;
     }
@@ -229,7 +220,7 @@ VLC_WEAK int vlc_mkstemp(char *template)
 
         vlc_rand_bytes( pi_rand, sizeof(pi_rand) );
         for( int j = 0; j < 6; j++ )
-            pattern[j] = bytes[pi_rand[j] % nbytes];
+            psz_rand[j] = digits[pi_rand[j] % i_digits];
 
         /* */
         int fd = vlc_open( template, O_CREAT | O_EXCL | O_RDWR, 0600 );
@@ -242,3 +233,4 @@ VLC_WEAK int vlc_mkstemp(char *template)
     errno = EEXIST;
     return -1;
 }
+#endif

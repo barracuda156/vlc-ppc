@@ -70,6 +70,8 @@ static bool av1_read_header(bs_t *p_bs, struct av1_header_info_s *p_hdr)
         return false;
     if(obu_extension_flag)
     {
+        if(bs_remain(p_bs) < 8)
+            return false;
         p_hdr->temporal_id = bs_read(p_bs, 3);
         p_hdr->spatial_id = bs_read(p_bs, 2);
         bs_skip(p_bs, 3);
@@ -78,6 +80,8 @@ static bool av1_read_header(bs_t *p_bs, struct av1_header_info_s *p_hdr)
     {
         for (uint8_t i = 0; i < 8; i++)
         {
+            if(bs_remain(p_bs) < 8)
+                return false;
             uint8_t v = bs_read(p_bs, 8);
             if (!(v & 0x80))
                 break;
@@ -85,7 +89,7 @@ static bool av1_read_header(bs_t *p_bs, struct av1_header_info_s *p_hdr)
                 return false;
         }
     }
-    return !bs_error(p_bs);
+    return true;
 }
 
 /*
@@ -167,13 +171,10 @@ static bool av1_parse_color_config(bs_t *p_bs,
                                    obu_u3_t seq_profile)
 {
     p_cc->high_bitdepth = bs_read1(p_bs);
-    if(seq_profile <= 2)
-    {
-        if(p_cc->high_bitdepth)
-            p_cc->twelve_bit = bs_read1(p_bs);
-        if(seq_profile != 1)
-            p_cc->mono_chrome = bs_read1(p_bs);
-    }
+    if (seq_profile == 2 && p_cc->high_bitdepth)
+        p_cc->twelve_bit = bs_read1(p_bs);
+    if (seq_profile != 1)
+        p_cc->mono_chrome = bs_read1(p_bs);
     const uint8_t BitDepth = p_cc->twelve_bit ? 12 : ((p_cc->high_bitdepth) ? 10 : 8);
 
     p_cc->color_description_present_flag = bs_read1(p_bs);
@@ -192,7 +193,7 @@ static bool av1_parse_color_config(bs_t *p_bs,
 
     if(p_cc->mono_chrome)
     {
-        p_cc->color_range = bs_read1(p_bs) ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+        p_cc->color_range = bs_read1(p_bs);
         p_cc->i_chroma = VLC_CODEC_GREY;
         p_cc->subsampling_x = 1;
         p_cc->subsampling_y = 1;
@@ -201,14 +202,14 @@ static bool av1_parse_color_config(bs_t *p_bs,
              p_cc->transfer_characteristics == 13 &&
              p_cc->matrix_coefficients == 0 )
     {
-        p_cc->color_range = COLOR_RANGE_FULL;
+        p_cc->color_range = 1;
         p_cc->i_chroma = VLC_CODEC_I444;
         p_cc->subsampling_x = 0;
         p_cc->subsampling_y = 0;
     }
     else
     {
-        p_cc->color_range = bs_read1(p_bs) ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+        p_cc->color_range = bs_read1(p_bs);
         if(seq_profile > 1)
         {
             if(BitDepth == 12)
@@ -415,13 +416,11 @@ av1_OBU_sequence_header_t *
     p_seq->enable_cdef = bs_read1(&bs);
     p_seq->enable_restoration = bs_read1(&bs);
     av1_parse_color_config(&bs, &p_seq->color_config, p_seq->seq_profile);
-
-    if(bs_error(&bs))
+    if(bs_remain(&bs) < 1)
     {
         AV1_release_sequence_header(p_seq);
         return NULL;
     }
-
     p_seq->film_grain_params_present = bs_read1(&bs);
 
     return p_seq;
@@ -558,14 +557,14 @@ bool AV1_get_colorimetry(const av1_OBU_sequence_header_t *p_seq,
                          video_color_primaries_t *p_primaries,
                          video_transfer_func_t *p_transfer,
                          video_color_space_t *p_colorspace,
-                         video_color_range_t *p_full_range)
+                         bool *p_full_range)
 {
     if(!p_seq->color_config.color_description_present_flag)
         return false;
     *p_primaries = iso_23001_8_cp_to_vlc_primaries(p_seq->color_config.color_primaries);
     *p_transfer = iso_23001_8_tc_to_vlc_xfer(p_seq->color_config.transfer_characteristics);
     *p_colorspace = iso_23001_8_mc_to_vlc_coeffs(p_seq->color_config.matrix_coefficients);
-    *p_full_range = p_seq->color_config.color_range ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+    *p_full_range = p_seq->color_config.color_range;
     return true;
 }
 

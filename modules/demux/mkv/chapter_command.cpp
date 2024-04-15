@@ -2,6 +2,7 @@
  * chapter_command.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
+ * $Id: c2a9a3dd10b90b076d07b18db9fe5ccc3620f01d $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -22,10 +23,7 @@
  *****************************************************************************/
 
 #include "chapter_command.hpp"
-#include "demux.hpp"
 #include <algorithm>
-
-namespace mkv {
 
 void chapter_codec_cmds_c::AddCommand( const KaxChapterProcessCommand & command )
 {
@@ -768,4 +766,4 @@ bool matroska_script_codec_c::Leave()
     return f_result;
 }
 
-} // namespace
+

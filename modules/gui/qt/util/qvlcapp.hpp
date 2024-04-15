@@ -2,6 +2,7 @@
  * qvlcapp.hpp : A few helpers
  *****************************************************************************
  * Copyright (C) 2008 the VideoLAN team
+ * $Id: 45b9e59e98c917a0e98a1c19cf52b594bcc8eab8 $
  *
  * Authors: Jean-Baptiste Kempf <jb@videolan.org>
  *
@@ -25,12 +26,12 @@
 #define VLC_QT_QVLCAPP_HPP_
 
 #include <QApplication>
-#include <QStyle>
+#include <QEvent>
 
 #if defined(Q_OS_WIN)
 #   include "qt.hpp"
 #   include <windows.h>
-#   include "player/player_controller.hpp"
+#   include "input_manager.hpp"
 #endif
 
 class QVLCApp : public QApplication
@@ -45,9 +46,9 @@ private slots:
     }
 
 public:
-    QVLCApp( int & argc, char ** argv ) : QApplication( argc, argv, true ), m_defaultStyle( style()->objectName() )
+    QVLCApp( int & argc, char ** argv ) : QApplication( argc, argv, true )
     {
-        connect( this, &QVLCApp::quitSignal, this, &QVLCApp::doQuit );
+        connect( this, SIGNAL(quitSignal()), this, SLOT(doQuit()) );
     }
 
     static void triggerQuit()
@@ -57,16 +58,8 @@ public:
             emit app->quitSignal();
     }
 
-    QString defaultStyle() const
-    {
-        return m_defaultStyle;
-    }
-
 signals:
     void quitSignal();
 
-private:
-    const QString m_defaultStyle;
 };
-
 #endif

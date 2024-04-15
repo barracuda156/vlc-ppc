@@ -2,6 +2,7 @@
  * win.c: Windows specific functions
  *****************************************************************************
  * Copyright (C) 2007-2012 the VideoLAN team
+ * $Id: af7659a726fa423f21e3ad263abfad3fb180d765 $
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -33,7 +34,7 @@
 #include "../vlc.h"
 #include "../libs.h"
 
-#ifndef VLC_WINSTORE_APP
+#if !VLC_WINSTORE_APP
 
 /* Based on modules/control/rc.c and include/vlc_interface.h */
 static HANDLE GetConsole( lua_State *L )
@@ -94,7 +95,7 @@ static bool ReadWin32( HANDLE *hConsoleIn, unsigned char *p_buffer, int *pi_size
                     nbBytes++;
                 }
                 assert( clz( (unsigned char)~(p_buffer[*pi_size]) ) == nbBytes + 1 );
-                // The first utf8 byte will be overridden by a \0
+                // The first utf8 byte will be overriden by a \0
             }
             else
                 (*pi_size)--;

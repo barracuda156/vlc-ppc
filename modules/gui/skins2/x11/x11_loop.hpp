@@ -2,6 +2,7 @@
  * x11_loop.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: a858a33d22d8229f29e4300065355a132e7eca5a $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -28,7 +29,6 @@
 #include "../src/os_loop.hpp"
 
 #include <map>
-#include <memory>
 
 class X11Display;
 class GenericWindow;
@@ -37,8 +37,6 @@ class GenericWindow;
 class X11Loop: public OSLoop
 {
 public:
-    X11Loop( intf_thread_t *pIntf, X11Display &rDisplay );
-
     /// Get the instance of X11Loop
     static OSLoop *instance( intf_thread_t *pIntf, X11Display &rDisplay );
 
@@ -72,6 +70,10 @@ private:
         return i!=m_keymap.end() ? (i->second) : keysym;
     }
     static int X11ModToMod( unsigned state );
+
+    // Private because it's a singleton
+    X11Loop( intf_thread_t *pIntf, X11Display &rDisplay );
+    virtual ~X11Loop();
 
     /// Handle the next X11 event
     void handleX11Event();

@@ -2,6 +2,7 @@
  * croppadd.c: Crop/Padd image filter
  *****************************************************************************
  * Copyright (C) 2008 VLC authors and VideoLAN
+ * $Id: 1415ff48751711772060efff65a6552d8d9bd266 $
  *
  * Authors: Antoine Cellerier <dionoea @t videolan dot org>
  *
@@ -33,13 +34,15 @@
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
+#include "filter_picture.h"
 
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
-static int  OpenFilter ( filter_t * );
+static int  OpenFilter ( vlc_object_t * );
+static void CloseFilter( vlc_object_t * );
 
-VIDEO_FILTER_WRAPPER(Filter)
+static picture_t *Filter( filter_t *, picture_t * );
 
 #define CROPTOP_TEXT N_( "Pixels to crop from top" )
 #define CROPTOP_LONGTEXT N_( \
@@ -75,29 +78,31 @@ VIDEO_FILTER_WRAPPER(Filter)
 vlc_module_begin ()
     set_shortname( N_("Croppadd") )
     set_description( N_("Video cropping filter") )
-    set_callback_video_filter( OpenFilter )
+    set_capability( "video filter", 0 )
+    set_callbacks( OpenFilter, CloseFilter )
 
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER );
 
     set_section( N_("Crop"), NULL )
         add_integer_with_range( CFG_PREFIX "croptop", 0, 0, INT_MAX,
-                                CROPTOP_TEXT, CROPTOP_LONGTEXT )
+                                CROPTOP_TEXT, CROPTOP_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "cropbottom", 0, 0, INT_MAX,
-                                CROPBOTTOM_TEXT, CROPBOTTOM_LONGTEXT )
+                                CROPBOTTOM_TEXT, CROPBOTTOM_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "cropleft", 0, 0, INT_MAX,
-                                CROPLEFT_TEXT, CROPLEFT_LONGTEXT )
+                                CROPLEFT_TEXT, CROPLEFT_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "cropright", 0, 0, INT_MAX,
-                                CROPRIGHT_TEXT, CROPRIGHT_LONGTEXT )
+                                CROPRIGHT_TEXT, CROPRIGHT_LONGTEXT, false )
 
     set_section( N_("Padd"), NULL )
         add_integer_with_range( CFG_PREFIX "paddtop", 0, 0, INT_MAX,
-                                PADDTOP_TEXT, PADDTOP_LONGTEXT )
+                                PADDTOP_TEXT, PADDTOP_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "paddbottom", 0, 0, INT_MAX,
-                                PADDBOTTOM_TEXT, PADDBOTTOM_LONGTEXT )
+                                PADDBOTTOM_TEXT, PADDBOTTOM_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "paddleft", 0, 0, INT_MAX,
-                                PADDLEFT_TEXT, PADDLEFT_LONGTEXT )
+                                PADDLEFT_TEXT, PADDLEFT_LONGTEXT, false )
         add_integer_with_range( CFG_PREFIX "paddright", 0, 0, INT_MAX,
-                                PADDRIGHT_TEXT, PADDRIGHT_LONGTEXT )
+                                PADDRIGHT_TEXT, PADDRIGHT_LONGTEXT, false )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -106,7 +111,7 @@ static const char *const ppsz_filter_options[] = {
     NULL
 };
 
-typedef struct
+struct filter_sys_t
 {
     int i_croptop;
     int i_cropbottom;
@@ -116,7 +121,8 @@ typedef struct
     int i_paddbottom;
     int i_paddleft;
     int i_paddright;
-} filter_sys_t;
+};
+
 #define IDX_TOP 0
 #define IDX_LEFT 1
 #define IDX_BOTTOM 2
@@ -143,8 +149,9 @@ static const struct transform transforms[8] = {
 /*****************************************************************************
  * OpenFilter: probe the filter and return score
  *****************************************************************************/
-static int OpenFilter( filter_t *p_filter )
+static int OpenFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t*)p_this;
     filter_sys_t *p_sys;
 
     if( !p_filter->b_allow_fmt_out_change )
@@ -170,8 +177,8 @@ static int OpenFilter( filter_t *p_filter )
         return VLC_EGENERIC;
     }
 
-    p_filter->p_sys = vlc_obj_malloc( VLC_OBJECT(p_filter), sizeof( filter_sys_t ) );
-    if( unlikely(!p_filter->p_sys) ) return VLC_ENOMEM;
+    p_filter->p_sys = (filter_sys_t *)malloc( sizeof( filter_sys_t ) );
+    if( !p_filter->p_sys ) return VLC_ENOMEM;
 
     config_ChainParse( p_filter, CFG_PREFIX, ppsz_filter_options,
                        p_filter->p_cfg );
@@ -219,7 +226,7 @@ static int OpenFilter( filter_t *p_filter )
         - p_sys->i_cropleft - p_sys->i_cropright
         + p_sys->i_paddleft + p_sys->i_paddright;
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     msg_Dbg( p_filter, "Crop: Top: %d, Bottom: %d, Left: %d, Right: %d",
              p_sys->i_croptop, p_sys->i_cropbottom, p_sys->i_cropleft,
@@ -236,16 +243,36 @@ static int OpenFilter( filter_t *p_filter )
     return VLC_SUCCESS;
 }
 
+/*****************************************************************************
+ * CloseFilter: clean up the filter
+ *****************************************************************************/
+static void CloseFilter( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t *)p_this;
+    free( p_filter->p_sys );
+}
+
 /****************************************************************************
  * Filter: the whole thing
  ****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
+    picture_t *p_outpic;
     int i_width, i_height, i_xcrop, i_ycrop,
         i_outwidth, i_outheight, i_xpadd, i_ypadd;
 
     const int p_padd_color[] = { 0x00, 0x80, 0x80, 0xff };
+
+    if( !p_pic ) return NULL;
+
+    /* Request output picture */
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     for( int i_plane = 0; i_plane < p_pic->i_planes; i_plane++ )
     /* p_pic and p_outpic have the same chroma/number of planes but that's
@@ -321,4 +348,6 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
         memset( p_out, i_padd_color,
                  ( i_outheight - i_ypadd - i_height ) * p_outplane->i_pitch );
     }
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }

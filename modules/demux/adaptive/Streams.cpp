@@ -35,6 +35,7 @@
 #include <vlc_demux.h>
 
 #include <algorithm>
+#include <cassert>
 
 using namespace adaptive;
 using namespace adaptive::http;
@@ -117,6 +118,8 @@ AbstractStream::~AbstractStream()
     delete demuxer;
     delete demuxersource;
     delete fakeesout;
+
+    vlc_mutex_destroy(&lock);
 }
 
 void AbstractStream::prepareRestart(bool b_discontinuity)
@@ -459,7 +462,7 @@ AbstractStream::BufferingStatus AbstractStream::doBufferize(Times deadline,
             }
             else
             {
-                msg_Dbg(p_realdemux, "Waiting sync reference for seq %" PRIu64, currentSequence);
+                msg_Dbg(p_realdemux, "Waiting sync reference for seq %ld", currentSequence);
                 vlc_mutex_unlock(&lock);
                 return BufferingStatus::Suspended;
             }
@@ -493,7 +496,7 @@ AbstractStream::BufferingStatus AbstractStream::doBufferize(Times deadline,
         extdeadline.offsetBy((i_max_buffering - i_demuxed) / 4);
 
         Times newdeadline = deadline;
-        newdeadline.offsetBy(VLC_TICK_FROM_SEC(1));
+        newdeadline.offsetBy(CLOCK_FREQ);
 
         if(extdeadline.continuous < newdeadline.continuous)
             deadline = extdeadline;
@@ -746,11 +749,6 @@ void AbstractStream::fillExtraFMTInfo( es_format_t *p_fmt ) const
         p_fmt->video.i_visible_width = currentrep.width;
         p_fmt->video.i_visible_height = currentrep.height;
     }
-}
-
-block_t *AbstractStream::checkBlock(block_t *p_block, bool)
-{
-    return p_block;
 }
 
 AbstractDemuxer * AbstractStream::createDemux(const StreamFormat &format)

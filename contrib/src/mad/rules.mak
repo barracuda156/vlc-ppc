@@ -19,19 +19,15 @@ endif
 $(TARBALLS)/libmad-$(MAD_VERSION).tar.gz:
 	$(call download,$(MAD_URL))
 
-LIBMAD_VARS :=
-ifdef HAVE_IOS
-LIBMAD_VARS += CCAS="$(AS)"
-endif
-
 .sum-mad: libmad-$(MAD_VERSION).tar.gz
 
 libmad: libmad-$(MAD_VERSION).tar.gz .sum-mad
 	$(UNPACK)
 ifdef HAVE_DARWIN_OS
-	sed -e 's%-march=i486%$(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)%' \
+	cd $@-$(MAD_VERSION) && sed \
+		-e 's%-march=i486%$(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)%' \
 		-e 's%-dynamiclib%-dynamiclib -arch $(ARCH)%' \
-		-i.orig $(UNPACK_DIR)/configure
+		-i.orig configure
 endif
 ifdef HAVE_IOS
 	$(APPLY) $(SRC)/mad/mad-ios-asm.patch
@@ -41,14 +37,15 @@ endif
 	$(APPLY) $(SRC)/mad/mad-mips-h-constraint-removal.patch
 	$(APPLY) $(SRC)/mad/mad-foreign.patch
 	$(APPLY) $(SRC)/mad/check-bitstream-length.patch
-	cd $(UNPACK_DIR) && rm -rf aclocal.m4 Makefile.in
 	$(MOVE)
 
 .mad: libmad
 	$(REQUIRE_GPL)
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(LIBMAD_VARS) $(MAD_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+ifdef HAVE_IOS
+	cd $< && $(HOSTVARS) CCAS="$(AS)" CFLAGS="$(CFLAGS) -O3" ./configure $(HOSTCONF) $(MAD_CONF)
+else
+	cd $< && $(HOSTVARS) CFLAGS="$(CFLAGS) -O3" ./configure $(HOSTCONF) $(MAD_CONF)
+endif
+	cd $< && $(MAKE) install
 	touch $@

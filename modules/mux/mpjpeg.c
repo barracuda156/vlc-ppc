@@ -2,6 +2,7 @@
  * mpjpeg.c: mime multipart jpeg  muxer module for vlc
  *****************************************************************************
  * Copyright (C) 2001, 2002, 2006 VLC authors and VideoLAN
+ * $Id: 97d74f2f68c87606840018c1900959cb1798cb97 $
  *
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *
@@ -45,6 +46,7 @@ vlc_module_begin ()
     set_shortname( "MPJPEG" )
     set_description( N_("Multipart JPEG muxer") )
     set_capability( "sout mux", 5 )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_MUX )
     set_callbacks( Open, Close )
     add_shortcut( "mpjpeg" )
@@ -101,7 +103,12 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     {
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
             pb_bool = va_arg( args, bool * );
-            *pb_bool = false;
+            *pb_bool = true;
+            return VLC_SUCCESS;
+
+        case MUX_GET_ADD_STREAM_WAIT:
+            pb_bool = va_arg( args, bool * );
+            *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_MIME:
@@ -135,32 +142,22 @@ static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
     msg_Dbg( p_mux, "removing input" );
 }
 
-static block_t *block_FifoTryGet(block_fifo_t *fifo)
-{
-    block_t *block;
-
-    vlc_fifo_Lock(fifo);
-    block = vlc_fifo_DequeueUnlocked(fifo);
-    vlc_fifo_Unlock(fifo);
-    return block;
-}
-
 static int Mux( sout_mux_t *p_mux )
 {
     block_fifo_t *p_fifo;
-    block_t *p_data;
 
     if( !p_mux->i_nb_inputs ) return VLC_SUCCESS;
 
     p_fifo = p_mux->pp_inputs[0]->p_fifo;
 
-    while ((p_data = block_FifoTryGet(p_fifo)) != NULL)
+    while( block_FifoCount( p_fifo ) > 0 )
     {
         static const char psz_hfmt[] = "\r\n"
             "--"BOUNDARY"\r\n"
             "Content-Type: image/jpeg\r\n"
             "Content-Length: %zu\r\n"
             "\r\n";
+        block_t *p_data = block_FifoGet( p_fifo );
         block_t *p_header = block_Alloc( sizeof( psz_hfmt ) + 20 );
 
         if( p_header == NULL ) /* uho! */

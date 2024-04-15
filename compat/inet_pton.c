@@ -26,11 +26,13 @@
 #include <errno.h>
 
 #include <sys/types.h>
-#ifdef HAVE_SYS_SOCKET_H
+#ifndef _WIN32
 # include <sys/socket.h>
-#elif defined(_WIN32)
+#else
 # include <winsock2.h>
 # include <ws2tcpip.h>
+# undef EAFNOSUPPORT
+# define EAFNOSUPPORT WSAEAFNOSUPPORT
 #endif
 
 int inet_pton (int af, const char *src, void *dst)

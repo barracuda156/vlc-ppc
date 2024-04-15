@@ -2,6 +2,7 @@
  * dummy.c: dummy muxer module for vlc
  *****************************************************************************
  * Copyright (C) 2001, 2002 VLC authors and VideoLAN
+ * $Id: 72c320c4bb5aae7728255430611d74f1533b2251 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Eric Petit <titer@videolan.org>
@@ -43,6 +44,7 @@ static void Close  ( vlc_object_t * );
 vlc_module_begin ()
     set_description( N_("Dummy/Raw muxer") )
     set_capability( "sout mux", 5 )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_MUX )
     add_shortcut( "dummy", "raw", "es" )
     set_callbacks( Open, Close )
@@ -56,12 +58,12 @@ static int AddStream( sout_mux_t *, sout_input_t * );
 static void DelStream( sout_mux_t *, sout_input_t * );
 static int Mux      ( sout_mux_t * );
 
-typedef struct
+struct sout_mux_sys_t
 {
     /* Some streams have special initialization data, we'll output this
      * data as an header in the stream. */
     bool b_header;
-} sout_mux_sys_t;
+};
 
 /*****************************************************************************
  * Open:
@@ -110,6 +112,11 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
             pb_bool = va_arg( args, bool * );
             *pb_bool = true;
+            return VLC_SUCCESS;
+
+        case MUX_GET_ADD_STREAM_WAIT:
+            pb_bool = va_arg( args, bool * );
+            *pb_bool = false;
             return VLC_SUCCESS;
 
         case MUX_GET_MIME:   /* Unknown */

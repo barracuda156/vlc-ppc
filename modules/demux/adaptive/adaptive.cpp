@@ -33,6 +33,7 @@
 #include <vlc_demux.h>
 
 #include "SharedResources.hpp"
+#include "playlist/BasePeriod.h"
 #include "logic/BufferingLogic.hpp"
 #include "xml/DOMParser.h"
 
@@ -126,22 +127,23 @@ vlc_module_begin ()
         set_shortname( N_("Adaptive"))
         set_description( N_("Unified adaptive streaming for DASH/HLS") )
         set_capability( "demux", 12 )
+        set_category( CAT_INPUT )
         set_subcategory( SUBCAT_INPUT_DEMUX )
-        add_string( "adaptive-logic",  "", ADAPT_LOGIC_TEXT, nullptr )
+        add_string( "adaptive-logic",  "", ADAPT_LOGIC_TEXT, nullptr, false )
             change_string_list( ppsz_logics_values, ppsz_logics )
         add_integer( "adaptive-maxwidth",  0,
-                     ADAPT_WIDTH_TEXT,  nullptr )
+                     ADAPT_WIDTH_TEXT,  ADAPT_WIDTH_TEXT,  false )
         add_integer( "adaptive-maxheight", 0,
-                     ADAPT_HEIGHT_TEXT, nullptr )
-        add_integer( "adaptive-bw",     250, ADAPT_BW_TEXT,     ADAPT_BW_LONGTEXT )
-        add_bool   ( "adaptive-use-access", false, ADAPT_ACCESS_TEXT, ADAPT_ACCESS_LONGTEXT );
+                     ADAPT_HEIGHT_TEXT, ADAPT_HEIGHT_TEXT, false )
+        add_integer( "adaptive-bw",     250, ADAPT_BW_TEXT,     ADAPT_BW_LONGTEXT,     false )
+        add_bool   ( "adaptive-use-access", false, ADAPT_ACCESS_TEXT, ADAPT_ACCESS_LONGTEXT, true );
         add_integer( "adaptive-livedelay",
-                     MS_FROM_VLC_TICK(AbstractBufferingLogic::DEFAULT_LIVE_BUFFERING),
-                     ADAPT_BUFFER_TEXT, ADAPT_BUFFER_LONGTEXT );
+                     AbstractBufferingLogic::DEFAULT_LIVE_BUFFERING / 1000,
+                     ADAPT_BUFFER_TEXT, ADAPT_BUFFER_LONGTEXT, true );
         add_integer( "adaptive-maxbuffer",
-                     MS_FROM_VLC_TICK(AbstractBufferingLogic::DEFAULT_MAX_BUFFERING),
-                     ADAPT_MAXBUFFER_TEXT, nullptr );
-        add_integer( "adaptive-lowlatency", -1, ADAPT_LOWLATENCY_TEXT, ADAPT_LOWLATENCY_LONGTEXT );
+                     AbstractBufferingLogic::DEFAULT_MAX_BUFFERING  / 1000,
+                     ADAPT_MAXBUFFER_TEXT, nullptr, true );
+        add_integer( "adaptive-lowlatency", -1, ADAPT_LOWLATENCY_TEXT, ADAPT_LOWLATENCY_LONGTEXT, true );
             change_integer_list(rgi_latency, ppsz_latency)
         set_callbacks( Open, Close )
 vlc_module_end ()
@@ -254,7 +256,7 @@ static int Open(vlc_object_t *p_obj)
     if(VLC_SUCCESS == var_Create( p_demux, "lua", VLC_VAR_BOOL))
         var_SetBool(p_demux, "lua", false);
 
-    p_demux->p_sys         = p_manager;
+    p_demux->p_sys         = reinterpret_cast<demux_sys_t *>(p_manager);
     p_demux->pf_demux      = p_manager->demux_callback;
     p_demux->pf_control    = p_manager->control_callback;
 

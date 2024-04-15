@@ -39,14 +39,14 @@ class Timescale
             if( !scale ) return 0;
             stime_t v = t / scale;
             stime_t r = t % scale;
-            return v * CLOCK_FREQ + r * CLOCK_FREQ / scale;
+            return v * 1000000 + r * 1000000 / scale;
         }
 
         stime_t ToScaled(vlc_tick_t t) const
         {
-            int64_t v = t / CLOCK_FREQ;
-            int64_t r = t % CLOCK_FREQ;
-            return v * scale + r * scale / CLOCK_FREQ;
+            vlc_tick_t v = t / 1000000;
+            vlc_tick_t r = t % 1000000;
+            return v * scale + r * scale / 1000000;
         }
 
         bool isValid() const { return !!scale; }
@@ -130,7 +130,7 @@ class SynchronizationReferences
                 refs.pop_back();
             refs.push_front(SynchronizationReference(seq, t));
         }
-        bool getReference(uint64_t seq, vlc_tick_t,
+        bool getReference(uint64_t seq, mtime_t,
                           SynchronizationReference &ref) const
         {
             for(auto t : refs)

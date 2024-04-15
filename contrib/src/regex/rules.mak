@@ -19,10 +19,9 @@ regex: regex-$(REGEX_VERSION).tar.gz .sum-regex
 	$(MOVE)
 
 .regex: regex
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE)
-	+$(MAKEBUILD) subirs=
-	cd $(BUILD_DIR) && $(AR) rcvu libregex.a regex.o && $(RANLIB) libregex.a
-	mkdir -p $(PREFIX)/include/ && cp $</regex.h $(PREFIX)/include
-	mkdir -p $(PREFIX)/lib/ && cp $(BUILD_DIR)/libregex.a $(PREFIX)/lib
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) subirs=
+	cd $< && $(AR) rcvu libregex.a regex.o && $(RANLIB) libregex.a
+	mkdir -p $(PREFIX)/include/ && cp $</regex.h $(PREFIX)/include/
+	mkdir -p $(PREFIX)/lib/ && cp $</libregex.a $(PREFIX)/lib/
 	touch $@

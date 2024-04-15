@@ -65,15 +65,15 @@ namespace adaptive
                 bool                needsUpdates() const;
                 void                updateWith(BasePlaylist *);
 
-                Property<vlc_tick_t>                   duration;
+                Property<mtime_t>                   duration;
                 Property<time_t>                    playbackStart;
-                Property<vlc_tick_t>                   availabilityEndTime;
-                Property<vlc_tick_t>                   availabilityStartTime;
-                Property<vlc_tick_t>                   minUpdatePeriod;
-                Property<vlc_tick_t>                   maxSegmentDuration;
-                Property<vlc_tick_t>                   timeShiftBufferDepth;
-                Property<vlc_tick_t>                   suggestedPresentationDelay;
-                Property<vlc_tick_t>                   presentationStartOffset;
+                Property<mtime_t>                   availabilityEndTime;
+                Property<mtime_t>                   availabilityStartTime;
+                Property<mtime_t>                   minUpdatePeriod;
+                Property<mtime_t>                   maxSegmentDuration;
+                Property<mtime_t>                   timeShiftBufferDepth;
+                Property<mtime_t>                   suggestedPresentationDelay;
+                Property<mtime_t>                   presentationStartOffset;
 
             protected:
                 vlc_object_t                       *p_object;

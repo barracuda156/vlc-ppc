@@ -7,16 +7,7 @@ ifeq ($(call need_pkg,"libarchive >= 3.2.0"),)
 PKGS_FOUND += libarchive
 endif
 
-DEPS_libarchive = zlib $(DEPS_zlib)
-
-LIBARCHIVE_CONF := \
-		--disable-bsdcpio --disable-bsdtar --disable-bsdcat \
-		--without-nettle --without-cng \
-		--without-xml2 --without-lzma --without-iconv --without-expat
-
-ifdef HAVE_WIN32
-LIBARCHIVE_CONF += --without-openssl
-endif
+DEPS_libarchive = zlib
 
 $(TARBALLS)/libarchive-$(LIBARCHIVE_VERSION).tar.gz:
 	$(call download_pkg,$(LIBARCHIVE_URL),libarchive)
@@ -36,8 +27,9 @@ endif
 
 .libarchive: libarchive
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(LIBARCHIVE_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) \
+		--disable-bsdcpio --disable-bsdtar --disable-bsdcat \
+		--without-nettle --without-cng \
+		--without-xml2 --without-lzma --without-iconv --without-expat
+	cd $< && $(MAKE) install
 	touch $@

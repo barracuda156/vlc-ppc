@@ -1,6 +1,7 @@
 /*
  * meta.c - libvlc smoke test
  *
+ * $Id: aa29c98406f8444de7a3c6d3a59b621fd9e4ed1a $
  */
 
 /**********************************************************************
@@ -24,7 +25,6 @@
 #include <string.h>
 
 #include "test.h"
-#include "media_utils.h"
 
 static void test_meta (const char ** argv, int argc)
 {
@@ -32,22 +32,22 @@ static void test_meta (const char ** argv, int argc)
     libvlc_media_t *media;
     char * artist;
 
-    test_log ("Testing meta\n");
+    log ("Testing meta\n");
 
     vlc = libvlc_new (argc, argv);
     assert (vlc != NULL);
 
-    media = libvlc_media_new_path(SRCDIR "/samples/meta.mp3");
+    media = libvlc_media_new_path (vlc, "samples/meta.sample");
     assert( media );
 
-    libvlc_media_parse_sync(vlc, media, libvlc_media_parse_local, -1);
+    libvlc_media_parse (media);
 
     artist = libvlc_media_get_meta (media, libvlc_meta_Artist);
 
     const char *expected_artist = "mike";
 
     assert (artist);
-    test_log ("+ got '%s' as Artist, expecting %s\n", artist, expected_artist);
+    log ("+ got '%s' as Artist, expecting %s\n", artist, expected_artist);
 
     int string_compare = strcmp (artist, expected_artist);
     assert (!string_compare);

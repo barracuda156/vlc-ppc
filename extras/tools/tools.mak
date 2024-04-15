@@ -36,7 +36,7 @@ SHA512SUM = $(error SHA-512 checksumming not found!)
 endif
 
 download_pkg = $(call download,$(VIDEOLAN)/$(2)/$(lastword $(subst /, ,$(@)))) || \
-	( $(call download,$(1)) && echo "Please upload this package $(lastword $(subst /, ,$(@))) to our FTP" )  \
+	( $(call download,$(1)) && echo "Please upload package $(lastword $(subst /, ,$(@))) to our FTP" )  \
 	&& grep $(@) $(TOOLS)/SHA512SUMS| $(SHA512SUM)
 
 UNPACK = $(RM) -R $@ \
@@ -53,7 +53,22 @@ MOVE = mv $(UNPACK_DIR) $@ && touch $@
 # package rules
 #
 
-# nasm
+# yasm
+
+yasm-$(YASM_VERSION).tar.gz:
+	$(call download_pkg,$(YASM_URL),yasm)
+
+yasm: yasm-$(YASM_VERSION).tar.gz
+	$(UNPACK)
+	$(MOVE)
+
+.buildyasm: yasm
+	(cd $<; ./configure --prefix=$(PREFIX) && $(MAKE) && $(MAKE) install)
+	touch $@
+
+CLEAN_FILE += .buildyasm
+CLEAN_PKG += yasm
+DISTCLEAN_PKG += yasm-$(YASM_VERSION).tar.gz
 
 nasm-$(NASM_VERSION).tar.gz:
 	$(call download_pkg,$(NASM_URL),nasm)
@@ -112,11 +127,10 @@ libtool-$(LIBTOOL_VERSION).tar.gz:
 libtool: libtool-$(LIBTOOL_VERSION).tar.gz
 	$(UNPACK)
 	(cd $(UNPACK_DIR) && chmod u+w build-aux/ltmain.sh)
-	$(APPLY) $(TOOLS)/libtool-2.4.7-bitcode.patch
-	$(APPLY) $(TOOLS)/libtool-2.4.7-clang-libs.patch
-	$(APPLY) $(TOOLS)/libtool-2.4.7-response-files.patch
-	$(APPLY) $(TOOLS)/libtool-2.4.7-lpthread.patch
-	$(APPLY) $(TOOLS)/libtool-2.4.7-embed-bitcode.patch
+	$(APPLY) $(TOOLS)/libtool-2.4.6-bitcode.patch
+	$(APPLY) $(TOOLS)/libtool-2.4.6-san.patch
+	$(APPLY) $(TOOLS)/libtool-2.4.6-clang-libs.patch
+	$(APPLY) $(TOOLS)/libtool-2.4.6-response-files.patch
 	$(MOVE)
 
 .buildlibtool: libtool .automake .help2man
@@ -229,12 +243,29 @@ pkgconfig: pkg-config-$(PKGCFG_VERSION).tar.gz
 	$(MOVE)
 
 .buildpkg-config: pkgconfig
-	(cd pkgconfig; ./configure --prefix=$(PREFIX) --disable-shared --enable-static --disable-dependency-tracking && $(MAKE) && $(MAKE) install)
+	(cd pkgconfig; ./configure --prefix=$(PREFIX) --disable-shared --enable-static && $(MAKE) && $(MAKE) install)
 	touch $@
 
 CLEAN_FILE += .buildpkg-config
 CLEAN_PKG += pkgconfig
 DISTCLEAN_PKG += pkg-config-$(PKGCFG_VERSION).tar.gz
+
+# gas-preprocessor
+gas-preprocessor-$(GAS_VERSION).tar.gz:
+	$(call download_pkg,$(GAS_URL),gas-preprocessor)
+
+gas: gas-preprocessor-$(GAS_VERSION).tar.gz
+	$(UNPACK)
+	$(MOVE)
+
+.buildgas: gas
+	mkdir -p $(PREFIX)/bin
+	cp gas/gas-preprocessor.pl $(PREFIX)/bin/
+	touch $@
+
+CLEAN_FILE += .buildgas
+CLEAN_PKG += gas
+DISTCLEAN_PKG += gas-preprocessor-$(GAS_VERSION).tar.gz
 
 # Ragel State Machine Compiler
 ragel-$(RAGEL_VERSION).tar.gz:
@@ -247,7 +278,7 @@ ragel: ragel-$(RAGEL_VERSION).tar.gz
 
 
 .buildragel: ragel
-	(cd ragel; ./configure --prefix=$(PREFIX) --disable-shared --enable-static --disable-dependency-tracking && $(MAKE) && $(MAKE) install)
+	(cd ragel; ./configure --prefix=$(PREFIX) --disable-shared --enable-static && $(MAKE) && $(MAKE) install)
 	touch $@
 
 CLEAN_FILE += .buildragel
@@ -290,6 +321,26 @@ DISTCLEAN_PKG += apache-ant-$(ANT_VERSION).tar.bz2
 CLEAN_FILE += .buildant
 
 
+# Protobuf Protoc
+
+protobuf-$(PROTOBUF_VERSION).tar.gz:
+	$(call download_pkg,$(PROTOBUF_URL),protobuf)
+
+protobuf: protobuf-$(PROTOBUF_VERSION).tar.gz
+	$(UNPACK)
+	$(APPLY) $(TOOLS)/protobuf-fix-build.patch
+	$(APPLY) $(TOOLS)/protobuf-include-algorithm.patch
+	$(MOVE)
+
+.buildprotoc: protobuf
+	(cd $< && ./configure --prefix="$(PREFIX)" --disable-shared --enable-static && $(MAKE) && $(MAKE) install)
+	(find $(PREFIX) -name 'protobuf*.pc' -exec rm -f {} \;)
+	touch $@
+
+CLEAN_PKG += protobuf
+DISTCLEAN_PKG += protobuf-$(PROTOBUF_VERSION).tar.gz
+CLEAN_FILE += .buildprotoc
+
 #
 # GNU bison
 #
@@ -330,27 +381,6 @@ CLEAN_PKG += flex
 DISTCLEAN_PKG += flex-$(FLEX_VERSION).tar.gz
 CLEAN_FILE += .buildflex
 
-
-
-#
-# GNU gettext
-#
-
-gettext-$(GETTEXT_VERSION).tar.gz:
-	$(call download_pkg,$(GETTEXT_URL),gettext)
-
-gettext: gettext-$(GETTEXT_VERSION).tar.gz
-	$(UNPACK)
-	$(MOVE)
-
-.buildgettext: gettext
-	(cd $<; ./configure --prefix=$(PREFIX) && $(MAKE) && $(MAKE) install)
-	touch $@
-
-CLEAN_PKG += gettext
-DISTCLEAN_PKG += gettext-$(GETTEXT_VERSION).tar.gz
-CLEAN_FILE += .buildgettext
-
 #
 # meson build
 #
@@ -379,7 +409,6 @@ CLEAN_FILE += .buildmeson
 ninja-$(NINJA_VERSION).tar.gz:
 	$(call download_pkg,$(NINJA_URL),ninja)
 
-ninja: UNPACK_DIR=ninja-$(NINJA_BUILD_NAME)
 ninja: ninja-$(NINJA_VERSION).tar.gz
 	$(UNPACK)
 	$(MOVE)

@@ -91,7 +91,7 @@ retry:
         return NULL;
 
     struct vlc_http_msg *resp = vlc_http_mgr_request(res->manager, res->secure,
-                                       res->host, res->port, req, true, false);
+                                                    res->host, res->port, req);
     vlc_http_msg_destroy(req);
 
     resp = vlc_http_msg_get_final(resp);
@@ -163,6 +163,18 @@ void vlc_http_res_destroy(struct vlc_http_resource *res)
 {
     vlc_http_res_deinit(res);
     free(res);
+}
+
+static char *vlc_http_authority(const char *host, unsigned port)
+{
+    static const char *const formats[4] = { "%s", "[%s]", "%s:%u", "[%s]:%u" };
+    const bool brackets = strchr(host, ':') != NULL;
+    const char *fmt = formats[brackets + 2 * (port != 0)];
+    char *authority;
+
+    if (unlikely(asprintf(&authority, fmt, host, port) == -1))
+        return NULL;
+    return authority;
 }
 
 int vlc_http_res_init(struct vlc_http_resource *restrict res,
@@ -307,7 +319,7 @@ char *vlc_http_res_get_type(struct vlc_http_resource *res)
     return (type != NULL) ? strdup(type) : NULL;
 }
 
-block_t *vlc_http_res_read(struct vlc_http_resource *res)
+struct block_t *vlc_http_res_read(struct vlc_http_resource *res)
 {
     int status = vlc_http_res_get_status(res);
     if (status < 200 || status >= 300)

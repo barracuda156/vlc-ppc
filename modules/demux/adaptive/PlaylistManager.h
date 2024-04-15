@@ -26,8 +26,6 @@
 #include "Streams.hpp"
 #include <vector>
 
-#include <vlc_cxx_helpers.hpp>
-
 namespace adaptive
 {
     namespace playlist
@@ -61,8 +59,8 @@ namespace adaptive
             bool    started() const;
             void    stop();
 
-            AbstractStream::BufferingStatus bufferize(Times, vlc_tick_t,
-                                                      vlc_tick_t, vlc_tick_t);
+            AbstractStream::BufferingStatus bufferize(Times, mtime_t,
+                                                      mtime_t, mtime_t);
             AbstractStream::Status dequeue(Times, Times *);
 
             virtual bool needsUpdate() const;
@@ -77,10 +75,10 @@ namespace adaptive
         protected:
             /* Demux calls */
             virtual int doControl(int, va_list);
-            virtual int doDemux(vlc_tick_t);
+            virtual int doDemux(int64_t);
 
             void    setLivePause(bool);
-            virtual bool setPosition(vlc_tick_t, double pos = -1, bool accurate = false);
+            virtual bool setPosition(mtime_t, double pos = -1, bool accurate = false);
             StreamPosition getResumePosition() const;
             Times getFirstTimes() const;
             unsigned getActiveStreamsCount() const;
@@ -134,7 +132,6 @@ namespace adaptive
             {
                 bool        b_live;
                 vlc_tick_t  i_time;
-                vlc_tick_t  i_normaltime;
                 double      f_position;
                 mutable vlc_mutex_t lock;
                 vlc_tick_t  playlistStart;
@@ -149,10 +146,10 @@ namespace adaptive
             void setBufferingRunState(bool);
             void Run();
             static void * managerThread(void *);
-            vlc::threads::mutex  lock;
-            vlc::threads::condition_variable waitcond;
+            vlc_mutex_t  lock;
             vlc_thread_t thread;
             bool         b_thread;
+            vlc_cond_t   waitcond;
             bool         b_buffering;
             bool         b_canceled;
             vlc_tick_t   pause_start;

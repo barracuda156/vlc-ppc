@@ -2,6 +2,7 @@
  * nsspeechsynthesizer.m: Simple text to Speech renderer for Mac OS X
  *****************************************************************************
  * Copyright (C) 2015 VLC authors and VideoLAN
+ * $Id: 32d2512321093d09b7ffc1a67af78ffea80626df $
  *
  * Authors: Felix Paul Kühne <fkuehne # videolan # org>
  *
@@ -35,8 +36,8 @@
 
 #import <Cocoa/Cocoa.h>
 
-static int Create (filter_t *);
-static void Destroy(filter_t *);
+static int Create (vlc_object_t *);
+static void Destroy(vlc_object_t *);
 static int RenderText(filter_t *,
                       subpicture_region_t *,
                       subpicture_region_t *,
@@ -44,24 +45,23 @@ static int RenderText(filter_t *,
 
 vlc_module_begin ()
 set_description(N_("Speech synthesis for Mac OS X"))
+set_category(CAT_VIDEO)
 set_subcategory(SUBCAT_VIDEO_SUBPIC)
 
-set_callback_text_renderer(Create, 0)
+set_capability("text renderer", 0)
+set_callbacks(Create, Destroy)
 vlc_module_end ()
 
-typedef struct filter_sys_t
+struct filter_sys_t
 {
     NSSpeechSynthesizer *speechSynthesizer;
     NSString *currentLocale;
     NSString *lastString;
-} filter_sys_t;
-
-static const struct vlc_filter_operations filter_ops = {
-    .render = RenderText, .close = Destroy,
 };
 
-static int  Create (filter_t *p_filter)
+static int  Create (vlc_object_t *p_this)
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     p_filter->p_sys = p_sys = malloc(sizeof(filter_sys_t));
@@ -71,13 +71,14 @@ static int  Create (filter_t *p_filter)
     p_sys->currentLocale = p_sys->lastString = @"";
     p_sys->speechSynthesizer = [[NSSpeechSynthesizer alloc] init];
 
-    p_filter->ops = &filter_ops;
+    p_filter->pf_render = RenderText;
 
     return VLC_SUCCESS;
 }
 
-static void Destroy(filter_t *p_filter)
+static void Destroy(vlc_object_t *p_this)
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     [p_sys->speechSynthesizer stopSpeaking];

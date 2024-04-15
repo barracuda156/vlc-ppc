@@ -43,25 +43,17 @@
 static int Open( vlc_object_t *p_this );
 static void Close( vlc_object_t *p_this );
 
-static void AutoRun(libvlc_int_t *libvlc)
-{
-    intf_Create(libvlc, MODULE_STRING);
-}
-
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin()
     set_shortname( N_("Global Hotkeys") )
+    set_category( CAT_INTERFACE )
     set_subcategory( SUBCAT_INTERFACE_HOTKEYS )
     set_description( N_("Global Hotkeys interface") )
     set_capability( "interface", 0 )
     set_callbacks( Open, Close )
     add_shortcut( "globalhotkeys" )
-
-    add_submodule()
-    set_capability("autorun", 10)
-    set_callback(AutoRun)
 vlc_module_end()
 
 typedef struct
@@ -134,7 +126,7 @@ static int Open( vlc_object_t *p_this )
     }
     Register( p_intf );
 
-    if( vlc_clone( &p_sys->thread, Thread, p_intf ) )
+    if( vlc_clone( &p_sys->thread, Thread, p_intf, VLC_THREAD_PRIORITY_LOW ) )
     {
         if( p_sys->p_map )
         {
@@ -370,8 +362,6 @@ static void *Thread( void *p_data )
     intf_sys_t *p_sys = p_intf->p_sys;
     xcb_connection_t *p_connection = p_sys->p_connection;
 
-    vlc_thread_set_name("vlc-hotkeys-xcb");
-
     int canc = vlc_savecancel();
 
     /* */
@@ -412,7 +402,7 @@ static void *Thread( void *p_data )
                     if( p_map->p_keys[j] == e->detail &&
                         p_map->i_modifier == e->state )
                     {
-                        var_SetInteger( vlc_object_instance(p_intf),
+                        var_SetInteger( p_intf->obj.libvlc,
                                         "global-key-pressed", p_map->i_vlc );
                         goto done;
                     }

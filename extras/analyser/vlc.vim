@@ -66,6 +66,7 @@ function VlcSyntax()
   " Images
   syn keyword cType image_handler_t
   " Sout
+  syn keyword cType sout_instance_t sout_cfg_t
   syn keyword cType sout_input_t sout_packetizer_input_t
   syn keyword cType sout_access_out_t sout_access_out_sys_t 
   syn keyword cType sout_mux_t sout_mux_sys_t
@@ -102,7 +103,7 @@ function VlcSyntax()
   syn keyword cType md5_t vlc_meta_t vlc_callback_t iso639_lang_t
   
   " misc macros
-  syn keyword cOperator VLC_OBJECT VLC_EXPORT
+  syn keyword cOperator VLC_OBJECT VLC_EXPORT VLC_COMMON_MEMBERS
   " don't use these any more, please
   syn keyword cError u8 s8 u16 s16 u32 s32 u64 s64
   " don't put trailing spaces! DON'T USE TABS!!!

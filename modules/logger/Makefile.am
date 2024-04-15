@@ -17,16 +17,8 @@ logger_LTLIBRARIES += libsd_journal_plugin.la
 endif
 
 libandroid_logger_plugin_la_SOURCES = logger/android.c
+libandroid_logger_plugin_la_CFLAGS = $(AM_CFLAGS)
 libandroid_logger_plugin_la_LIBADD = -llog
 if HAVE_ANDROID
 logger_LTLIBRARIES += libandroid_logger_plugin.la
-endif
-
-libjson_tracer_plugin_la_SOURCES = logger/json.c
-logger_LTLIBRARIES += libjson_tracer_plugin.la
-
-libemscripten_logger_plugin_la_SOURCES = logger/emscripten.c
-
-if HAVE_EMSCRIPTEN
-logger_LTLIBRARIES += libemscripten_logger_plugin.la
 endif

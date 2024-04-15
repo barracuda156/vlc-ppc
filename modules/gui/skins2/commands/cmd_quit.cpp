@@ -2,6 +2,7 @@
  * cmd_quit.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 691b61399e1f7833ae0f71adb2c2736639caf308 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -27,6 +28,7 @@
 
 #include <vlc_vout.h>
 #include <vlc_vout_osd.h>
+#include <vlc_input.h>
 
 #include "cmd_quit.hpp"
 #include "../src/os_factory.hpp"
@@ -35,12 +37,18 @@
 
 void CmdQuit::execute()
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-    vlc_player_osd_Message( player,
-        VOUT_SPU_CHANNEL_OSD, "%s", _( "Quit" ) );
+    if( getIntf()->p_sys->p_input )
+    {
+        vout_thread_t *pVout = input_GetVout( getIntf()->p_sys->p_input );
+        if( pVout )
+        {
+            vout_OSDMessage( pVout, VOUT_SPU_CHANNEL_OSD, "%s", _( "Quit" ) );
+            vlc_object_release( pVout );
+        }
+    }
 
     // Kill libvlc
-    libvlc_Quit( vlc_object_instance(getIntf()) );
+    libvlc_Quit( getIntf()->obj.libvlc );
 }
 
 

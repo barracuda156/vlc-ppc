@@ -3,6 +3,10 @@
 #include <windows.h>
 #include <assert.h>
 
+#ifdef _MSC_VER
+typedef int ssize_t;
+#endif
+
 #include <vlc/vlc.h>
 
 #define SCREEN_WIDTH  1500
@@ -41,11 +45,11 @@ static LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
             {
                 HDROP hDrop = (HDROP)wParam;
                 char file_path[MAX_PATH];
-                libvlc_media_player_stop_async( ctx->p_mediaplayer );
+                libvlc_media_player_stop( ctx->p_mediaplayer );
 
                 if (DragQueryFile(hDrop, 0, file_path, sizeof(file_path)))
                 {
-                    libvlc_media_t *p_media = libvlc_media_new_path( file_path );
+                    libvlc_media_t *p_media = libvlc_media_new_path( ctx->p_libvlc, file_path );
                     libvlc_media_t *p_old_media = libvlc_media_player_get_media( ctx->p_mediaplayer );
                     libvlc_media_player_set_media( ctx->p_mediaplayer, p_media );
                     libvlc_media_release( p_old_media );
@@ -116,14 +120,14 @@ int WINAPI WinMain(HINSTANCE hInstance,
         file_path = _strdup( lpCmdLine );
 
     Context.p_libvlc = libvlc_new( 0, NULL );
-    p_media = libvlc_media_new_path( file_path );
+    p_media = libvlc_media_new_path( Context.p_libvlc, file_path );
     free( file_path );
-    Context.p_mediaplayer = libvlc_media_player_new_from_media(
-                                                   Context.p_libvlc, p_media );
+    Context.p_mediaplayer = libvlc_media_player_new_from_media( p_media );
 
     ZeroMemory(&wc, sizeof(WNDCLASSEX));
 
     wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -163,7 +167,7 @@ int WINAPI WinMain(HINSTANCE hInstance,
             break;
     }
 
-    libvlc_media_player_stop_async( Context.p_mediaplayer );
+    libvlc_media_player_stop( Context.p_mediaplayer );
 
     libvlc_media_release( libvlc_media_player_get_media( Context.p_mediaplayer ) );
     libvlc_media_player_release( Context.p_mediaplayer );

@@ -2,6 +2,7 @@
  * win32_graphics.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 71b49719ca714b9ec8c36b3134bb6fd2410d3008 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -22,6 +23,8 @@
  *****************************************************************************/
 
 #ifdef WIN32_SKINS
+
+#define WINVER 0x500
 
 #include "win32_factory.hpp"
 #include "win32_graphics.hpp"

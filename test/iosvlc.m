@@ -24,10 +24,6 @@
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
-#undef VLC_DYNAMIC_PLUGINS
-
-#define MODULE_NAME ios_interface
-#undef VLC_DYNAMIC_PLUGINS
 
 #import <UIKit/UIKit.h>
 #include <vlc/vlc.h>
@@ -134,7 +130,7 @@
     libvlc_add_intf(_libvlc, "ios_interface,none");
 
     /* Start parsing arguments and eventual playback */
-    libvlc_playlist_play(_libvlc);
+    libvlc_playlist_play(_libvlc, -1, 0, NULL);
 
     return YES;
 }
@@ -151,18 +147,21 @@ static int Open(vlc_object_t *obj)
 {
     AppDelegate *d = (AppDelegate *)[[UIApplication sharedApplication] delegate];
     assert(d != nil && d->subview != nil);
-    var_SetAddress(vlc_object_instance(obj), "drawable-nsobject",
+    var_SetAddress(obj->obj.libvlc, "drawable-nsobject",
                    (__bridge void *)d->subview);
 
     return VLC_SUCCESS;
 }
 
+#define MODULE_NAME ios_interface
+#define MODULE_STRING "ios_interface"
 vlc_module_begin()
     set_capability("interface", 0)
-    set_callback(Open)
+    set_callbacks(Open, NULL)
 vlc_module_end()
 
-VLC_EXPORT const vlc_plugin_cb vlc_static_modules[] = {
-    VLC_SYMBOL(vlc_entry),
-    NULL
-};
+/* Inject the glue interface as a static module */
+typedef int (*vlc_plugin_cb)(vlc_set_cb, void*);
+
+__attribute__((visibility("default")))
+vlc_plugin_cb vlc_static_modules[] = { vlc_entry__ios_interface, NULL };

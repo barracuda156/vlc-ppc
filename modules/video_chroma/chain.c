@@ -2,6 +2,7 @@
  * chain.c : chain multiple video filter modules as a last resort solution
  *****************************************************************************
  * Copyright (C) 2007-2017 VLC authors and VideoLAN
+ * $Id: 270942525504a3da1562b770864fbf6a00e6d5b8 $
  *
  * Authors: Antoine Cellerier <dionoea at videolan dot org>
  *
@@ -37,31 +38,33 @@
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
-static int       ActivateConverter  ( filter_t * );
-static int       ActivateFilter     ( filter_t * );
-static void      Destroy            ( filter_t * );
+static int       ActivateConverter  ( vlc_object_t * );
+static int       ActivateFilter     ( vlc_object_t * );
+static void      Destroy            ( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("Video filtering using a chain of video filter modules") )
-    set_callback_video_converter( ActivateConverter, 1 )
+    set_capability( "video converter", 1 )
+    set_callbacks( ActivateConverter, Destroy )
     add_submodule ()
-        set_callback_video_filter( ActivateFilter )
+        set_capability( "video filter", 0 )
+        set_callbacks( ActivateFilter, Destroy )
 vlc_module_end ()
 
 /*****************************************************************************
  * Local prototypes.
  *****************************************************************************/
 static picture_t *Chain         ( filter_t *, picture_t * );
-static void Flush               ( filter_t * );
-static int ChainMouse           ( filter_t *p_filter, vlc_mouse_t *p_mouse, const vlc_mouse_t *p_old );
 
 static int BuildTransformChain( filter_t *p_filter );
 static int BuildChromaResize( filter_t * );
 static int BuildChromaChain( filter_t *p_filter );
 static int BuildFilterChain( filter_t *p_filter );
 
-static int CreateChain( filter_t *p_filter, const es_format_t *p_fmt_mid );
-static int CreateResizeChromaChain( filter_t *p_filter, const es_format_t *p_fmt_mid );
+static int CreateChain( filter_t *p_parent, const es_format_t *p_fmt_mid );
+static int CreateResizeChromaChain( filter_t *p_parent, const es_format_t *p_fmt_mid );
+static filter_t * AppendTransform( filter_chain_t *p_chain, const es_format_t *p_fmt_in,
+                                   const es_format_t *p_fmt_out );
 static void EsFormatMergeSize( es_format_t *p_dst,
                                const es_format_t *p_base,
                                const es_format_t *p_size );
@@ -108,11 +111,11 @@ static const vlc_fourcc_t *get_allowed_chromas( filter_t *p_filter )
     }
 }
 
-typedef struct
+struct filter_sys_t
 {
     filter_chain_t *p_chain;
     filter_t *p_video_filter;
-} filter_sys_t;
+};
 
 /* Restart filter callback */
 static int RestartFilterCallback( vlc_object_t *obj, char const *psz_name,
@@ -128,31 +131,14 @@ static int RestartFilterCallback( vlc_object_t *obj, char const *psz_name,
 /*****************************************************************************
  * Buffer management
  *****************************************************************************/
-static picture_t *BufferChainNew( filter_t *p_filter )
+static picture_t *BufferNew( filter_t *p_filter )
 {
-    filter_t *p_chain_parent = p_filter->owner.sys;
-    // the last filter of the internal chain gets its pictures from the original
-    // filter source
-    return filter_NewPicture( p_chain_parent );
+    filter_t *p_parent = p_filter->owner.sys;
+
+    return filter_NewPicture( p_parent );
 }
 
 #define CHAIN_LEVEL_MAX 2
-
-static vlc_decoder_device * HoldChainDecoderDevice(vlc_object_t *o, void *sys)
-{
-    VLC_UNUSED(o);
-    filter_t *p_chain_parent = sys;
-    return filter_HoldDecoderDevice( p_chain_parent );
-}
-
-static const struct filter_video_callbacks filter_video_chain_cbs =
-{
-    BufferChainNew, HoldChainDecoderDevice,
-};
-
-static const struct vlc_filter_operations filter_ops = {
-    .filter_video = Chain, .flush = Flush, .video_mouse=ChainMouse, .close = Destroy,
-};
 
 /*****************************************************************************
  * Activate: allocate a chroma function
@@ -169,8 +155,10 @@ static int Activate( filter_t *p_filter, int (*pf_build)(filter_t *) )
         return VLC_ENOMEM;
 
     filter_owner_t owner = {
-        .video = &filter_video_chain_cbs,
         .sys = p_filter,
+        .video = {
+            .buffer_new = BufferNew,
+        },
     };
 
     p_sys->p_chain = filter_chain_NewVideo( p_filter, p_filter->b_allow_fmt_out_change, &owner );
@@ -181,7 +169,7 @@ static int Activate( filter_t *p_filter, int (*pf_build)(filter_t *) )
     }
 
     int type = VLC_VAR_INTEGER;
-    if( var_Type( vlc_object_parent(p_filter), "chain-level" ) != 0 )
+    if( var_Type( p_filter->obj.parent, "chain-level" ) != 0 )
         type |= VLC_VAR_DOINHERIT;
 
     var_Create( p_filter, "chain-level", type );
@@ -206,21 +194,21 @@ static int Activate( filter_t *p_filter, int (*pf_build)(filter_t *) )
         free( p_sys );
         return VLC_EGENERIC;
     }
-    if( p_filter->b_allow_fmt_out_change )
+    else if( p_filter->b_allow_fmt_out_change )
     {
         es_format_Clean( &p_filter->fmt_out );
         es_format_Copy( &p_filter->fmt_out,
-                        filter_chain_GetFmtOut( p_sys->p_chain ) );
-        p_filter->vctx_out = filter_chain_GetVideoCtxOut( p_sys->p_chain );
+                        filter_chain_GetFmtOut( p_filter->p_sys->p_chain ) );
     }
-    assert(p_filter->vctx_out == filter_chain_GetVideoCtxOut( p_sys->p_chain ));
     /* */
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Chain;
     return VLC_SUCCESS;
 }
 
-static int ActivateConverter( filter_t *p_filter )
+static int ActivateConverter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     const bool b_chroma = p_filter->fmt_in.video.i_chroma != p_filter->fmt_out.video.i_chroma;
     const bool b_resize = p_filter->fmt_in.video.i_width  != p_filter->fmt_out.video.i_width ||
                           p_filter->fmt_in.video.i_height != p_filter->fmt_out.video.i_height;
@@ -236,12 +224,14 @@ static int ActivateConverter( filter_t *p_filter )
                                BuildChromaChain );
 }
 
-static int ActivateFilter( filter_t *p_filter )
+static int ActivateFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     if( !p_filter->b_allow_fmt_out_change || p_filter->psz_name == NULL )
         return VLC_EGENERIC;
 
-    if( var_Type( vlc_object_parent(p_filter), "chain-filter-level" ) != 0 )
+    if( var_Type( p_filter->obj.parent, "chain-filter-level" ) != 0 )
         return VLC_EGENERIC;
 
     var_Create( p_filter, "chain-filter-level", VLC_VAR_INTEGER );
@@ -251,15 +241,15 @@ static int ActivateFilter( filter_t *p_filter )
     return i_ret;
 }
 
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_t *p_filter = (filter_t *)p_this;
 
-    if (p_sys->p_video_filter)
-        filter_DelProxyCallbacks( p_filter, p_sys->p_video_filter,
+    if (p_filter->p_sys->p_video_filter)
+        filter_DelProxyCallbacks( p_filter, p_filter->p_sys->p_video_filter,
                                   RestartFilterCallback );
-    filter_chain_Delete( p_sys->p_chain );
-    free( p_sys );
+    filter_chain_Delete( p_filter->p_sys->p_chain );
+    free( p_filter->p_sys );
 }
 
 /*****************************************************************************
@@ -267,14 +257,7 @@ static void Destroy( filter_t *p_filter )
  *****************************************************************************/
 static picture_t *Chain( filter_t *p_filter, picture_t *p_pic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    return filter_chain_VideoFilter( p_sys->p_chain, p_pic );
-}
-
-static void Flush( filter_t *p_filter )
-{
-    filter_sys_t *p_sys = p_filter->p_sys;
-    filter_chain_VideoFlush( p_sys->p_chain );
+    return filter_chain_VideoFilter( p_filter->p_sys->p_chain, p_pic );
 }
 
 /*****************************************************************************
@@ -301,7 +284,10 @@ static int BuildTransformChain( filter_t *p_filter )
     EsFormatMergeSize( &fmt_mid, &p_filter->fmt_out, &p_filter->fmt_in );
     i_ret = CreateChain( p_filter, &fmt_mid );
     es_format_Clean( &fmt_mid );
-    return i_ret;
+    if( i_ret == VLC_SUCCESS )
+        return VLC_SUCCESS;
+
+    return VLC_EGENERIC;
 }
 
 static int BuildChromaResize( filter_t *p_filter )
@@ -365,25 +351,22 @@ static int BuildChromaChain( filter_t *p_filter )
 }
 
 static int ChainMouse( filter_t *p_filter, vlc_mouse_t *p_mouse,
-                       const vlc_mouse_t *p_old )
+                       const vlc_mouse_t *p_old, const vlc_mouse_t *p_new )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    return filter_chain_MouseFilter( p_sys->p_chain, p_mouse, p_old );
+    (void) p_old;
+    return filter_chain_MouseFilter( p_filter->p_sys->p_chain, p_mouse, p_new );
 }
 
 static int BuildFilterChain( filter_t *p_filter )
 {
     es_format_t fmt_mid;
-    es_format_Init(&fmt_mid, p_filter->fmt_in.i_cat, p_filter->fmt_in.i_codec);
     int i_ret = VLC_EGENERIC;
-
-    filter_sys_t *p_sys = p_filter->p_sys;
 
     /* Now try chroma format list */
     const vlc_fourcc_t *pi_allowed_chromas = get_allowed_chromas( p_filter );
     for( int i = 0; pi_allowed_chromas[i]; i++ )
     {
-        filter_chain_Reset( p_sys->p_chain, &p_filter->fmt_in, p_filter->vctx_in, &p_filter->fmt_out );
+        filter_chain_Reset( p_filter->p_sys->p_chain, &p_filter->fmt_in, &p_filter->fmt_out );
 
         const vlc_fourcc_t i_chroma = pi_allowed_chromas[i];
         if( i_chroma == p_filter->fmt_in.i_codec ||
@@ -393,7 +376,6 @@ static int BuildFilterChain( filter_t *p_filter )
         msg_Dbg( p_filter, "Trying to use chroma %4.4s as middle man",
                  (char*)&i_chroma );
 
-        es_format_Clean( &fmt_mid );
         es_format_Copy( &fmt_mid, &p_filter->fmt_in );
         fmt_mid.i_codec        =
         fmt_mid.video.i_chroma = i_chroma;
@@ -402,30 +384,29 @@ static int BuildFilterChain( filter_t *p_filter )
         fmt_mid.video.i_bmask  = 0;
         video_format_FixRgb(&fmt_mid.video);
 
-        if( filter_chain_AppendConverter( p_sys->p_chain,
-                                          &fmt_mid ) != VLC_SUCCESS )
-            continue;
-        
-        p_sys->p_video_filter =
-            filter_chain_AppendFilter( p_sys->p_chain,
-                                       p_filter->psz_name, p_filter->p_cfg,
-                                       &fmt_mid );
-        if( p_sys->p_video_filter == NULL)
-            continue;
-
-        filter_AddProxyCallbacks( p_filter,
-                                  p_sys->p_video_filter,
-                                  RestartFilterCallback );
-
-        i_ret = VLC_SUCCESS;
-        p_filter->vctx_out = filter_chain_GetVideoCtxOut( p_sys->p_chain );
-        break;
+        if( filter_chain_AppendConverter( p_filter->p_sys->p_chain,
+                                          NULL, &fmt_mid ) == VLC_SUCCESS )
+        {
+            p_filter->p_sys->p_video_filter =
+                filter_chain_AppendFilter( p_filter->p_sys->p_chain,
+                                           p_filter->psz_name, p_filter->p_cfg,
+                                           &fmt_mid, &fmt_mid );
+            if( p_filter->p_sys->p_video_filter )
+            {
+                filter_AddProxyCallbacks( p_filter,
+                                          p_filter->p_sys->p_video_filter,
+                                          RestartFilterCallback );
+                if (p_filter->p_sys->p_video_filter->pf_video_mouse != NULL)
+                    p_filter->pf_video_mouse = ChainMouse;
+                es_format_Clean( &fmt_mid );
+                i_ret = VLC_SUCCESS;
+                break;
+            }
+        }
+        es_format_Clean( &fmt_mid );
     }
-
-    es_format_Clean( &fmt_mid );
-
     if( i_ret != VLC_SUCCESS )
-        filter_chain_Reset( p_sys->p_chain, &p_filter->fmt_in, p_filter->vctx_in, &p_filter->fmt_out );
+        filter_chain_Reset( p_filter->p_sys->p_chain, &p_filter->fmt_in, &p_filter->fmt_out );
 
     return i_ret;
 }
@@ -433,35 +414,57 @@ static int BuildFilterChain( filter_t *p_filter )
 /*****************************************************************************
  *
  *****************************************************************************/
-static int CreateChain( filter_t *p_filter, const es_format_t *p_fmt_mid )
+static int CreateChain( filter_t *p_parent, const es_format_t *p_fmt_mid )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    filter_chain_Reset( p_sys->p_chain, &p_filter->fmt_in, p_filter->vctx_in, &p_filter->fmt_out );
+    filter_chain_Reset( p_parent->p_sys->p_chain, &p_parent->fmt_in, &p_parent->fmt_out );
 
-    if( filter_chain_AppendConverter( p_sys->p_chain, p_fmt_mid ) )
-        return VLC_EGENERIC;
+    filter_t *p_filter;
 
-    if( filter_chain_AppendConverter( p_sys->p_chain, &p_filter->fmt_out ) )
-        goto error;
+    if( p_parent->fmt_in.video.orientation != p_fmt_mid->video.orientation)
+    {
+        p_filter = AppendTransform( p_parent->p_sys->p_chain, &p_parent->fmt_in, p_fmt_mid );
+        // Check if filter was enough:
+        if( p_filter == NULL )
+            return VLC_EGENERIC;
+        if( es_format_IsSimilar(&p_filter->fmt_out, &p_parent->fmt_out ))
+           return VLC_SUCCESS;
+    }
+    else
+    {
+        if( filter_chain_AppendConverter( p_parent->p_sys->p_chain,
+                                          NULL, p_fmt_mid ) )
+            return VLC_EGENERIC;
+    }
 
-    p_filter->vctx_out = filter_chain_GetVideoCtxOut( p_sys->p_chain );
+    if( p_fmt_mid->video.orientation != p_parent->fmt_out.video.orientation)
+    {
+        if( AppendTransform( p_parent->p_sys->p_chain, p_fmt_mid,
+                             &p_parent->fmt_out ) == NULL )
+            goto error;
+    }
+    else
+    {
+        if( filter_chain_AppendConverter( p_parent->p_sys->p_chain,
+                                          p_fmt_mid, &p_parent->fmt_out ) )
+            goto error;
+    }
     return VLC_SUCCESS;
 error:
     //Clean up.
-    filter_chain_Clear( p_sys->p_chain );
+    filter_chain_Reset( p_parent->p_sys->p_chain, NULL, NULL );
     return VLC_EGENERIC;
 }
 
-static int CreateResizeChromaChain( filter_t *p_filter, const es_format_t *p_fmt_mid )
+static int CreateResizeChromaChain( filter_t *p_parent, const es_format_t *p_fmt_mid )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-    filter_chain_Reset( p_sys->p_chain, &p_filter->fmt_in, p_filter->vctx_in, &p_filter->fmt_out );
+    filter_chain_Reset( p_parent->p_sys->p_chain, &p_parent->fmt_in, &p_parent->fmt_out );
 
-    int i_ret = filter_chain_AppendConverter( p_sys->p_chain, p_fmt_mid );
+    int i_ret = filter_chain_AppendConverter( p_parent->p_sys->p_chain,
+                                              NULL, p_fmt_mid );
     if( i_ret != VLC_SUCCESS )
         return i_ret;
 
-    if( p_filter->b_allow_fmt_out_change )
+    if( p_parent->b_allow_fmt_out_change )
     {
         /* XXX: Update i_sar_num/i_sar_den from last converter. Cf.
          * p_filter->b_allow_fmt_out_change comment in video_chroma/swscale.c.
@@ -469,21 +472,73 @@ static int CreateResizeChromaChain( filter_t *p_filter, const es_format_t *p_fmt
 
         es_format_t fmt_out;
         es_format_Copy( &fmt_out,
-                        filter_chain_GetFmtOut( p_sys->p_chain ) );
-        fmt_out.video.i_chroma = p_filter->fmt_out.video.i_chroma;
+                        filter_chain_GetFmtOut( p_parent->p_sys->p_chain ) );
+        fmt_out.video.i_chroma = p_parent->fmt_out.video.i_chroma;
 
-        i_ret = filter_chain_AppendConverter( p_sys->p_chain, &fmt_out );
+        i_ret = filter_chain_AppendConverter( p_parent->p_sys->p_chain,
+                                              NULL, &fmt_out );
         es_format_Clean( &fmt_out );
     }
     else
-        i_ret = filter_chain_AppendConverter( p_sys->p_chain, &p_filter->fmt_out );
+        i_ret = filter_chain_AppendConverter( p_parent->p_sys->p_chain,
+                                              NULL, &p_parent->fmt_out );
 
     if( i_ret != VLC_SUCCESS )
-        filter_chain_Clear( p_sys->p_chain );
-    else
-        p_filter->vctx_out = filter_chain_GetVideoCtxOut( p_sys->p_chain );
-
+        filter_chain_Reset( p_parent->p_sys->p_chain, NULL, NULL );
     return i_ret;
+}
+
+static filter_t * AppendTransform( filter_chain_t *p_chain, const es_format_t *p_fmt1,
+                                   const es_format_t *p_fmt2 )
+{
+    video_transform_t transform = video_format_GetTransform(p_fmt1->video.orientation, p_fmt2->video.orientation);
+
+    const char *type;
+
+    switch ( transform ) {
+
+        case TRANSFORM_R90:
+            type = "90";
+            break;
+        case TRANSFORM_R180:
+            type = "180";
+            break;
+        case TRANSFORM_R270:
+            type = "270";
+            break;
+        case TRANSFORM_HFLIP:
+            type = "hflip";
+            break;
+        case TRANSFORM_VFLIP:
+            type = "vflip";
+            break;
+        case TRANSFORM_TRANSPOSE:
+            type = "transpose";
+            break;
+        case TRANSFORM_ANTI_TRANSPOSE:
+            type = "antitranspose";
+            break;
+        default:
+            type = NULL;
+            break;
+    }
+
+    if( !type )
+        return NULL;
+
+    config_chain_t *cfg;
+    char *name;
+    char config[100];
+    snprintf( config, 100, "transform{type=%s}", type );
+    char *next = config_ChainCreate( &name, &cfg, config );
+
+    filter_t *p_filter = filter_chain_AppendFilter( p_chain, name, cfg, p_fmt1, p_fmt2 );
+
+    config_ChainDestroy(cfg);
+    free(name);
+    free(next);
+
+    return p_filter;
 }
 
 static void EsFormatMergeSize( es_format_t *p_dst,
@@ -505,3 +560,4 @@ static void EsFormatMergeSize( es_format_t *p_dst,
     p_dst->video.i_sar_num = p_size->video.i_sar_num;
     p_dst->video.i_sar_den = p_size->video.i_sar_den;
 }
+

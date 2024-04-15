@@ -2,6 +2,7 @@
  * cdg.c: CDG decoder module
  *****************************************************************************
  * Copyright (C) 2007 Laurent Aimar
+ * $Id: 4ede0c97ade1e8823ba35f90881b5f3c9002fb91 $
  *
  * Authors: Laurent Aimar <fenrir # via.ecp.fr>
  *
@@ -49,7 +50,7 @@
 
 #define CDG_SCREEN_PITCH CDG_SCREEN_WIDTH
 
-typedef struct
+struct decoder_sys_t
 {
     uint8_t  color[16][3];
     unsigned i_offseth;
@@ -58,7 +59,7 @@ typedef struct
     uint8_t  *p_screen;
 
     int      i_packet;
-} decoder_sys_t;
+};
 
 #define CDG_PACKET_SIZE 24u
 
@@ -70,6 +71,7 @@ typedef struct
  * Local prototypes
  *****************************************************************************/
 static int  Open ( vlc_object_t * );
+static void Close( vlc_object_t * );
 
 static int Decode( decoder_t *, block_t * );
 
@@ -81,10 +83,11 @@ static int Render( decoder_sys_t *p_cdg, picture_t *p_picture );
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_description( N_("CDG video decoder") )
     set_capability( "video decoder", 1000 )
-    set_callback( Open )
+    set_callbacks( Open, Close )
     add_shortcut( "cdg" )
 vlc_module_end ()
 
@@ -96,11 +99,11 @@ static int Open( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_CDG )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_CDG )
         return VLC_EGENERIC;
 
     /* Allocate the memory needed to store the decoder's structure */
-    p_dec->p_sys = p_sys = vlc_obj_calloc( p_this, 1, sizeof(decoder_sys_t) );
+    p_dec->p_sys = p_sys = calloc( 1, sizeof(decoder_sys_t) );
     if( !p_sys )
         return VLC_ENOMEM;
 
@@ -174,7 +177,7 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
             goto exit;
 
         Render( p_sys, p_pic );
-        p_pic->date = p_block->i_pts != VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
+        p_pic->date = p_block->i_pts > VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
     }
 
 exit:
@@ -182,6 +185,17 @@ exit:
     if( p_pic != NULL )
         decoder_QueueVideo( p_dec, p_pic );
     return VLCDEC_SUCCESS;
+}
+
+/*****************************************************************************
+ * Close: decoder destruction
+ *****************************************************************************/
+static void Close( vlc_object_t *p_this )
+{
+    decoder_t *p_dec = (decoder_t *)p_this;
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    free( p_sys );
 }
 
 /*****************************************************************************

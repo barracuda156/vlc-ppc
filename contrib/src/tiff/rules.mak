@@ -11,18 +11,15 @@ $(TARBALLS)/tiff-$(TIFF_VERSION).tar.gz:
 tiff: tiff-$(TIFF_VERSION).tar.gz .sum-tiff
 	$(UNPACK)
 	$(UPDATE_AUTOCONFIG)
-	$(APPLY) $(SRC)/tiff/tiff-winstore.patch
 	$(MOVE)
 	mv tiff/config.sub tiff/config.guess tiff/config
 
 .tiff: tiff
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) \
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) \
 		--disable-jpeg \
 		--disable-zlib \
 		--disable-cxx \
 		--without-x
-	+$(MAKEBUILD) -C port
-	+$(MAKEBUILD) -C libtiff
-	+$(MAKEBUILD) -C libtiff install
+	cd $< && $(MAKE) -C port && $(MAKE) -C libtiff
+	cd $< && $(MAKE) install
 	touch $@

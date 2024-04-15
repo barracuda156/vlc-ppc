@@ -53,13 +53,13 @@ namespace adaptive
                 virtual BaseRepresentation* getNextRepresentation(BaseAdaptationSet *,
                                                                   BaseRepresentation *) override;
                 virtual void                updateDownloadRate     (const ID &, size_t,
-                                                                    vlc_tick_t, vlc_tick_t) override;
+                                                                    mtime_t, mtime_t) override;
                 virtual void                trackerEvent           (const TrackerEvent &) override;
 
             private:
                 BaseRepresentation *        getNextQualityIndex( BaseAdaptationSet *, RepresentationSelector &,
-                                                                 float gammaP, float VD,
-                                                                 float Q /*current buffer level*/);
+                                                                 float gammaP, vlc_tick_t VD,
+                                                                 vlc_tick_t Q /*current buffer level*/);
                 float                       getUtility(const BaseRepresentation *);
                 unsigned                    getAvailableBw(unsigned, const BaseRepresentation *) const;
                 unsigned                    getMaxCurrentBw() const;
@@ -67,6 +67,7 @@ namespace adaptive
                 std::map<uint64_t, float>   utilities;
                 unsigned                    currentBps;
                 unsigned                    usedBps;
+                vlc_object_t *              p_obj;
                 vlc_mutex_t                 lock;
         };
     }

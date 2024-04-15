@@ -3,54 +3,32 @@ access_LTLIBRARIES += librtp_plugin.la
 librtp_plugin_la_SOURCES = \
 	access/rtp/input.c \
 	access/rtp/session.c \
-	access/rtp/sdp.c access/rtp/sdp.h \
-	access/rtp/rtpfmt.c \
-	access/rtp/datagram.c access/rtp/vlc_dtls.h \
+	access/rtp/xiph.c \
 	access/rtp/rtp.c access/rtp/rtp.h
 librtp_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/access/rtp
 librtp_plugin_la_CFLAGS = $(AM_CFLAGS)
-librtp_plugin_la_LIBADD = $(SOCKET_LIBS)
+librtp_plugin_la_LIBADD = $(SOCKET_LIBS) $(LIBPTHREAD)
 
 # Secure RTP library
 libvlc_srtp_la_SOURCES = access/rtp/srtp.c access/rtp/srtp.h
 libvlc_srtp_la_CPPFLAGS = -I$(srcdir)/access/rtp
 libvlc_srtp_la_CFLAGS = $(GCRYPT_CFLAGS)
 libvlc_srtp_la_LDFLAGS = -static
-libvlc_srtp_la_LIBADD = $(GCRYPT_LIBS)
+libvlc_srtp_la_LIBADD = $(GCRYPT_LIBS) $(LIBPTHREAD)
+srtp_test_recv_SOURCES = access/rtp/srtp-test-recv.c
+srtp_test_recv_LDADD = libvlc_srtp.la
+srtp_test_aes_SOURCES = access/rtp/srtp-test-aes.c
+srtp_test_aes_LDADD = $(GCRYPT_LIBS)
 
 librtp_plugin_la_DEPENDENCIES =
 if HAVE_GCRYPT
 noinst_LTLIBRARIES += libvlc_srtp.la
+
+check_PROGRAMS += srtp-test-aes srtp-test-recv
+TESTS += srtp-test-aes srtp-test-recv
 
 librtp_plugin_la_CPPFLAGS += -DHAVE_SRTP
 librtp_plugin_la_CFLAGS += $(GCRYPT_CFLAGS)
 librtp_plugin_la_LIBADD += libvlc_srtp.la $(GCRYPT_LIBS)
 librtp_plugin_la_DEPENDENCIES += libvlc_srtp.la
 endif
-
-noinst_HEADERS += access/rtp/fmtp.h
-
-# RTP payload parser plugins
-rtpparsedir = $(accessdir)/rtp
-rtpparse_LTLIBRARIES = \
-	librtp_ac3_plugin.la \
-	librtp_mpeg12_plugin.la \
-	librtp_pcm_plugin.la \
-	librtp_raw_plugin.la \
-	librtp_h264_plugin.la \
-	librtp_opus_plugin.la \
-	librtp_xiph_plugin.la
-
-librtp_ac3_plugin_la_SOURCES = access/rtp/ac3.c
-librtp_mpeg12_plugin_la_SOURCES = access/rtp/mpeg12.c
-
-librtp_pcm_plugin_la_SOURCES = access/rtp/pcm.c
-librtp_pcm_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/access/rtp
-
-librtp_raw_plugin_la_SOURCES = access/rtp/raw.c
-
-librtp_h264_plugin_la_SOURCES = access/rtp/h264.c
-
-librtp_opus_plugin_la_SOURCES = access/rtp/opus.c
-
-librtp_xiph_plugin_la_SOURCES = access/rtp/xiph.c

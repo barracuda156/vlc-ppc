@@ -2,6 +2,7 @@
  * extension_thread.c: Extensions Manager, Threads manager (no Lua here)
  *****************************************************************************
  * Copyright (C) 2009-2010 VideoLAN and authors
+ * $Id: 7db1c0ba0794fb0ba471a52bcc1d4b02725e2a9b $
  *
  * Authors: Jean-Philippe André < jpeg # videolan.org >
  *
@@ -28,10 +29,6 @@
 #include "extension.h"
 #include "assert.h"
 
-#include <vlc_common.h>
-#include <vlc_messages.h>
-#include <vlc_player.h>
-
 struct thread_sys_t
 {
     extensions_manager_t *p_mgr;
@@ -43,107 +40,55 @@ static void* Run( void *data );
 static void FreeCommands( struct command_t *command );
 
 /**
- * Player listeners
- */
-
-static void
-OnCurrentMediaChanged(vlc_player_t *player,
-                      input_item_t *new_media,
-                      void *opaque)
-{
-    (void)player;
-    extension_t *ext = opaque;
-    struct lua_extension *sys = ext->p_sys;
-
-    vlc_mutex_lock(&sys->running_lock);
-    // Change input
-    input_item_t *old = sys->p_item;
-    if (old)
-        input_item_Release(old);
-
-    if (new_media)
-        input_item_Hold(new_media);
-    sys->p_item = new_media;
-
-    // Tell the script the input changed
-    if (sys->i_capabilities & EXT_INPUT_LISTENER)
-        PushCommandUnique(ext, CMD_SET_INPUT);
-    vlc_mutex_unlock(&sys->running_lock);
-}
-
-/**
  * Activate an extension
+ * @param p_mgr This manager
  * @param p_ext Extension to activate
  * @return The usual VLC return codes
  **/
-int Activate(extension_t *p_ext)
+int Activate( extensions_manager_t *p_mgr, extension_t *p_ext )
 {
     assert( p_ext != NULL );
 
-    struct lua_extension *sys = p_ext->p_sys;
-    assert(sys != NULL);
-    extensions_manager_t *mgr = sys->p_mgr;
+    struct extension_sys_t *p_sys = p_ext->p_sys;
+    assert( p_sys != NULL );
 
-    vlc_mutex_lock(&sys->command_lock);
-    if (sys->b_activating)
-    {
-        vlc_mutex_unlock(&sys->command_lock);
-        return VLC_SUCCESS;
-    }
-    if (!sys->b_activated)
+    vlc_mutex_lock( &p_sys->command_lock );
+    if ( p_sys->b_activated == false )
     {
         /* Prepare first command */
-        assert(sys->command == NULL);
-        sys->command = calloc(1, sizeof(*sys->command));
-        if (!sys->command)
+        assert(p_sys->command == NULL);
+        p_sys->command = calloc( 1, sizeof( struct command_t ) );
+        if( !p_sys->command )
         {
-            vlc_mutex_unlock(&sys->command_lock);
+            vlc_mutex_unlock( &p_sys->command_lock );
             return VLC_ENOMEM;
         }
-        sys->command->i_command = CMD_ACTIVATE; /* No params */
-        if (sys->b_thread_running)
+        p_sys->command->i_command = CMD_ACTIVATE; /* No params */
+        if (p_sys->b_thread_running == true)
         {
-            vlc_debug(p_ext->logger, "Reactivating extension %s", p_ext->psz_title);
-            vlc_cond_signal(&sys->wait);
+            msg_Dbg( p_mgr, "Reactivating extension %s", p_ext->psz_title);
+            vlc_cond_signal( &p_sys->wait );
         }
-        sys->b_activating = true;
     }
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_sys->command_lock );
 
-    if (!sys->b_thread_running)
+    if (p_sys->b_thread_running == true)
+        return VLC_SUCCESS;
+
+    msg_Dbg( p_mgr, "Activating extension '%s'", p_ext->psz_title );
+    /* Start thread */
+    p_sys->b_exiting = false;
+    p_sys->b_thread_running = true;
+
+    if( vlc_clone( &p_sys->thread, Run, p_ext, VLC_THREAD_PRIORITY_LOW )
+        != VLC_SUCCESS )
     {
-        vlc_debug(p_ext->logger, "Activating extension '%s'", p_ext->psz_title);
-        sys->b_exiting = false;
-        if (vlc_clone(&sys->thread, Run, p_ext) != VLC_SUCCESS)
-        {
-            sys->b_exiting = true;
-            return VLC_ENOMEM;
-        }
-        sys->b_thread_running = true;
+        p_sys->b_exiting = true;
+        p_sys->b_thread_running = false;
+        return VLC_ENOMEM;
     }
-
-    /* Setup the listeners on the player object. */
-    static const struct vlc_player_cbs player_cbs =
-    {
-        .on_current_media_changed = OnCurrentMediaChanged,
-    };
-
-    vlc_player_Lock(mgr->player);
-    sys->player_listener =
-        vlc_player_AddListener(mgr->player, &player_cbs, p_ext);
-    vlc_player_Unlock(mgr->player);
-
-    if (sys->player_listener == NULL)
-        goto error_listener;
 
     return VLC_SUCCESS;
-error_listener:
-    vlc_mutex_lock(&sys->command_lock);
-    sys->b_exiting = true;
-    vlc_cond_signal(&sys->wait);
-    vlc_mutex_unlock(&sys->command_lock);
-    vlc_join(sys->thread, NULL);
-    return VLC_ENOMEM;
 }
 
 /** Recursively drop and free commands starting from "command" */
@@ -172,85 +117,66 @@ static void FreeCommands( struct command_t *command )
 
 bool QueueDeactivateCommand( extension_t *p_ext )
 {
-    struct lua_extension *sys = p_ext->p_sys;
-    vlc_mutex_assert(&sys->command_lock);
-
     struct command_t *cmd = calloc( 1, sizeof( struct command_t ) );
     if( unlikely( cmd == NULL ) )
         return false;
     /* Free the list of commands */
-    if (sys->command != NULL)
-        FreeCommands(sys->command->next);
+    if( p_ext->p_sys->command )
+        FreeCommands( p_ext->p_sys->command->next );
 
     /* Push command */
 
     cmd->i_command = CMD_DEACTIVATE;
-    if (sys->command)
-        sys->command->next = cmd;
+    if( p_ext->p_sys->command )
+        p_ext->p_sys->command->next = cmd;
     else
-        sys->command = cmd;
+        p_ext->p_sys->command = cmd;
 
-    sys->b_deactivating = true;
-    sys->b_activating = false;
-    vlc_cond_signal(&sys->wait);
-
-    vlc_player_Lock(sys->p_mgr->player);
-    vlc_player_RemoveListener(sys->p_mgr->player, sys->player_listener);
-    vlc_player_Unlock(sys->p_mgr->player);
-
+    vlc_cond_signal( &p_ext->p_sys->wait );
     return true;
 }
 
 /** Deactivate this extension: pushes immediate command and drops queued */
 int Deactivate( extensions_manager_t *p_mgr, extension_t *p_ext )
 {
-    struct lua_extension *sys = p_ext->p_sys;
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
 
-    vlc_mutex_lock(&sys->command_lock);
-    if (!sys->b_activated && !sys->b_activating)
+    if( p_ext->p_sys->b_exiting )
     {
-        vlc_mutex_unlock(&sys->command_lock);
-        return VLC_SUCCESS;
-    }
-
-    if (sys->b_exiting)
-    {
-        vlc_mutex_unlock(&sys->command_lock);
+        vlc_mutex_unlock( &p_ext->p_sys->command_lock );
         return VLC_EGENERIC;
     }
 
-    if (sys->p_progress_id != NULL)
+    if( p_ext->p_sys->p_progress_id != NULL )
     {
         // Extension is stuck, kill it now
-        vlc_dialog_release(p_mgr, sys->p_progress_id);
-        sys->p_progress_id = NULL;
-        KillExtension(p_ext);
-        vlc_mutex_unlock(&sys->command_lock);
+        vlc_dialog_release( p_mgr, p_ext->p_sys->p_progress_id );
+        p_ext->p_sys->p_progress_id = NULL;
+        KillExtension( p_mgr, p_ext );
+        vlc_mutex_unlock( &p_ext->p_sys->command_lock );
         return VLC_SUCCESS;
     }
 
     bool b_success = QueueDeactivateCommand( p_ext );
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
     return b_success ? VLC_SUCCESS : VLC_ENOMEM;
 }
 
 /* MUST be called with command_lock held */
-void KillExtension(extension_t *p_ext)
+void KillExtension( extensions_manager_t *p_mgr, extension_t *p_ext )
 {
-    struct lua_extension *sys = p_ext->p_sys;
-    vlc_debug(p_ext->logger, "Killing extension now");
-    vlclua_fd_interrupt(&sys->dtable);
-    sys->b_activated = false;
-    sys->b_exiting = true;
-    vlc_cond_signal(&sys->wait);
+    msg_Dbg( p_mgr, "Killing extension now" );
+    vlclua_fd_interrupt( &p_ext->p_sys->dtable );
+    p_ext->p_sys->b_activated = false;
+    p_ext->p_sys->b_exiting = true;
+    vlc_cond_signal( &p_ext->p_sys->wait );
 }
 
 /** Push a UI command */
 int PushCommand__( extension_t *p_ext,  bool b_unique, command_type_e i_command,
                    va_list args )
 {
-    struct lua_extension *sys = p_ext->p_sys;
     /* Create command */
     struct command_t *cmd = calloc( 1, sizeof( struct command_t ) );
     if( unlikely( cmd == NULL ) )
@@ -291,18 +217,18 @@ int PushCommand__( extension_t *p_ext,  bool b_unique, command_type_e i_command,
             // Nothing to do here
             break;
         default:
-            msg_Dbg(sys->p_mgr, "Unknown command send to extension: %d",
-                    i_command);
+            msg_Dbg( p_ext->p_sys->p_mgr,
+                     "Unknown command send to extension: %d", i_command );
             break;
     }
 
-    vlc_mutex_lock(&sys->command_lock);
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
 
     /* Push command to the end of the queue */
-    struct command_t *last = sys->command;
+    struct command_t *last = p_ext->p_sys->command;
     if( !last )
     {
-        sys->command = cmd;
+        p_ext->p_sys->command = cmd;
     }
     else
     {
@@ -330,8 +256,8 @@ int PushCommand__( extension_t *p_ext,  bool b_unique, command_type_e i_command,
         }
     }
 
-    vlc_cond_signal(&sys->wait);
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_cond_signal( &p_ext->p_sys->wait );
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
     return VLC_SUCCESS;
 }
 
@@ -339,32 +265,28 @@ int PushCommand__( extension_t *p_ext,  bool b_unique, command_type_e i_command,
 static void* Run( void *data )
 {
     extension_t *p_ext = data;
-    struct lua_extension *sys = p_ext->p_sys;
-    extensions_manager_t *p_mgr = sys->p_mgr;
+    extensions_manager_t *p_mgr = p_ext->p_sys->p_mgr;
 
-    vlc_thread_set_name("vlc-lua-ext");
+    vlc_mutex_lock( &p_ext->p_sys->command_lock );
 
-    vlc_mutex_lock(&sys->command_lock);
-
-    while (!sys->b_exiting || (sys->command && sys->command->i_command == CMD_DEACTIVATE))
+    while( !p_ext->p_sys->b_exiting )
     {
-        struct command_t *cmd = sys->command;
+        struct command_t *cmd = p_ext->p_sys->command;
 
         /* Pop command in front */
         if( cmd == NULL )
         {
-            vlc_cond_wait(&sys->wait, &sys->command_lock);
+            vlc_cond_wait( &p_ext->p_sys->wait, &p_ext->p_sys->command_lock );
             continue;
         }
-        sys->command = cmd->next;
+        p_ext->p_sys->command = cmd->next;
         cmd->next = NULL; /* unlink command (for FreeCommands()) */
         // Create watch timer
-        vlc_timer_schedule(sys->timer, false, WATCH_TIMER_PERIOD,
-                           VLC_TIMER_FIRE_ONCE);
-        vlc_mutex_unlock(&sys->command_lock);
+        vlc_timer_schedule( p_ext->p_sys->timer, false, WATCH_TIMER_PERIOD, 0 );
+        vlc_mutex_unlock( &p_ext->p_sys->command_lock );
 
         /* Run command */
-        vlc_mutex_lock(&sys->running_lock);
+        vlc_mutex_lock( &p_ext->p_sys->running_lock );
         switch( cmd->i_command )
         {
             case CMD_ACTIVATE:
@@ -372,30 +294,28 @@ static void* Run( void *data )
                 if( lua_ExecuteFunction( p_mgr, p_ext, "activate", LUA_END ) < 0 )
                 {
                     msg_Err( p_mgr, "Could not activate extension!" );
-                    vlc_mutex_lock(&sys->command_lock);
+                    vlc_mutex_lock( &p_ext->p_sys->command_lock );
                     QueueDeactivateCommand( p_ext );
-                    vlc_mutex_unlock(&sys->command_lock);
+                    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
                     break;
                 }
-                vlc_mutex_lock(&sys->command_lock);
-                sys->b_activated = true;
-                sys->b_activating = false;
-                vlc_mutex_unlock(&sys->command_lock);
+                vlc_mutex_lock( &p_ext->p_sys->command_lock );
+                p_ext->p_sys->b_activated = true;
+                vlc_mutex_unlock( &p_ext->p_sys->command_lock );
                 break;
             }
 
             case CMD_DEACTIVATE:
             {
-                vlc_debug(p_ext->logger, "Deactivating '%s'", p_ext->psz_title);
+                msg_Dbg( p_mgr, "Deactivating '%s'", p_ext->psz_title );
                 if( lua_ExtensionDeactivate( p_mgr, p_ext ) < 0 )
                 {
-                    vlc_warning(p_ext->logger, "Extension '%s' did not deactivate properly",
-                                p_ext->psz_title);
+                    msg_Warn( p_mgr, "Extension '%s' did not deactivate properly",
+                              p_ext->psz_title );
                 }
-                vlc_mutex_lock(&sys->command_lock);
-                sys->b_activated = false;
-                sys->b_deactivating = false;
-                vlc_mutex_unlock(&sys->command_lock);
+                vlc_mutex_lock( &p_ext->p_sys->command_lock );
+                p_ext->p_sys->b_activated = false;
+                vlc_mutex_unlock( &p_ext->p_sys->command_lock );
                 break;
             }
 
@@ -409,10 +329,12 @@ static void* Run( void *data )
             {
                 extension_widget_t *p_widget = cmd->data[0];
                 assert( p_widget );
-                vlc_debug(p_ext->logger, "Clicking '%s': '%s'",
-                         p_ext->psz_name, p_widget->psz_text);
+                msg_Dbg( p_mgr, "Clicking '%s': '%s'",
+                         p_ext->psz_name, p_widget->psz_text );
                 if( lua_ExtensionWidgetClick( p_mgr, p_ext, p_widget ) < 0 )
-                    vlc_debug(p_ext->logger, "Could not translate click");
+                {
+                    msg_Warn( p_mgr, "Could not translate click" );
+                }
                 break;
             }
 
@@ -420,8 +342,8 @@ static void* Run( void *data )
             {
                 int *pi_id = cmd->data[0];
                 assert( pi_id );
-                vlc_debug(p_ext->logger, "Trigger menu %d of '%s'",
-                          *pi_id, p_ext->psz_name);
+                msg_Dbg( p_mgr, "Trigger menu %d of '%s'",
+                         *pi_id, p_ext->psz_name );
                 lua_ExtensionTriggerMenu( p_mgr, p_ext, *pi_id );
                 break;
             }
@@ -452,21 +374,21 @@ static void* Run( void *data )
                 break;
             }
         }
-        vlc_mutex_unlock(&sys->running_lock);
+        vlc_mutex_unlock( &p_ext->p_sys->running_lock );
 
         FreeCommands( cmd );
 
-        vlc_mutex_lock(&sys->command_lock);
+        vlc_mutex_lock( &p_ext->p_sys->command_lock );
         // Reset watch timer and timestamp
-        if (sys->p_progress_id != NULL)
+        if( p_ext->p_sys->p_progress_id != NULL )
         {
-            vlc_dialog_release(p_mgr, sys->p_progress_id);
-            sys->p_progress_id = NULL;
+            vlc_dialog_release( p_mgr, p_ext->p_sys->p_progress_id );
+            p_ext->p_sys->p_progress_id = NULL;
         }
-        vlc_timer_disarm(sys->timer);
+        vlc_timer_schedule( p_ext->p_sys->timer, false, 0, 0 );
     }
 
-    vlc_mutex_unlock(&sys->command_lock);
+    vlc_mutex_unlock( &p_ext->p_sys->command_lock );
     msg_Dbg( p_mgr, "Extension thread end: '%s'", p_ext->psz_title );
 
     // Note: At this point, the extension should be deactivated

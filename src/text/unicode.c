@@ -59,7 +59,7 @@ int utf8_vfprintf( FILE *stream, const char *fmt, va_list ap )
     if (unlikely(res == -1))
         return -1;
 
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
+#if !VLC_WINSTORE_APP
     /* Writing to the console is a lot of fun on Microsoft Windows.
      * If you use the standard I/O functions, you must use the OEM code page,
      * which is different from the usual ANSI code page. Or maybe not, if the
@@ -89,9 +89,7 @@ int utf8_vfprintf( FILE *stream, const char *fmt, va_list ap )
     }
     else
         res = -1;
-#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
 out:
-#endif
     free (str);
     return res;
 #endif
@@ -112,69 +110,78 @@ int utf8_fprintf( FILE *stream, const char *fmt, ... )
     return res;
 }
 
-ssize_t vlc_towc (const char *str, uint32_t *restrict pwc)
+size_t vlc_towc (const char *str, uint32_t *restrict pwc)
 {
+    uint8_t *ptr = (uint8_t *)str, c;
+    uint32_t cp;
+
     assert (str != NULL);
 
-    unsigned char c0 = str[0];
-
-    if (likely((c0 & 0x80) == 0)) { // 7-bit ASCII character -> short cut
-        *pwc = c0;
-         return c0 != '\0';
-    }
-
-    if (unlikely((c0 & 0x40) == 0))
-        return -1; // continuation byte -> error
-
-    unsigned char c1 = str[1];
-    uint32_t cp = c1 & 0x3F;
-
-    if (unlikely((c1 >> 6) != 2)) // missing continuation byte
+    c = *ptr;
+    if (unlikely(c > 0xF4))
         return -1;
 
-    if (likely((c0 & 0x20) == 0)) { // two-byte sequence
-        *pwc = cp = ((c0 & 0x1F) << 6) | cp;
+    int charlen = clz8 (c ^ 0xFF);
+    switch (charlen)
+    {
+        case 0: // 7-bit ASCII character -> short cut
+            *pwc = c;
+            return c != '\0';
 
-        if (unlikely(cp < 0x80))
-            return -1; // ASCII overlong
-        return 2;
+        case 1: // continuation byte -> error
+            return -1;
+
+        case 2:
+            if (unlikely(c < 0xC2)) // ASCII overlong
+                return -1;
+            cp = (c & 0x1F) << 6;
+            break;
+
+        case 3:
+            cp = (c & 0x0F) << 12;
+            break;
+
+        case 4:
+            cp = (c & 0x07) << 18;
+            break;
+
+        default:
+            vlc_assert_unreachable ();
     }
 
-    unsigned char c2 = str[2];
+    /* Unrolled continuation bytes decoding */
+    switch (charlen)
+    {
+        case 4:
+            c = *++ptr;
+            if (unlikely((c & 0xC0) != 0x80)) // not a continuation byte
+                return -1;
+            cp |= (c & 0x3F) << 12;
 
-    cp = (cp << 6) | (c2 & 0x3F);
+            if (unlikely(cp >= 0x110000)) // beyond Unicode range
+                return -1;
+            /* fall through */
+        case 3:
+            c = *++ptr;
+            if (unlikely((c & 0xC0) != 0x80)) // not a continuation byte
+                return -1;
+            cp |= (c & 0x3F) << 6;
 
-    if (unlikely((c2 >> 6) != 2)) // missing second continuation byte
-        return -1;
-
-    if (likely((c0 & 0x10) == 0)) { // three-byte sequence
-        *pwc = cp = ((c0 & 0xF) << 12) | cp;
-
-        if (unlikely(cp < 0x800)) // overlong
-            return -1;
-        if (unlikely(cp >= 0xD800 && cp < 0xE000)) // surrogate
-            return -1;
-        return 3;
+            if (unlikely(cp >= 0xD800 && cp < 0xE000)) // UTF-16 surrogate
+                return -1;
+            if (unlikely(cp < (1u << (5 * charlen - 4)))) // non-ASCII overlong
+                return -1;
+            /* fall through */
+        case 2:
+            c = *++ptr;
+            if (unlikely((c & 0xC0) != 0x80)) // not a continuation byte
+                return -1;
+            cp |= (c & 0x3F);
+            break;
     }
 
-    if (likely((c0 & 0x08) == 0)) { // four-byte sequence
-        unsigned char c3 = str[3];
-
-        cp = (cp << 6) | (c3 & 0x3F);
-
-        if (unlikely((c3 >> 6) != 2)) // missing third continuation byte
-            return -1;
-
-        *pwc = cp = ((c0 & 0xF) << 18) | cp;
-
-        if (unlikely(cp < 0x10000)) // overlong (or surrogate)
-            return -1;
-        if (unlikely(cp >= 0x110000)) // out of Unicode range
-            return -1;
-        return 4;
-    }
-
-    return -1;
+    *pwc = cp;
+    return charlen;
 }
 
 /**
@@ -214,8 +221,6 @@ char *vlc_strcasestr (const char *haystack, const char *needle)
         }
 
         s = vlc_towc (haystack, &(uint32_t) { 0 });
-        if (unlikely(s < 0))
-            return NULL;
         haystack += s;
     }
     while (s > 0);
@@ -311,3 +316,4 @@ void *ToCharset(const char *charset, const char *in, size_t *outsize)
     vlc_iconv_close (hd);
     return res;
 }
+

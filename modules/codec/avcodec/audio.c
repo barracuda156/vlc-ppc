@@ -2,6 +2,7 @@
  * audio.c: audio decoder using libavcodec library
  *****************************************************************************
  * Copyright (C) 1999-2003 VLC authors and VideoLAN
+ * $Id: 50a76c7a18e1b0d57c87153e5ea85fca7a7c8047 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -46,7 +47,7 @@
 /*****************************************************************************
  * decoder_sys_t : decoder descriptor
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     AVCodecContext *p_context;
     const AVCodec  *p_codec;
@@ -65,7 +66,7 @@ typedef struct
     int     pi_extraction[AOUT_CHAN_MAX];
     int     i_previous_channels;
     uint64_t i_previous_layout;
-} decoder_sys_t;
+};
 
 #define BLOCK_FLAG_PRIVATE_REALLOCATED (1 << BLOCK_FLAG_PRIVATE_SHIFT)
 
@@ -76,14 +77,14 @@ static void Flush( decoder_t * );
 
 static void InitDecoderConfig( decoder_t *p_dec, AVCodecContext *p_context )
 {
-    if( p_dec->fmt_in->i_extra > 0 )
+    if( p_dec->fmt_in.i_extra > 0 )
     {
-        const uint8_t * const p_src = p_dec->fmt_in->p_extra;
+        const uint8_t * const p_src = p_dec->fmt_in.p_extra;
 
         int i_offset = 0;
-        int i_size = p_dec->fmt_in->i_extra;
+        int i_size = p_dec->fmt_in.i_extra;
 
-        if( p_dec->fmt_in->i_codec == VLC_CODEC_ALAC )
+        if( p_dec->fmt_in.i_codec == VLC_CODEC_ALAC )
         {
             static const uint8_t p_pattern[] = { 0, 0, 0, 36, 'a', 'l', 'a', 'c' };
             /* Find alac atom XXX it is a bit ugly */
@@ -92,7 +93,7 @@ static void InitDecoderConfig( decoder_t *p_dec, AVCodecContext *p_context )
                 if( !memcmp( &p_src[i_offset], p_pattern, sizeof(p_pattern) ) )
                     break;
             }
-            i_size = __MIN( p_dec->fmt_in->i_extra - i_offset, 36 );
+            i_size = __MIN( p_dec->fmt_in.i_extra - i_offset, 36 );
             if( i_size < 36 )
                 i_size = 0;
         }
@@ -129,7 +130,7 @@ static int OpenAudioCodec( decoder_t *p_dec )
     {
         if( codec->id == AV_CODEC_ID_VORBIS ||
             ( codec->id == AV_CODEC_ID_AAC &&
-              !p_dec->fmt_in->b_packetized ) )
+              !p_dec->fmt_in.b_packetized ) )
         {
             msg_Warn( p_dec, "waiting for extra data for codec %s",
                       codec->name );
@@ -137,11 +138,11 @@ static int OpenAudioCodec( decoder_t *p_dec )
         }
     }
 
-    ctx->sample_rate = p_dec->fmt_in->audio.i_rate;
-    ctx->channels = p_dec->fmt_in->audio.i_channels;
-    ctx->block_align = p_dec->fmt_in->audio.i_blockalign;
-    ctx->bit_rate = p_dec->fmt_in->i_bitrate;
-    ctx->bits_per_coded_sample = p_dec->fmt_in->audio.i_bitspersample;
+    ctx->sample_rate = p_dec->fmt_in.audio.i_rate;
+    ctx->channels = p_dec->fmt_in.audio.i_channels;
+    ctx->block_align = p_dec->fmt_in.audio.i_blockalign;
+    ctx->bit_rate = p_dec->fmt_in.i_bitrate;
+    ctx->bits_per_coded_sample = p_dec->fmt_in.audio.i_bitspersample;
 
     if( codec->id == AV_CODEC_ID_ADPCM_G726 &&
         ctx->bit_rate > 0 &&
@@ -168,11 +169,6 @@ static void vlc_av_frame_Release(block_t *block)
     free(b);
 }
 
-static const struct vlc_block_callbacks vlc_av_frame_cbs =
-{
-    vlc_av_frame_Release,
-};
-
 static block_t *vlc_av_frame_Wrap(AVFrame *frame)
 {
     for (unsigned i = 1; i < AV_NUM_DATA_POINTERS; i++)
@@ -187,9 +183,9 @@ static block_t *vlc_av_frame_Wrap(AVFrame *frame)
 
     block_t *block = &b->self;
 
-    block_Init(block, &vlc_av_frame_cbs,
-               frame->extended_data[0], frame->linesize[0]);
+    block_Init(block, frame->extended_data[0], frame->linesize[0]);
     block->i_nb_samples = frame->nb_samples;
+    block->pf_release = vlc_av_frame_Release;
     b->frame = frame;
     return block;
 }
@@ -255,14 +251,21 @@ int InitAudioDec( vlc_object_t *obj )
     /* Try to set as much information as possible but do not trust it */
     SetupOutputFormat( p_dec, false );
 
+    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
     if( !p_dec->fmt_out.audio.i_rate )
-        p_dec->fmt_out.audio.i_rate = p_dec->fmt_in->audio.i_rate;
+        p_dec->fmt_out.audio.i_rate = p_dec->fmt_in.audio.i_rate;
     if( p_dec->fmt_out.audio.i_rate )
         date_Init( &p_sys->end_date, p_dec->fmt_out.audio.i_rate, 1 );
-    p_dec->fmt_out.audio.i_chan_mode = p_dec->fmt_in->audio.i_chan_mode;
+    p_dec->fmt_out.audio.i_chan_mode = p_dec->fmt_in.audio.i_chan_mode;
 
     p_dec->pf_decode = DecodeAudio;
     p_dec->pf_flush  = Flush;
+
+    /* XXX: Writing input format makes little sense. */
+    if( avctx->profile != FF_PROFILE_UNKNOWN )
+        p_dec->fmt_in.i_profile = avctx->profile;
+    if( avctx->level != FF_LEVEL_UNKNOWN )
+        p_dec->fmt_in.i_level = avctx->level;
 
     return VLC_SUCCESS;
 }
@@ -295,16 +298,11 @@ static int DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     block_t *p_block = NULL;
     bool b_error = false;
 
-    if( !ctx->extradata_size && p_dec->fmt_in->i_extra
+    if( !ctx->extradata_size && p_dec->fmt_in.i_extra
      && !avcodec_is_open( ctx ) )
     {
         InitDecoderConfig( p_dec, ctx );
-        if( OpenAudioCodec( p_dec ) < 0 )
-        {
-            if( pp_block != NULL && *pp_block != NULL )
-                block_Release( *pp_block );
-            return VLCDEC_ECRITICAL;
-        }
+        OpenAudioCodec( p_dec );
     }
 
     if( !avcodec_is_open( ctx ) )
@@ -338,8 +336,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         }
 
         /* We've just started the stream, wait for the first PTS. */
-        if( p_block->i_pts == VLC_TICK_INVALID &&
-            date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
+        if( !date_Get( &p_sys->end_date ) && p_block->i_pts <= VLC_TICK_INVALID )
             goto drop;
 
         if( p_block->i_buffer <= 0 )
@@ -390,12 +387,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 if( ret == AVERROR(ENOMEM) || ret == AVERROR(EINVAL) )
                     goto end;
                 else
-                {
-                    char errorstring[AV_ERROR_MAX_STRING_SIZE];
-                    if( !av_strerror( ret, errorstring, AV_ERROR_MAX_STRING_SIZE ) )
-                        msg_Err( p_dec, "%s", errorstring );
                     goto drop;
-                }
             }
         }
 
@@ -549,7 +541,7 @@ vlc_fourcc_t GetVlcAudioFormat( int fmt )
         [AV_SAMPLE_FMT_FLTP]  = VLC_CODEC_FL32,
         [AV_SAMPLE_FMT_DBLP]  = VLC_CODEC_FL64,
     };
-    if( ARRAY_SIZE(fcc) > (unsigned)fmt )
+    if( (sizeof(fcc) / sizeof(fcc[0])) > (unsigned)fmt )
         return fcc[fmt];
     return VLC_CODEC_S16N;
 }
@@ -583,7 +575,7 @@ static void SetupOutputFormat( decoder_t *p_dec, bool b_trust )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     p_dec->fmt_out.i_codec = GetVlcAudioFormat( p_sys->p_context->sample_fmt );
-    p_dec->fmt_out.audio.channel_type = p_dec->fmt_in->audio.channel_type;
+    p_dec->fmt_out.audio.channel_type = p_dec->fmt_in.audio.channel_type;
     p_dec->fmt_out.audio.i_format = p_dec->fmt_out.i_codec;
     p_dec->fmt_out.audio.i_rate = p_sys->p_context->sample_rate;
 
@@ -601,9 +593,9 @@ static void SetupOutputFormat( decoder_t *p_dec, bool b_trust )
     uint32_t pi_order_src[i_order_max];
 
     int i_channels_src = 0;
-    uint64_t channel_layout =
+    int64_t channel_layout =
         p_sys->p_context->channel_layout ? p_sys->p_context->channel_layout :
-        (uint64_t)av_get_default_channel_layout( p_sys->p_context->channels );
+        av_get_default_channel_layout( p_sys->p_context->channels );
 
     if( channel_layout )
     {
@@ -636,7 +628,7 @@ static void SetupOutputFormat( decoder_t *p_dec, bool b_trust )
 
         /* No reordering for Ambisonic order 1 channels encoded in AAC... */
         if (p_dec->fmt_out.audio.channel_type == AUDIO_CHANNEL_TYPE_AMBISONICS
-            && p_dec->fmt_in->i_codec == VLC_CODEC_MP4A
+            && p_dec->fmt_in.i_codec == VLC_CODEC_MP4A
             && i_channels_src == 4)
             p_sys->b_extract = false;
 

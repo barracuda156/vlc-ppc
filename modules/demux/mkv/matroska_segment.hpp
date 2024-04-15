@@ -2,6 +2,7 @@
  * matroska_segment.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
+ * $Id: 8a82ef9369630d035f11303dfdbe947552148018 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -24,7 +25,6 @@
 #ifndef VLC_MKV_MATROSKA_SEGMENT_HPP_
 #define VLC_MKV_MATROSKA_SEGMENT_HPP_
 
-#include "demux.hpp"
 #include "mkv.hpp"
 #include "matroska_segment_seeker.hpp"
 #include <vector>
@@ -35,8 +35,6 @@
 #include <memory>
 
 #include "Ebml_parser.hpp"
-
-namespace mkv {
 
 class EbmlParser;
 
@@ -98,7 +96,7 @@ public:
     /* all tracks */
     tracks_map_t tracks;
     SegmentSeeker::track_ids_t priority_tracks;
-    vlc_tick_t                 pcr_shift = 0;
+    vlc_tick_t               pcr_shift = 0;
 
     /* from seekhead */
     int                     i_seekhead_count;
@@ -171,6 +169,7 @@ private:
     void ParseTrackEntry( const KaxTrackEntry* m );
     bool ParseCluster( KaxCluster *cluster, bool b_update_start_time = true, ScopeMode read_fully = SCOPE_ALL_DATA );
     bool ParseSimpleTags( SimpleTag* out, KaxTagSimple *tag, int level = 50 );
+    void IndexAppendCluster( KaxCluster *cluster );
     bool TrackInit( mkv_track_t * p_tk );
     void ComputeTrackPriority();
     void EnsureDuration();
@@ -180,6 +179,5 @@ private:
     friend SegmentSeeker;
 };
 
-} // namespace
 
 #endif

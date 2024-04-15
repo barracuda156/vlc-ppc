@@ -2,6 +2,7 @@
  * yuy2_i422.c : Packed YUV 4:2:2 to Planar YUV conversion module for vlc
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: 169e4316852ffb5c3c28c77130b1a2ed07552d48 $
  *
  * Authors: Antoine Cellerier <dionoea at videolan dot org>
  *
@@ -39,27 +40,33 @@
 /*****************************************************************************
  * Local and extern prototypes.
  *****************************************************************************/
-static int  Activate ( filter_t * );
+static int  Activate ( vlc_object_t * );
+
+static void YUY2_I422           ( filter_t *, picture_t *, picture_t * );
+static void YVYU_I422           ( filter_t *, picture_t *, picture_t * );
+static void UYVY_I422           ( filter_t *, picture_t *, picture_t * );
+static picture_t *YUY2_I422_Filter    ( filter_t *, picture_t * );
+static picture_t *YVYU_I422_Filter    ( filter_t *, picture_t * );
+static picture_t *UYVY_I422_Filter    ( filter_t *, picture_t * );
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
     set_description( N_("Conversions from " SRC_FOURCC " to " DEST_FOURCC) )
-    set_callback_video_converter( Activate, 80 )
+    set_capability( "video converter", 80 )
+    set_callbacks( Activate, NULL )
 vlc_module_end ()
-
-VIDEO_FILTER_WRAPPER( YUY2_I422 )
-VIDEO_FILTER_WRAPPER( YVYU_I422 )
-VIDEO_FILTER_WRAPPER( UYVY_I422 )
 
 /*****************************************************************************
  * Activate: allocate a chroma function
  *****************************************************************************
  * This function allocates and initializes a chroma function
  *****************************************************************************/
-static int Activate( filter_t *p_filter )
+static int Activate( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     if( p_filter->fmt_in.video.i_width & 1
      || p_filter->fmt_in.video.i_height & 1 )
     {
@@ -77,15 +84,15 @@ static int Activate( filter_t *p_filter )
             switch( p_filter->fmt_in.video.i_chroma )
             {
                 case VLC_CODEC_YUYV:
-                    p_filter->ops = &YUY2_I422_ops;
+                    p_filter->pf_video_filter = YUY2_I422_Filter;
                     break;
 
                 case VLC_CODEC_YVYU:
-                    p_filter->ops = &YVYU_I422_ops;
+                    p_filter->pf_video_filter = YVYU_I422_Filter;
                     break;
 
                 case VLC_CODEC_UYVY:
-                    p_filter->ops = &UYVY_I422_ops;
+                    p_filter->pf_video_filter = UYVY_I422_Filter;
                     break;
 
                 default:
@@ -100,6 +107,10 @@ static int Activate( filter_t *p_filter )
 }
 
 /* Following functions are local */
+
+VIDEO_FILTER_WRAPPER( YUY2_I422 )
+VIDEO_FILTER_WRAPPER( YVYU_I422 )
+VIDEO_FILTER_WRAPPER( UYVY_I422 )
 
 /*****************************************************************************
  * YUY2_I422: packed YUY2 4:2:2 to planar YUV 4:2:2

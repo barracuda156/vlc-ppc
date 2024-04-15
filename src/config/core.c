@@ -2,6 +2,7 @@
  * core.c management of the modules configuration
  *****************************************************************************
  * Copyright (C) 2001-2007 VLC authors and VideoLAN
+ * $Id: fe6abb6e98133c080aac231e242864397ae98d99 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -24,7 +25,6 @@
 # include "config.h"
 #endif
 
-#include <stdatomic.h>
 #include <vlc_common.h>
 #include <vlc_actions.h>
 #include <vlc_modules.h>
@@ -37,29 +37,31 @@
 
 #include "configuration.h"
 #include "modules/modules.h"
-#include "misc/rcu.h"
 
-static vlc_mutex_t config_lock = VLC_STATIC_MUTEX;
-static atomic_bool config_dirty = ATOMIC_VAR_INIT(false);
+vlc_rwlock_t config_lock = VLC_STATIC_RWLOCK;
+bool config_dirty = false;
 
-void config_Lock(void)
+static inline char *strdupnull (const char *src)
 {
-    vlc_mutex_lock(&config_lock);
+    return src ? strdup (src) : NULL;
 }
 
-void config_Unlock(void)
+/*****************************************************************************
+ * config_GetType: get the type of a variable (bool, int, float, string)
+ *****************************************************************************
+ * This function is used to get the type of a variable from its name.
+ *****************************************************************************/
+int config_GetType(const char *psz_name)
 {
-    vlc_mutex_unlock(&config_lock);
-}
+    module_config_t *p_config = config_FindConfig(psz_name);
 
-int config_GetType(const char *name)
-{
-    const struct vlc_param *param = vlc_param_Find(name);
-
-    if (param == NULL)
+    /* sanity checks */
+    if( !p_config )
+    {
         return 0;
+    }
 
-    switch (CONFIG_CLASS(param->item.i_type))
+    switch( CONFIG_CLASS(p_config->i_type) )
     {
         case CONFIG_ITEM_FLOAT:
             return VLC_VAR_FLOAT;
@@ -76,109 +78,195 @@ int config_GetType(const char *name)
 
 bool config_IsSafe( const char *name )
 {
-    const struct vlc_param *param = vlc_param_Find(name);
-
-    return (param != NULL) ? param->safe : false;
+    module_config_t *p_config = config_FindConfig( name );
+    return p_config != NULL && p_config->b_safe;
 }
 
-int64_t config_GetInt(const char *name)
+#undef config_GetInt
+/*****************************************************************************
+ * config_GetInt: get the value of an int variable
+ *****************************************************************************
+ * This function is used to get the value of variables which are internally
+ * represented by an integer (CONFIG_ITEM_INTEGER and
+ * CONFIG_ITEM_BOOL).
+ *****************************************************************************/
+int64_t config_GetInt( vlc_object_t *p_this, const char *psz_name )
 {
-    const struct vlc_param *param = vlc_param_Find(name);
+    module_config_t *p_config = config_FindConfig( psz_name );
 
     /* sanity checks */
-    assert(param != NULL);
-    assert(IsConfigIntegerType(param->item.i_type));
-
-    return atomic_load_explicit(&param->value.i, memory_order_relaxed);
-}
-
-float config_GetFloat(const char *name)
-{
-    const struct vlc_param *param = vlc_param_Find(name);
-
-    /* sanity checks */
-    assert(param != NULL);
-    assert(IsConfigFloatType(param->item.i_type));
-
-    return atomic_load_explicit(&param->value.f, memory_order_relaxed);
-}
-
-char *config_GetPsz(const char *name)
-{
-    const struct vlc_param *param = vlc_param_Find(name);
-    char *str;
-
-    /* sanity checks */
-    assert(param != NULL);
-    assert(IsConfigStringType(param->item.i_type));
-
-    /* return a copy of the string */
-    vlc_rcu_read_lock();
-    str = atomic_load_explicit(&param->value.str, memory_order_acquire);
-    if (str != NULL)
-        str = strdup(str);
-    vlc_rcu_read_unlock();
-    return str;
-}
-
-int vlc_param_SetString(struct vlc_param *param, const char *value)
-{
-    char *str = NULL, *oldstr;
-
-    assert(param != NULL);
-    assert(IsConfigStringType(param->item.i_type));
-
-    if (value != NULL && value[0] != '\0') {
-        str = strdup(value);
-        if (unlikely(str == NULL))
-            return -1;
+    if( !p_config )
+    {
+        msg_Err( p_this, "option %s does not exist", psz_name );
+        return -1;
     }
 
-    oldstr = atomic_load_explicit(&param->value.str, memory_order_relaxed);
-    atomic_store_explicit(&param->value.str, str, memory_order_release);
-    param->item.value.psz = str;
-    vlc_rcu_synchronize();
-    free(oldstr);
-    return 0;
+    assert(IsConfigIntegerType(p_config->i_type));
+
+    int64_t val;
+
+    vlc_rwlock_rdlock (&config_lock);
+    val = p_config->value.i;
+    vlc_rwlock_unlock (&config_lock);
+    return val;
 }
 
-void config_PutPsz(const char *psz_name, const char *psz_value)
+#undef config_GetFloat
+/*****************************************************************************
+ * config_GetFloat: get the value of a float variable
+ *****************************************************************************
+ * This function is used to get the value of variables which are internally
+ * represented by a float (CONFIG_ITEM_FLOAT).
+ *****************************************************************************/
+float config_GetFloat( vlc_object_t *p_this, const char *psz_name )
 {
-    vlc_mutex_lock(&config_lock);
-    vlc_param_SetString(vlc_param_Find(psz_name), psz_value);
-    vlc_mutex_unlock(&config_lock);
-    atomic_store_explicit(&config_dirty, true, memory_order_release);
-}
+    module_config_t *p_config;
 
-void config_PutInt(const char *name, int64_t i_value)
-{
-    struct vlc_param *param = vlc_param_Find(name);
-    module_config_t *p_config = &param->item;
+    p_config = config_FindConfig( psz_name );
 
     /* sanity checks */
-    assert(param != NULL);
-    assert(IsConfigIntegerType(param->item.i_type));
+    if( !p_config )
+    {
+        msg_Err( p_this, "option %s does not exist", psz_name );
+        return -1;
+    }
+
+    assert(IsConfigFloatType(p_config->i_type));
+
+    float val;
+
+    vlc_rwlock_rdlock (&config_lock);
+    val = p_config->value.f;
+    vlc_rwlock_unlock (&config_lock);
+    return val;
+}
+
+#undef config_GetPsz
+/*****************************************************************************
+ * config_GetPsz: get the string value of a string variable
+ *****************************************************************************
+ * This function is used to get the value of variables which are internally
+ * represented by a string (CONFIG_ITEM_STRING, CONFIG_ITEM_*FILE,
+ * CONFIG_ITEM_DIRECTORY, CONFIG_ITEM_PASSWORD, and CONFIG_ITEM_MODULE).
+ *
+ * Important note: remember to free() the returned char* because it's a
+ *   duplicate of the actual value. It isn't safe to return a pointer to the
+ *   actual value as it can be modified at any time.
+ *****************************************************************************/
+char * config_GetPsz( vlc_object_t *p_this, const char *psz_name )
+{
+    module_config_t *p_config;
+
+    p_config = config_FindConfig( psz_name );
+
+    /* sanity checks */
+    if( !p_config )
+    {
+        msg_Err( p_this, "option %s does not exist", psz_name );
+        return NULL;
+    }
+
+    assert(IsConfigStringType (p_config->i_type));
+
+    /* return a copy of the string */
+    vlc_rwlock_rdlock (&config_lock);
+    char *psz_value = strdupnull (p_config->value.psz);
+    vlc_rwlock_unlock (&config_lock);
+
+    return psz_value;
+}
+
+#undef config_PutPsz
+/*****************************************************************************
+ * config_PutPsz: set the string value of a string variable
+ *****************************************************************************
+ * This function is used to set the value of variables which are internally
+ * represented by a string (CONFIG_ITEM_STRING, CONFIG_ITEM_*FILE,
+ * CONFIG_ITEM_DIRECTORY, CONFIG_ITEM_PASSWORD, and CONFIG_ITEM_MODULE).
+ *****************************************************************************/
+void config_PutPsz( vlc_object_t *p_this,
+                      const char *psz_name, const char *psz_value )
+{
+    module_config_t *p_config = config_FindConfig( psz_name );
+
+
+    /* sanity checks */
+    if( !p_config )
+    {
+        msg_Warn( p_this, "option %s does not exist", psz_name );
+        return;
+    }
+
+    assert(IsConfigStringType(p_config->i_type));
+
+    char *str, *oldstr;
+    if ((psz_value != NULL) && *psz_value)
+        str = strdup (psz_value);
+    else
+        str = NULL;
+
+    vlc_rwlock_wrlock (&config_lock);
+    oldstr = (char *)p_config->value.psz;
+    p_config->value.psz = str;
+    config_dirty = true;
+    vlc_rwlock_unlock (&config_lock);
+
+    free (oldstr);
+}
+
+#undef config_PutInt
+/*****************************************************************************
+ * config_PutInt: set the integer value of an int variable
+ *****************************************************************************
+ * This function is used to set the value of variables which are internally
+ * represented by an integer (CONFIG_ITEM_INTEGER and
+ * CONFIG_ITEM_BOOL).
+ *****************************************************************************/
+void config_PutInt( vlc_object_t *p_this, const char *psz_name,
+                    int64_t i_value )
+{
+    module_config_t *p_config = config_FindConfig( psz_name );
+
+    /* sanity checks */
+    if( !p_config )
+    {
+        msg_Warn( p_this, "option %s does not exist", psz_name );
+        return;
+    }
+
+    assert(IsConfigIntegerType(p_config->i_type));
 
     if (i_value < p_config->min.i)
         i_value = p_config->min.i;
     if (i_value > p_config->max.i)
         i_value = p_config->max.i;
 
-    atomic_store_explicit(&param->value.i, i_value, memory_order_relaxed);
-    vlc_mutex_lock(&config_lock);
+    vlc_rwlock_wrlock (&config_lock);
     p_config->value.i = i_value;
-    vlc_mutex_unlock(&config_lock);
-    atomic_store_explicit(&config_dirty, true, memory_order_release);
+    config_dirty = true;
+    vlc_rwlock_unlock (&config_lock);
 }
 
-void config_PutFloat(const char *name, float f_value)
+#undef config_PutFloat
+/*****************************************************************************
+ * config_PutFloat: set the value of a float variable
+ *****************************************************************************
+ * This function is used to set the value of variables which are internally
+ * represented by a float (CONFIG_ITEM_FLOAT).
+ *****************************************************************************/
+void config_PutFloat( vlc_object_t *p_this,
+                      const char *psz_name, float f_value )
 {
-    struct vlc_param *param = vlc_param_Find(name);
-    module_config_t *p_config = &param->item;
+    module_config_t *p_config = config_FindConfig( psz_name );
 
     /* sanity checks */
-    assert(param != NULL);
-    assert(IsConfigFloatType(param->item.i_type));
+    if( !p_config )
+    {
+        msg_Warn( p_this, "option %s does not exist", psz_name );
+        return;
+    }
+
+    assert(IsConfigFloatType(p_config->i_type));
 
     /* if f_min == f_max == 0, then do not use them */
     if ((p_config->min.f == 0.f) && (p_config->max.f == 0.f))
@@ -188,37 +276,46 @@ void config_PutFloat(const char *name, float f_value)
     else if (f_value > p_config->max.f)
         f_value = p_config->max.f;
 
-    atomic_store_explicit(&param->value.f, f_value, memory_order_relaxed);
-    vlc_mutex_lock(&config_lock);
+    vlc_rwlock_wrlock (&config_lock);
     p_config->value.f = f_value;
-    vlc_mutex_unlock(&config_lock);
-    atomic_store_explicit(&config_dirty, true, memory_order_release);
+    config_dirty = true;
+    vlc_rwlock_unlock (&config_lock);
 }
 
-ssize_t config_GetIntChoices(const char *name,
+/**
+ * Determines a list of suggested values for an integer configuration item.
+ * \param values pointer to a table of integer values [OUT]
+ * \param texts pointer to a table of descriptions strings [OUT]
+ * \return number of choices, or -1 on error
+ * \note the caller is responsible for calling free() on all descriptions and
+ * on both tables. In case of error, both pointers are set to NULL.
+ */
+ssize_t config_GetIntChoices (vlc_object_t *obj, const char *name,
                              int64_t **restrict values, char ***restrict texts)
 {
     *values = NULL;
     *texts = NULL;
 
-    struct vlc_param *param = vlc_param_Find(name);
-    if (param == NULL)
+    module_config_t *cfg = config_FindConfig(name);
+    if (cfg == NULL)
     {
+        msg_Warn (obj, "option %s does not exist", name);
         errno = ENOENT;
         return -1;
     }
 
-    module_config_t *cfg = &param->item;
     size_t count = cfg->list_count;
     if (count == 0)
     {
-        int (*cb)(const char *, int64_t **, char ***);
+        if (module_Map(obj, cfg->owner))
+        {
+            errno = EIO;
+            return -1;
+        }
 
-        cb = vlc_plugin_Symbol(NULL, param->owner, "vlc_entry_cfg_int_enum");
-        if (cb == NULL)
+        if (cfg->list.i_cb == NULL)
             return 0;
-
-        return cb(name, values, texts);
+        return cfg->list.i_cb(obj, name, values, texts);
     }
 
     int64_t *vals = vlc_alloc (count, sizeof (*vals));
@@ -258,68 +355,57 @@ error:
 static ssize_t config_ListModules (const char *cap, char ***restrict values,
                                    char ***restrict texts)
 {
-    module_t *const *list;
-    size_t n = module_list_cap(&list, cap);
-    char **vals = malloc ((n + 2) * sizeof (*vals));
-    char **txts = malloc ((n + 2) * sizeof (*txts));
-    if (!vals || !txts)
+    module_t **list;
+    ssize_t n = module_list_cap (&list, cap);
+    if (unlikely(n < 0))
     {
-        free (vals);
-        free (txts);
         *values = *texts = NULL;
-        return -1;
+        return n;
     }
 
-    size_t i = 0;
+    char **vals = xmalloc ((n + 2) * sizeof (*vals));
+    char **txts = xmalloc ((n + 2) * sizeof (*txts));
 
-    vals[i] = strdup ("any");
-    txts[i] = strdup (_("Automatic"));
-    if (!vals[i] || !txts[i])
-        goto error;
+    vals[0] = xstrdup ("any");
+    txts[0] = xstrdup (_("Automatic"));
 
-    ++i;
-    for (; i <= n; i++)
+    for (ssize_t i = 0; i < n; i++)
     {
-        vals[i] = strdup (module_get_object (list[i - 1]));
-        txts[i] = strdup (module_gettext (list[i - 1],
-                               module_GetLongName (list[i - 1])));
-        if( !vals[i] || !txts[i])
-            goto error;
+        vals[i + 1] = xstrdup (module_get_object (list[i]));
+        txts[i + 1] = xstrdup (module_gettext (list[i],
+                               module_get_name (list[i], true)));
     }
-    vals[i] = strdup ("none");
-    txts[i] = strdup (_("Disable"));
-    if( !vals[i] || !txts[i])
-        goto error;
+
+    vals[n + 1] = xstrdup ("none");
+    txts[n + 1] = xstrdup (_("Disable"));
 
     *values = vals;
     *texts = txts;
-    return i + 1;
-
-error:
-    for (size_t j = 0; j <= i; ++j)
-    {
-        free (vals[j]);
-        free (txts[j]);
-    }
-    free(vals);
-    free(txts);
-    *values = *texts = NULL;
-    return -1;
+    module_list_free (list);
+    return n + 2;
 }
 
-ssize_t config_GetPszChoices(const char *name,
-                             char ***restrict values, char ***restrict texts)
+/**
+ * Determines a list of suggested values for a string configuration item.
+ * \param values pointer to a table of value strings [OUT]
+ * \param texts pointer to a table of descriptions strings [OUT]
+ * \return number of choices, or -1 on error
+ * \note the caller is responsible for calling free() on all values, on all
+ * descriptions and on both tables.
+ * In case of error, both pointers are set to NULL.
+ */
+ssize_t config_GetPszChoices (vlc_object_t *obj, const char *name,
+                              char ***restrict values, char ***restrict texts)
 {
     *values = *texts = NULL;
 
-    struct vlc_param *param = vlc_param_Find(name);
-    if (param == NULL)
+    module_config_t *cfg = config_FindConfig(name);
+    if (cfg == NULL)
     {
         errno = ENOENT;
         return -1;
     }
 
-    module_config_t *cfg = &param->item;
     switch (cfg->i_type)
     {
         case CONFIG_ITEM_MODULE:
@@ -336,69 +422,50 @@ ssize_t config_GetPszChoices(const char *name,
     size_t count = cfg->list_count;
     if (count == 0)
     {
-        int (*cb)(const char *, char ***, char ***);
+        if (module_Map(obj, cfg->owner))
+        {
+            errno = EIO;
+            return -1;
+        }
 
-        cb = vlc_plugin_Symbol(NULL, param->owner, "vlc_entry_cfg_str_enum");
-        if (cb == NULL)
+        if (cfg->list.psz_cb == NULL)
             return 0;
-
-        return cb(name, values, texts);
+        return cfg->list.psz_cb(obj, name, values, texts);
     }
 
-    char **vals = malloc (sizeof (*vals) * count);
-    char **txts = malloc (sizeof (*txts) * count);
-    if (!vals || !txts)
-    {
-        free (vals);
-        free (txts);
-        errno = ENOMEM;
-        return -1;
-    }
+    char **vals = xmalloc (sizeof (*vals) * count);
+    char **txts = xmalloc (sizeof (*txts) * count);
 
-    size_t i;
-    for (i = 0; i < count; i++)
+    for (size_t i = 0; i < count; i++)
     {
-        vals[i] = strdup ((cfg->list.psz[i] != NULL) ? cfg->list.psz[i] : "");
+        vals[i] = xstrdup ((cfg->list.psz[i] != NULL) ? cfg->list.psz[i] : "");
         /* FIXME: use module_gettext() instead */
-        txts[i] = strdup ((cfg->list_text[i] != NULL)
+        txts[i] = xstrdup ((cfg->list_text[i] != NULL)
                                        ? vlc_gettext (cfg->list_text[i]) : "");
-        if (!vals[i] || !txts[i])
-            goto error;
     }
 
     *values = vals;
     *texts = txts;
     return count;
-
-error:
-    for (size_t j = 0; j <= i; ++j)
-    {
-        free (vals[j]);
-        free (txts[j]);
-    }
-    free(vals);
-    free(txts);
-    errno = ENOMEM;
-    return -1;
 }
 
 static int confcmp (const void *a, const void *b)
 {
-    const struct vlc_param *const *ca = a, *const *cb = b;
+    const module_config_t *const *ca = a, *const *cb = b;
 
-    return strcmp ((*ca)->item.psz_name, (*cb)->item.psz_name);
+    return strcmp ((*ca)->psz_name, (*cb)->psz_name);
 }
 
 static int confnamecmp (const void *key, const void *elem)
 {
-    const struct vlc_param *const *conf = elem;
+    const module_config_t *const *conf = elem;
 
-    return strcmp (key, (*conf)->item.psz_name);
+    return strcmp (key, (*conf)->psz_name);
 }
 
 static struct
 {
-    struct vlc_param **list;
+    module_config_t **list;
     size_t count;
 } config = { NULL, 0 };
 
@@ -411,24 +478,24 @@ int config_SortConfig (void)
     size_t nconf = 0;
 
     for (p = vlc_plugins; p != NULL; p = p->next)
-        nconf += p->conf.count;
+         nconf += p->conf.size;
 
-    struct vlc_param **clist = vlc_alloc(nconf, sizeof (*clist));
+    module_config_t **clist = vlc_alloc (nconf, sizeof (*clist));
     if (unlikely(clist == NULL))
         return VLC_ENOMEM;
 
-    size_t index = 0;
+    nconf = 0;
     for (p = vlc_plugins; p != NULL; p = p->next)
     {
-        for (size_t i = 0; i < p->conf.size; i++)
-        {
-            struct vlc_param *param = p->conf.params + i;
-            module_config_t *item = &param->item;
+        module_config_t *item, *end;
 
+        for (item = p->conf.items, end = item + p->conf.size;
+             item < end;
+             item++)
+        {
             if (!CONFIG_ITEM(item->i_type))
                 continue; /* ignore hints */
-            assert(index < nconf);
-            clist[index++] = param;
+            clist[nconf++] = item;
         }
     }
 
@@ -441,7 +508,7 @@ int config_SortConfig (void)
 
 void config_UnsortConfig (void)
 {
-    struct vlc_param **clist;
+    module_config_t **clist;
 
     clist = config.list;
     config.list = NULL;
@@ -450,23 +517,17 @@ void config_UnsortConfig (void)
     free (clist);
 }
 
-struct vlc_param *vlc_param_Find(const char *name)
-{
-    struct vlc_param *const *p;
-
-    assert(name != NULL);
-    p = bsearch (name, config.list, config.count, sizeof (*p), confnamecmp);
-    return (p != NULL) ? *p : NULL;
-}
-
+/*****************************************************************************
+ * config_FindConfig: find the config structure associated with an option.
+ *****************************************************************************/
 module_config_t *config_FindConfig(const char *name)
 {
     if (unlikely(name == NULL))
         return NULL;
 
-    struct vlc_param *param = vlc_param_Find(name);
-
-    return (param != NULL) ? &param->item : NULL;
+    module_config_t *const *p;
+    p = bsearch (name, config.list, config.count, sizeof (*p), confnamecmp);
+    return p ? *p : NULL;
 }
 
 /**
@@ -474,17 +535,15 @@ module_config_t *config_FindConfig(const char *name)
  * \param config start of array of items
  * \param confsize number of items in the array
  */
-void config_Free(struct vlc_param *tab, size_t confsize)
+void config_Free (module_config_t *tab, size_t confsize)
 {
     for (size_t j = 0; j < confsize; j++)
     {
-        struct vlc_param *param = &tab[j];
-        module_config_t *p_item = &param->item;
+        module_config_t *p_item = &tab[j];
 
         if (IsConfigStringType (p_item->i_type))
         {
-            free(atomic_load_explicit(&param->value.str,
-                                      memory_order_relaxed));
+            free (p_item->value.psz);
             if (p_item->list_count)
                 free (p_item->list.psz);
         }
@@ -495,55 +554,34 @@ void config_Free(struct vlc_param *tab, size_t confsize)
     free (tab);
 }
 
-void config_ResetAll(void)
+#undef config_ResetAll
+/*****************************************************************************
+ * config_ResetAll: reset the configuration data for all the modules.
+ *****************************************************************************/
+void config_ResetAll( vlc_object_t *p_this )
 {
-    vlc_mutex_lock(&config_lock);
+    vlc_rwlock_wrlock (&config_lock);
     for (vlc_plugin_t *p = vlc_plugins; p != NULL; p = p->next)
     {
         for (size_t i = 0; i < p->conf.size; i++ )
         {
-            struct vlc_param *param = p->conf.params + i;
-            module_config_t *p_config = &param->item;
+            module_config_t *p_config = p->conf.items + i;
 
             if (IsConfigIntegerType (p_config->i_type))
-            {
-                atomic_store_explicit(&param->value.i, p_config->orig.i,
-                                      memory_order_relaxed);
                 p_config->value.i = p_config->orig.i;
-            }
             else
             if (IsConfigFloatType (p_config->i_type))
-            {
-                atomic_store_explicit(&param->value.f, p_config->orig.f,
-                                      memory_order_relaxed);
                 p_config->value.f = p_config->orig.f;
-            }
             else
             if (IsConfigStringType (p_config->i_type))
-                vlc_param_SetString(param, p_config->orig.psz);
+            {
+                free ((char *)p_config->value.psz);
+                p_config->value.psz =
+                        strdupnull (p_config->orig.psz);
+            }
         }
     }
-    vlc_mutex_unlock(&config_lock);
-    atomic_store_explicit(&config_dirty, true, memory_order_release);
-}
+    vlc_rwlock_unlock (&config_lock);
 
-
-int config_AutoSaveConfigFile( libvlc_int_t *p_this )
-{
-    assert( p_this );
-
-    if (!atomic_exchange_explicit(&config_dirty, false, memory_order_acquire))
-        return 0;
-
-    int ret = config_SaveConfigFile (p_this);
-
-    if (unlikely(ret != 0))
-        /*
-         * On write failure, set the dirty flag back again. While it looks
-         * racy, it really means to retry later in hope that it does not
-         * fail again. Concurrent write attempts would not succeed anyway.
-         */
-        atomic_store_explicit(&config_dirty, true, memory_order_relaxed);
-
-    return ret;
+    VLC_UNUSED(p_this);
 }

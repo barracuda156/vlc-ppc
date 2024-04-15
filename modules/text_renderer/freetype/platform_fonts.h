@@ -2,6 +2,7 @@
  * freetype.c : Put text on the video, using freetype2
  *****************************************************************************
  * Copyright (C) 2002 - 2015 VLC authors and VideoLAN
+ * $Id: 848c31a4eb46f67572326b3621f95c542cf35edd $
  *
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -44,15 +45,6 @@
 # include "config.h"
 #endif
 
-/* Debug Stuff */
-//#define DEBUG_PLATFORM_FONTS
-
-#ifdef DEBUG_PLATFORM_FONTS
-  #define Debug(...) msg_Dbg(__VA_ARGS__)
-#else
-  #define Debug(...)
-#endif
-
 #include "freetype.h"
 
 #ifdef __cplusplus
@@ -61,44 +53,30 @@ extern "C" {
 
 /* Default fonts */
 #ifdef __APPLE__
-# define SYSTEM_FONT_PATH                   "/System/Library/Fonts"
-# define SYSTEM_DEFAULT_FONT_FILE           "HelveticaNeue.dfont"
-# define SYSTEM_DEFAULT_FAMILY              "Helvetica Neue"
-# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "Monaco.dfont"
-# define SYSTEM_DEFAULT_MONOSPACE_FAMILY    "Monaco"
-# define HAVE_GET_FONT_BY_FAMILY_NAME
-# undef  HAVE_FONTCONFIG
+# define SYSTEM_DEFAULT_FONT_FILE "/System/Library/Fonts/HelveticaNeue.dfont"
+# define SYSTEM_DEFAULT_FAMILY "Helvetica Neue"
+# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/System/Library/Fonts/Monaco.dfont"
+# define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monaco"
 #elif defined( _WIN32 )
-# define SYSTEM_FONT_PATH                   "" /* Default path font found at run-time */
-# define SYSTEM_DEFAULT_FONT_FILE           "arial.ttf"
-# define SYSTEM_DEFAULT_FAMILY              "Arial"
+# define SYSTEM_DEFAULT_FONT_FILE "arial.ttf" /* Default path font found at run-time */
+# define SYSTEM_DEFAULT_FAMILY "Arial"
 # define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "cour.ttf"
-# define SYSTEM_DEFAULT_MONOSPACE_FAMILY    "Courier New"
-# define HAVE_GET_FONT_BY_FAMILY_NAME
-# undef  HAVE_FONTCONFIG
+# define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Courier New"
 #elif defined( __OS2__ )
-# define SYSTEM_FONT_PATH                   "/psfonts"
-# define SYSTEM_DEFAULT_FONT_FILE           "tnrwt_k.ttf"
-# define SYSTEM_DEFAULT_FAMILY              "Times New Roman WT K"
-# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "mtsansdk.ttf"
-# define SYSTEM_DEFAULT_MONOSPACE_FAMILY    "Monotype Sans Duospace WT K"
+# define SYSTEM_DEFAULT_FONT_FILE "/psfonts/tnrwt_k.ttf"
+# define SYSTEM_DEFAULT_FAMILY "Times New Roman WT K"
+# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/psfonts/mtsansdk.ttf"
+# define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monotype Sans Duospace WT K"
 #elif defined( __ANDROID__ )
-# define SYSTEM_FONT_PATH                   "/system/fonts"
-# define SYSTEM_DEFAULT_FONT_FILE           "Roboto-Regular.ttf"
-# define SYSTEM_DEFAULT_FAMILY              "sans-serif"
-# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "DroidSansMono.ttf"
-# define SYSTEM_DEFAULT_MONOSPACE_FAMILY    "Monospace"
-# define HAVE_GET_FONT_BY_FAMILY_NAME
+# define SYSTEM_DEFAULT_FONT_FILE "/system/fonts/Roboto-Regular.ttf"
+# define SYSTEM_DEFAULT_FAMILY "sans-serif"
+# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/system/fonts/DroidSansMono.ttf"
+# define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monospace"
 #else
-# define SYSTEM_FONT_PATH                   "/usr/share/fonts/truetype/freefont"
-# define SYSTEM_DEFAULT_FONT_FILE           "FreeSerifBold.ttf"
-# define SYSTEM_DEFAULT_FAMILY              "Serif Bold"
-# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "FreeMono.ttf"
-# define SYSTEM_DEFAULT_MONOSPACE_FAMILY    "Monospace"
-#endif
-
-#if defined(HAVE_FONTCONFIG) && !defined(HAVE_GET_FONT_BY_FAMILY_NAME)
-# define HAVE_GET_FONT_BY_FAMILY_NAME
+# define SYSTEM_DEFAULT_FONT_FILE "/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf"
+# define SYSTEM_DEFAULT_FAMILY "Serif Bold"
+# define SYSTEM_DEFAULT_MONOSPACE_FONT_FILE "/usr/share/fonts/truetype/freefont/FreeMono.ttf"
+# define SYSTEM_DEFAULT_MONOSPACE_FAMILY "Monospace"
 #endif
 
 #ifndef DEFAULT_FONT_FILE
@@ -120,11 +98,6 @@ extern "C" {
 /**
  * Representation of the fonts (linked-list)
  */
-enum
-{
-    VLC_FONT_FLAG_BOLD    = 1 << 0,
-    VLC_FONT_FLAG_ITALIC  = 1 << 1,
-};
 typedef struct vlc_font_t vlc_font_t;
 struct vlc_font_t
 {
@@ -135,8 +108,9 @@ struct vlc_font_t
      */
     char       *psz_fontfile;
     int         i_index;   /**< index of the font in the font file, starts at 0 */
-    int         i_flags;
-    void       *faceid;    /* fontloader ref to font */
+    bool        b_bold;    /**< if the font is a bold version */
+    bool        b_italic;  /**< if the font is an italic version */
+    FT_Face     p_face;    /**< the freetype structure for the font */
 };
 
 /**
@@ -159,34 +133,58 @@ struct vlc_family_t
     vlc_font_t   *p_fonts; /**< fonts matching this family */
 };
 
-typedef struct
-{
-    const char *psz_key;
-    struct VLC_VECTOR(char *) vec;
-} fontfamilies_t;
-
 #define FB_LIST_ATTACHMENTS "attachments"
 #define FB_LIST_DEFAULT     "default"
 #define FB_NAME             "fallback"
 
-vlc_font_select_t * FontSelectNew( filter_t * );
-void FontSelectDelete( vlc_font_select_t * );
-
-/**
- * Get a pointer to the vlc_family_t in the master list that matches \p psz_family.
- * Add this family to the list if it hasn't been added yet.
- */
-const vlc_family_t * FontSelectFamily( vlc_font_select_t *, const char *psz_family );
-const vlc_family_t * FontSelectAmongFamilies( vlc_font_select_t *, const fontfamilies_t * );
-
-/**
- * Get the fallback list for \p fontfamilies_t from the system and cache
- * it in \ref fallback_map.
- * On Windows fallback lists are populated progressively as required
- * using Uniscribe, so we need the codepoint here.
- */
-vlc_family_t * FontFallbacksAmongFamilies( vlc_font_select_t *, const fontfamilies_t *,
+/***
+ * PLATFORM SPECIFIC SELECTORS
+ **/
+#ifdef HAVE_FONTCONFIG
+vlc_family_t *FontConfig_GetFallbacks( filter_t *p_filter, const char *psz_family,
                                        uni_char_t codepoint );
+const vlc_family_t *FontConfig_GetFamily( filter_t *p_filter, const char *psz_family );
+int FontConfig_Prepare( filter_t *p_filter );
+void FontConfig_Unprepare( void );
+#endif /* FONTCONFIG */
+
+#if defined( _WIN32 )
+const vlc_family_t *DWrite_GetFamily( filter_t *p_filter, const char *psz_family );
+vlc_family_t *DWrite_GetFallbacks( filter_t *p_filter, const char *psz_family,
+                                  uni_char_t codepoint );
+int InitDWrite( filter_t *p_filter );
+int ReleaseDWrite( filter_t *p_filter );
+int DWrite_GetFontStream( filter_t *p_filter, int i_index, FT_Stream *pp_stream );
+#if !VLC_WINSTORE_APP
+vlc_family_t *Win32_GetFallbacks( filter_t *p_filter, const char *psz_family,
+                                  uni_char_t codepoint );
+
+const vlc_family_t *Win32_GetFamily( filter_t *p_filter, const char *psz_family );
+#endif /* !VLC_WINSTORE_APP */
+#endif /* _WIN32 */
+
+#ifdef __APPLE__
+vlc_family_t *CoreText_GetFallbacks(filter_t *p_filter, const char *psz_family, uni_char_t codepoint);
+const vlc_family_t *CoreText_GetFamily(filter_t *p_filter, const char *psz_family);
+#endif /* __APPLE__ */
+
+#ifdef __ANDROID__
+const vlc_family_t *Android_GetFamily( filter_t *p_filter, const char *psz_family );
+vlc_family_t *Android_GetFallbacks( filter_t *p_filter, const char *psz_family,
+                                    uni_char_t codepoint );
+int Android_Prepare( filter_t *p_filter );
+#endif /* __ANDROID__ */
+
+char* Dummy_Select( filter_t *p_filter, const char* family,
+                    bool b_bold, bool b_italic,
+                    int *i_idx, uni_char_t codepoint );
+
+#define File_Select(a) Dummy_Select(NULL, a, 0, 0, NULL, 0)
+
+char* Generic_Select( filter_t *p_filter, const char* family,
+                      bool b_bold, bool b_italic,
+                      int *i_idx, uni_char_t codepoint );
+
 
 /* ******************
  * Family and fonts *
@@ -210,17 +208,9 @@ vlc_family_t * FontFallbacksAmongFamilies( vlc_font_select_t *, const fontfamili
  *
  * \return the new family representation
  */
-vlc_family_t *NewFamily( vlc_font_select_t *, const char *psz_family,
+vlc_family_t *NewFamily( filter_t *p_filter, const char *psz_family,
                          vlc_family_t **pp_list, vlc_dictionary_t *p_dict,
                          const char *psz_key );
-vlc_family_t *NewFamilyFromMixedCase( vlc_font_select_t *, const char *psz_family,
-                                      vlc_family_t **pp_list, vlc_dictionary_t *p_dict,
-                                      const char *psz_key );
-
-vlc_family_t * DeclareNewFamily( vlc_font_select_t *, const char *psz_family );
-int DeclareFamilyAsAttachMenFallback( vlc_font_select_t *, vlc_family_t * );
-
-char *CreateUniqueFamilyKey( vlc_font_select_t * );
 
 /**
  * Creates a new font.
@@ -228,7 +218,8 @@ char *CreateUniqueFamilyKey( vlc_font_select_t * );
  * \param psz_fontfile font file, or ":/x" for font attachments, where x is the attachment index
  *        within \ref filter_sys_t::pp_font_attachments [IN]
  * \param i_index index of the font in the font file [IN]
- * \param i_flags is font style flags [IN]
+ * \param b_bold is a bold font or not [IN]
+ * \param b_bold is an italic or not [IN]
  * \param p_parent parent family.
  *                 If not NULL, the font will be associated to this family, and
  *                 appended to the font list in that family [IN]
@@ -237,7 +228,8 @@ char *CreateUniqueFamilyKey( vlc_font_select_t * );
  * \return the new font
  */
 vlc_font_t *NewFont( char *psz_fontfile, int i_index,
-                     int i_flags, vlc_family_t *p_parent );
+                     bool b_bold, bool b_italic,
+                     vlc_family_t *p_parent );
 
 /**
  * Free families and fonts associated.
@@ -268,36 +260,33 @@ void FreeFamilies( void *p_families, void *p_obj );
  * of that function, where each family is added to the default list if
  * its name has "fallback" in it. So InitDefaultList() is not called on Android.
  *
- * \param fs the vlc_font_select_t handle [IN]
+ * \param p_filter the freetype module object [IN]
  * \param ppsz_default the table default fonts [IN]
  * \param i_size the size of the supplied table [IN]
  *
  * \return the default fallback list
  */
-vlc_family_t *InitDefaultList( vlc_font_select_t *fs, const char *const *ppsz_default,
+vlc_family_t *InitDefaultList( filter_t *p_filter, const char *const *ppsz_default,
                                int i_size );
 
 /* Debug Helpers */
-#ifdef DEBUG_PLATFORM_FONTS
-void DumpFamilies( vlc_font_select_t * );
-#endif
+void DumpFamily( filter_t *p_filter, const vlc_family_t *p_family,
+                 bool b_dump_fonts, int i_max_families );
+
+void DumpDictionary( filter_t *p_filter, const vlc_dictionary_t *p_dict,
+                     bool b_dump_fonts, int i_max_families );
 
 /* String helpers */
-char* LowercaseDup( const char *psz_src );
-
-bool IsLowercase( const char *psz_src );
-void LowercaseTransform( char *psz );
+char* ToLower( const char *psz_src );
 
 /* Size helper, depending on the scaling factor */
 int ConvertToLiveSize( filter_t *p_filter, const text_style_t *p_style );
 
-/* Only for fonts implementors */
-vlc_family_t *SearchFallbacks( vlc_font_select_t *, vlc_family_t *p_fallbacks,
-                                      uni_char_t codepoint );
-bool CheckFace( vlc_font_select_t *fs, vlc_font_t *p_font, uni_char_t codepoint );
-FT_Face doLoadFace( void *, const char *psz_fontfile, int i_idx );
 
-char * MakeFilePath( vlc_font_select_t *, const char *psz_filename );
+/* Only for fonts implementors */
+vlc_family_t *SearchFallbacks( filter_t *p_filter, vlc_family_t *p_fallbacks,
+                                      uni_char_t codepoint );
+FT_Face GetFace( filter_t *p_filter, vlc_font_t *p_font );
 
 #ifdef __cplusplus
 }

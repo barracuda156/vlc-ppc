@@ -133,9 +133,8 @@ static void Inhibit(vlc_inhibit_t *ih, unsigned flags)
     if (flags)
     {
         const char *app = PACKAGE;
-        const char *reason = (flags & VLC_INHIBIT_VIDEO) ? N_("Playing video")
-                                                         : N_("Playing audio");
-        reason = vlc_gettext(reason);
+        const char *reason = _("Playing some media.");
+
         assert(sys->cookie == 0);
 
         switch (type)
@@ -239,6 +238,7 @@ static void Close (vlc_object_t *obj)
 vlc_module_begin ()
     set_shortname (N_("D-Bus screensaver"))
     set_description (N_("D-Bus screen saver inhibition"))
+    set_category (CAT_ADVANCED)
     set_subcategory (SUBCAT_ADVANCED_MISC)
     set_capability ("inhibit", 20)
     set_callbacks (Open, Close)

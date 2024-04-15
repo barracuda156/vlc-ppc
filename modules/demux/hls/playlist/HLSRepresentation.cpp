@@ -21,17 +21,20 @@
 # include "config.h"
 #endif
 
+#include <vlc_fixups.h>
 #include <cinttypes>
 
 #include "HLSRepresentation.hpp"
 #include "M3U8.hpp"
 #include "Parser.hpp"
 #include "HLSSegment.hpp"
+#include "../../adaptive/playlist/BasePeriod.h"
 #include "../../adaptive/playlist/BaseAdaptationSet.h"
 #include "../../adaptive/playlist/SegmentList.h"
 
 #include <ctime>
 #include <limits>
+#include <cassert>
 
 using namespace hls;
 using namespace hls::playlist;
@@ -111,12 +114,12 @@ void HLSRepresentation::scheduleNextUpdate(uint64_t, bool b_updated)
         return;
     }
 
-    const vlc_tick_t now = vlc_tick_now();
+    const vlc_tick_t now = mdate();
     const BasePlaylist *playlist = getPlaylist();
 
     msg_Dbg(playlist->getVLCObject(), "Updated playlist ID %s, after %" PRId64 "s",
             getID().str().c_str(),
-            lastUpdateTime ? SEC_FROM_VLC_TICK(now - lastUpdateTime) : 0);
+            lastUpdateTime ? (now - lastUpdateTime)/CLOCK_FREQ : 0);
 
     lastUpdateTime = now;
 
@@ -131,11 +134,11 @@ bool HLSRepresentation::needsUpdate(uint64_t number) const
         return true;
     if(isLive())
     {
-        const vlc_tick_t now = vlc_tick_now();
+        const vlc_tick_t now = mdate();
         const vlc_tick_t elapsed = now - lastUpdateTime;
         vlc_tick_t duration = targetDuration
-                            ? vlc_tick_from_sec(targetDuration)
-                            : VLC_TICK_FROM_SEC(2);
+                         ? CLOCK_FREQ * targetDuration
+                         : CLOCK_FREQ * 2;
         if(updateFailureCount)
             duration /= 2;
         if(elapsed < duration)
@@ -160,7 +163,7 @@ bool HLSRepresentation::runLocalUpdates(SharedResources *res)
                  updateFailureCount, MAX_UPDATE_FAILED_UPDATE_COUNT,
                  getID().str().c_str());
         updateFailureCount++;
-        lastUpdateTime = vlc_tick_now();
+        lastUpdateTime = mdate();
         return false;
     }
     else

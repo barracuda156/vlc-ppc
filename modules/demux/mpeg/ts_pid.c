@@ -25,7 +25,6 @@
 
 #include "ts_pid.h"
 #include "ts_streams.h"
-#include "timestamps.h"
 
 #include "ts.h"
 
@@ -172,7 +171,6 @@ static void PIDReset( ts_pid_t *pid )
 {
     assert(pid->i_refcount == 0);
     pid->i_cc       = 0xff;
-    pid->i_dup      = 0;
     pid->i_flags    &= ~FLAG_SCRAMBLED;
     pid->type = TYPE_FREE;
     memset(pid->prevpktbytes, 0, PREVPKTKEEPBYTES);

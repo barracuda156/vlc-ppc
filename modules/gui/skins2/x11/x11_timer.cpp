@@ -2,6 +2,7 @@
  * x11_timer.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 6e7f1794933fd2269d3cd03f1dd9f6c61d3bf73a $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -50,7 +51,7 @@ void X11Timer::start( int delay, bool oneShot )
 {
     m_interval = 1000LL * (vlc_tick_t)delay;
     m_oneShot = oneShot;
-    m_nextDate = vlc_tick_now() + m_interval;
+    m_nextDate = mdate() + m_interval;
     m_pTimerLoop->addTimer( *this );
 }
 
@@ -102,8 +103,8 @@ void X11TimerLoop::removeTimer( X11Timer &rTimer )
 
 void X11TimerLoop::waitNextTimer()
 {
-    vlc_tick_t curDate = vlc_tick_now();
-    vlc_tick_t nextDate = VLC_TICK_MAX;
+    vlc_tick_t curDate = mdate();
+    vlc_tick_t nextDate = LAST_MDATE;
 
     X11Timer *nextTimer = NULL;
 
@@ -127,7 +128,7 @@ void X11TimerLoop::waitNextTimer()
     {
         if( nextDate > curDate )
         {
-            if( this->sleep( MS_FROM_VLC_TICK(nextDate - curDate ) ) )
+            if( this->sleep( (nextDate - curDate ) / 1000 ) )
             {
                 // The sleep has been interrupted: stop here
                 return;

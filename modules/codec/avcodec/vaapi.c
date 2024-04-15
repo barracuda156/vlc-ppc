@@ -42,239 +42,325 @@
 # include <va/va_drm.h>
 #endif
 #include <libavcodec/avcodec.h>
-#include <libavutil/hwcontext_vaapi.h>
+#include <libavcodec/vaapi.h>
 
 #include "avcodec.h"
 #include "va.h"
 #include "../../hw/vaapi/vlc_vaapi.h"
-#include "va_surface.h"
 
-struct vaapi_vctx
+struct vlc_va_sys_t
 {
-    VADisplay va_dpy;
-    AVBufferRef *hwframes_ref;
-    vlc_sem_t pool_sem;
+    struct vlc_vaapi_instance *va_inst;
+    struct vaapi_context hw_ctx;
+
+#ifdef VLC_VA_BACKEND_DRM
+    picture_pool_t *pool;
+#endif
 };
 
-typedef struct {
-    struct vaapi_pic_context ctx;
-    AVFrame *avframe;
-    bool cloned;
-} vaapi_dec_pic_context;
-
-static void vaapi_dec_pic_context_destroy(picture_context_t *context)
+static int GetVaProfile(AVCodecContext *ctx, const es_format_t *fmt,
+                        VAProfile *va_profile, int *vlc_chroma,
+                        unsigned *pic_count)
 {
-    vaapi_dec_pic_context *pic_ctx = container_of(context, vaapi_dec_pic_context, ctx.s);
+    VAProfile i_profile;
+    unsigned count = 3;
+    int i_vlc_chroma = VLC_CODEC_VAAPI_420;
 
-    struct vaapi_vctx *vaapi_vctx =
-        vlc_video_context_GetPrivate(pic_ctx->ctx.s.vctx, VLC_VIDEO_CONTEXT_VAAPI);
+    switch(ctx->codec_id)
+    {
+    case AV_CODEC_ID_MPEG1VIDEO:
+    case AV_CODEC_ID_MPEG2VIDEO:
+        i_profile = VAProfileMPEG2Main;
+        count = 4;
+        break;
+    case AV_CODEC_ID_MPEG4:
+        i_profile = VAProfileMPEG4AdvancedSimple;
+        break;
+    case AV_CODEC_ID_WMV3:
+        i_profile = VAProfileVC1Main;
+        break;
+    case AV_CODEC_ID_VC1:
+        i_profile = VAProfileVC1Advanced;
+        break;
+    case AV_CODEC_ID_H264:
+        i_profile = VAProfileH264High;
+        count = 18;
+        break;
+    case AV_CODEC_ID_HEVC:
+        if (ctx->profile == FF_PROFILE_HEVC_MAIN)
+            i_profile = VAProfileHEVCMain;
+        else if (ctx->profile == FF_PROFILE_HEVC_MAIN_10)
+        {
+            i_profile = VAProfileHEVCMain10;
+            i_vlc_chroma = VLC_CODEC_VAAPI_420_10BPP;
+        }
+        else
+            return VLC_EGENERIC;
+        count = 18;
+        break;
+    case AV_CODEC_ID_VP8:
+        i_profile = VAProfileVP8Version0_3;
+        count = 5;
+        break;
+    case AV_CODEC_ID_VP9:
+        if (ctx->profile == FF_PROFILE_VP9_0)
+            i_profile = VAProfileVP9Profile0;
+#if VA_CHECK_VERSION( 0, 39, 0 )
+        else if (ctx->profile == FF_PROFILE_VP9_2)
+        {
+            i_profile = VAProfileVP9Profile2;
+            i_vlc_chroma = VLC_CODEC_VAAPI_420_10BPP;
+        }
+#endif
+        else
+            return VLC_EGENERIC;
+        count = 10;
+        break;
+    default:
+        return VLC_EGENERIC;
+    }
 
-    av_frame_free(&pic_ctx->avframe);
-
-    if (!pic_ctx->cloned)
-        vlc_sem_post(&vaapi_vctx->pool_sem);
-
-    free(pic_ctx);
+    *va_profile = i_profile;
+    *pic_count = count + ctx->thread_count;
+    *vlc_chroma = i_vlc_chroma;
+    return VLC_SUCCESS;
 }
 
-static picture_context_t *vaapi_dec_pic_context_copy(picture_context_t *src)
+#ifndef VLC_VA_BACKEND_DRM
+
+static int Get(vlc_va_t *va, picture_t *pic, uint8_t **data)
 {
-    vaapi_dec_pic_context *src_ctx = container_of(src, vaapi_dec_pic_context, ctx.s);
-    vaapi_dec_pic_context *pic_ctx = malloc(sizeof(*pic_ctx));
-    if (unlikely(pic_ctx == NULL))
-        return NULL;
+    (void) va;
 
-    pic_ctx->ctx = src_ctx->ctx;
-
-    pic_ctx->avframe = av_frame_clone(src_ctx->avframe);
-    if (!pic_ctx->avframe)
-    {
-        free(pic_ctx);
-        return NULL;
-    }
-    pic_ctx->cloned = true;
-
-    vlc_video_context_Hold(pic_ctx->ctx.s.vctx);
-    return &pic_ctx->ctx.s;
-}
-
-static int Get(vlc_va_t *va, picture_t *pic, AVCodecContext *ctx, AVFrame *frame)
-{
-    vlc_video_context *vctx = va->sys;
-    struct vaapi_vctx *vaapi_vctx =
-        vlc_video_context_GetPrivate(vctx, VLC_VIDEO_CONTEXT_VAAPI);
-
-    /* If all frames are out, wait for a frame to be released. */
-    vlc_sem_wait(&vaapi_vctx->pool_sem);
-
-    int ret = av_hwframe_get_buffer(ctx->hw_frames_ctx, frame, 0);
-    if (ret)
-    {
-        msg_Err(va, "vaapi_va: av_hwframe_get_buffer failed: %d\n", ret);
-        vlc_sem_post(&vaapi_vctx->pool_sem);
-        return ret;
-    }
-
-    vaapi_dec_pic_context *vaapi_pic_ctx = malloc(sizeof(*vaapi_pic_ctx));
-    if (unlikely(vaapi_pic_ctx == NULL))
-    {
-        vlc_sem_post(&vaapi_vctx->pool_sem);
-        return VLC_ENOMEM;
-    }
-
-    vaapi_pic_ctx->ctx.s = (picture_context_t) {
-        vaapi_dec_pic_context_destroy, vaapi_dec_pic_context_copy, vctx,
-    };
-
-    vaapi_pic_ctx->ctx.surface = (uintptr_t) frame->data[3];
-    vaapi_pic_ctx->ctx.va_dpy = vaapi_vctx->va_dpy;
-    vaapi_pic_ctx->avframe = av_frame_clone(frame);
-    vaapi_pic_ctx->cloned = false;
-    vlc_vaapi_PicSetContext(pic, &vaapi_pic_ctx->ctx);
+    vlc_vaapi_PicAttachContext(pic);
+    *data = (void *) (uintptr_t) vlc_vaapi_PicGetSurface(pic);
 
     return VLC_SUCCESS;
 }
 
-static void Delete(vlc_va_t *va, AVCodecContext* ctx)
+static void Delete(vlc_va_t *va, void **hwctx)
 {
-    if (ctx)
-        av_buffer_unref(&ctx->hw_frames_ctx);
-    vlc_video_context_Release(va->sys);
+    vlc_va_sys_t *sys = va->sys;
+    vlc_object_t *o = VLC_OBJECT(va);
+
+    (void) hwctx;
+
+    vlc_vaapi_DestroyContext(o, sys->hw_ctx.display, sys->hw_ctx.context_id);
+    vlc_vaapi_DestroyConfig(o, sys->hw_ctx.display, sys->hw_ctx.config_id);
+    vlc_vaapi_ReleaseInstance(sys->va_inst);
+    free(sys);
 }
 
-static void vaapi_ctx_destroy(void *priv)
-{
-    struct vaapi_vctx *vaapi_vctx = priv;
-
-    av_buffer_unref(&vaapi_vctx->hwframes_ref);
-}
-
-static const struct vlc_va_operations ops = { Get, Delete, };
-
-static const struct vlc_video_context_operations vaapi_ctx_ops =
-{
-    .destroy = vaapi_ctx_destroy,
-};
-
-static int Create(vlc_va_t *va, AVCodecContext *ctx, enum AVPixelFormat hwfmt,
-                  const AVPixFmtDescriptor *desc,
-                  const es_format_t *fmt_in, vlc_decoder_device *dec_device,
-                  video_format_t *fmt_out, vlc_video_context **vtcx_out)
+static int Create(vlc_va_t *va, AVCodecContext *ctx, const AVPixFmtDescriptor *desc,
+                  enum PixelFormat pix_fmt,
+                  const es_format_t *fmt, picture_sys_t *p_sys)
 {
     VLC_UNUSED(desc);
-    VLC_UNUSED(fmt_in);
-    if ( hwfmt != AV_PIX_FMT_VAAPI || dec_device == NULL ||
-        dec_device->type != VLC_DECODER_DEVICE_VAAPI)
+    if (pix_fmt != AV_PIX_FMT_VAAPI || p_sys == NULL)
         return VLC_EGENERIC;
 
-    VADisplay va_dpy = dec_device->opaque;
+    (void) fmt;
+    vlc_object_t *o = VLC_OBJECT(va);
 
-    AVBufferRef *hwdev_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VAAPI);
-    if (hwdev_ref == NULL)
+    int ret = VLC_EGENERIC;
+    vlc_va_sys_t *sys = NULL;
+
+    /* The picture must be allocated by the vout */
+    VADisplay va_dpy;
+    struct vlc_vaapi_instance *va_inst =
+        vlc_vaapi_PicSysHoldInstance(p_sys, &va_dpy);
+
+    VASurfaceID *render_targets;
+    unsigned num_render_targets =
+        vlc_vaapi_PicSysGetRenderTargets(p_sys, &render_targets);
+    if (num_render_targets == 0)
+        goto error;
+
+    VAProfile i_profile;
+    unsigned count;
+    int i_vlc_chroma;
+    if (GetVaProfile(ctx, fmt, &i_profile, &i_vlc_chroma, &count) != VLC_SUCCESS)
+        goto error;
+
+    sys = malloc(sizeof *sys);
+    if (unlikely(sys == NULL))
+    {
+        ret = VLC_ENOMEM;
+        goto error;
+    }
+    memset(sys, 0, sizeof (*sys));
+
+    /* */
+    sys->va_inst = va_inst;
+    sys->hw_ctx.display = va_dpy;
+    sys->hw_ctx.config_id = VA_INVALID_ID;
+    sys->hw_ctx.context_id = VA_INVALID_ID;
+
+    sys->hw_ctx.config_id =
+        vlc_vaapi_CreateConfigChecked(o, sys->hw_ctx.display, i_profile,
+                                      VAEntrypointVLD, i_vlc_chroma);
+    if (sys->hw_ctx.config_id == VA_INVALID_ID)
+        goto error;
+
+    /* Create a context */
+    sys->hw_ctx.context_id =
+        vlc_vaapi_CreateContext(o, sys->hw_ctx.display, sys->hw_ctx.config_id,
+                                ctx->coded_width, ctx->coded_height, VA_PROGRESSIVE,
+                                render_targets, num_render_targets);
+    if (sys->hw_ctx.context_id == VA_INVALID_ID)
+        goto error;
+
+    ctx->hwaccel_context = &sys->hw_ctx;
+    va->sys = sys;
+    va->description = vaQueryVendorString(sys->hw_ctx.display);
+    va->get = Get;
+    return VLC_SUCCESS;
+
+error:
+    if (sys != NULL)
+    {
+        if (sys->hw_ctx.context_id != VA_INVALID_ID)
+            vlc_vaapi_DestroyContext(o, sys->hw_ctx.display, sys->hw_ctx.context_id);
+        if (sys->hw_ctx.config_id != VA_INVALID_ID)
+            vlc_vaapi_DestroyConfig(o, sys->hw_ctx.display, sys->hw_ctx.config_id);
+        free(sys);
+    }
+    vlc_vaapi_ReleaseInstance(va_inst);
+    return ret;
+}
+
+#else /* DRM */
+
+static int GetDRM(vlc_va_t *va, picture_t *pic, uint8_t **data)
+{
+    vlc_va_sys_t *sys = va->sys;
+
+    picture_t *vapic = picture_pool_Wait(sys->pool);
+    if (vapic == NULL)
+        return VLC_EGENERIC;
+    vlc_vaapi_PicAttachContext(vapic);
+
+    pic->context = vapic->context->copy(vapic->context);
+    picture_Release(vapic);
+    if (pic->context == NULL)
         return VLC_EGENERIC;
 
-    AVHWDeviceContext *hwdev_ctx = (void *) hwdev_ref->data;
-    AVVAAPIDeviceContext *vadev_ctx = hwdev_ctx->hwctx;
-    vadev_ctx->display = va_dpy;
-
-    if (av_hwdevice_ctx_init(hwdev_ref) < 0)
-    {
-        av_buffer_unref(&hwdev_ref);
-        return VLC_EGENERIC;
-    }
-
-    AVBufferRef *hwframes_ref;
-    int ret = avcodec_get_hw_frames_parameters(ctx, hwdev_ref, hwfmt, &hwframes_ref);
-    av_buffer_unref(&hwdev_ref);
-    if (ret < 0)
-    {
-        msg_Err(va, "avcodec_get_hw_frames_parameters failed: %d", ret);
-        return VLC_EGENERIC;
-    }
-
-    AVHWFramesContext *hwframes_ctx = (AVHWFramesContext*)hwframes_ref->data;
-
-    if (hwframes_ctx->initial_pool_size)
-    {
-        // cf. ff_decode_get_hw_frames_ctx()
-        // We guarantee 4 base work surfaces. The function above guarantees 1
-        // (the absolute minimum), so add the missing count.
-        hwframes_ctx->initial_pool_size += 3;
-    }
-
-    ret = av_hwframe_ctx_init(hwframes_ref);
-    if (ret < 0)
-    {
-        msg_Err(va, "av_hwframe_ctx_init failed: %d", ret);
-        av_buffer_unref(&hwframes_ref);
-        return VLC_EGENERIC;
-    }
-
-    int vlc_chroma = 0;
-    if (hwframes_ctx->format == AV_PIX_FMT_VAAPI)
-    {
-        switch (hwframes_ctx->sw_format)
-        {
-            case AV_PIX_FMT_YUV420P:
-            case AV_PIX_FMT_NV12:
-                vlc_chroma = VLC_CODEC_VAAPI_420;
-                break;
-            case AV_PIX_FMT_P010LE:
-            case AV_PIX_FMT_P010BE:
-            case AV_PIX_FMT_YUV420P10BE:
-            case AV_PIX_FMT_YUV420P10LE:
-                vlc_chroma = VLC_CODEC_VAAPI_420_10BPP;
-                break;
-            default:
-                break;
-        }
-    }
-
-    if (vlc_chroma == 0)
-    {
-        msg_Warn(va, "ffmpeg chroma not compatible with vlc: hw: %d, sw: %d",
-                 hwframes_ctx->format, hwframes_ctx->sw_format);
-        av_buffer_unref(&hwframes_ref);
-        return VLC_EGENERIC;
-    }
-
-    ctx->hw_frames_ctx = av_buffer_ref(hwframes_ref);
-    if (!ctx->hw_frames_ctx)
-    {
-        av_buffer_unref(&hwframes_ref);
-        return VLC_EGENERIC;
-    }
-
-    vlc_video_context *vctx =
-        vlc_video_context_Create(dec_device, VLC_VIDEO_CONTEXT_VAAPI,
-                                 sizeof(struct vaapi_vctx), &vaapi_ctx_ops);
-    if (vctx == NULL)
-    {
-        av_buffer_unref(&hwframes_ref);
-        av_buffer_unref(&ctx->hw_frames_ctx);
-        return VLC_EGENERIC;
-    }
-
-    struct vaapi_vctx *vaapi_vctx =
-        vlc_video_context_GetPrivate(vctx, VLC_VIDEO_CONTEXT_VAAPI);
-
-    vaapi_vctx->va_dpy = va_dpy;
-    vaapi_vctx->hwframes_ref = hwframes_ref;
-    vlc_sem_init(&vaapi_vctx->pool_sem, hwframes_ctx->initial_pool_size);
-
-    msg_Info(va, "Using %s", vaQueryVendorString(va_dpy));
-
-    fmt_out->i_chroma = vlc_chroma;
-
-    va->ops = &ops;
-    va->sys = vctx;
-    *vtcx_out = vctx;
+    *data = (void *)(uintptr_t)vlc_vaapi_PicGetSurface(pic);
     return VLC_SUCCESS;
 }
 
+static void DeleteDRM(vlc_va_t *va, void **hwctx)
+{
+    vlc_va_sys_t *sys = va->sys;
+    vlc_object_t *o = VLC_OBJECT(va);
+
+    (void) hwctx;
+    picture_pool_Release(sys->pool);
+    vlc_vaapi_DestroyContext(o, sys->hw_ctx.display, sys->hw_ctx.context_id);
+    vlc_vaapi_DestroyConfig(o, sys->hw_ctx.display, sys->hw_ctx.config_id);
+    vlc_vaapi_ReleaseInstance(sys->va_inst);
+    free(sys);
+}
+
+static int CreateDRM(vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat pix_fmt,
+                     const es_format_t *fmt, picture_sys_t *p_sys)
+{
+    if (pix_fmt != AV_PIX_FMT_VAAPI || p_sys)
+        return VLC_EGENERIC;
+
+    (void) fmt;
+    (void) p_sys;
+    vlc_object_t *o = VLC_OBJECT(va);
+
+    VAProfile i_profile;
+    unsigned count;
+    int i_vlc_chroma;
+    if (GetVaProfile(ctx, fmt, &i_profile, &i_vlc_chroma, &count) != VLC_SUCCESS)
+        return VLC_EGENERIC;
+
+    vlc_va_sys_t *sys;
+
+    sys = malloc(sizeof(vlc_va_sys_t));
+    if (!sys)
+       return VLC_ENOMEM;
+    memset(sys, 0, sizeof (*sys));
+
+    /* */
+    sys->hw_ctx.display = NULL;
+    sys->hw_ctx.config_id = VA_INVALID_ID;
+    sys->hw_ctx.context_id = VA_INVALID_ID;
+    sys->pool = NULL;
+    sys->va_inst = NULL;
+
+    /* Create a VA display */
+    sys->va_inst = vlc_vaapi_InitializeInstanceDRM(o, vaGetDisplayDRM,
+                                                   &sys->hw_ctx.display, NULL);
+    if (!sys->va_inst)
+        goto error;
+
+    sys->hw_ctx.config_id =
+        vlc_vaapi_CreateConfigChecked(o, sys->hw_ctx.display, i_profile,
+                                      VAEntrypointVLD, 0);
+    if (sys->hw_ctx.config_id == VA_INVALID_ID)
+        goto error;
+
+    /* Create surfaces */
+    assert(ctx->coded_width > 0 && ctx->coded_height > 0);
+    video_format_t vfmt = {
+        .i_chroma = i_vlc_chroma,
+        .i_width = ctx->coded_width,
+        .i_height = ctx->coded_height,
+        .i_visible_width = ctx->coded_width,
+        .i_visible_height = ctx->coded_height
+    };
+
+    VASurfaceID *surfaces;
+    sys->pool = vlc_vaapi_PoolNew(o, sys->va_inst, sys->hw_ctx.display, count,
+                                  &surfaces, &vfmt, false);
+
+    if (!sys->pool)
+        goto error;
+
+    /* Create a context */
+    sys->hw_ctx.context_id =
+        vlc_vaapi_CreateContext(o, sys->hw_ctx.display, sys->hw_ctx.config_id,
+                                ctx->coded_width, ctx->coded_height,
+                                VA_PROGRESSIVE, surfaces, count);
+    if (sys->hw_ctx.context_id == VA_INVALID_ID)
+        goto error;
+
+    ctx->hwaccel_context = &sys->hw_ctx;
+    va->sys = sys;
+    va->description = vaQueryVendorString(sys->hw_ctx.display);
+    va->get = GetDRM;
+    return VLC_SUCCESS;
+
+error:
+    if (sys->hw_ctx.context_id != VA_INVALID_ID)
+        vlc_vaapi_DestroyContext(o, sys->hw_ctx.display, sys->hw_ctx.context_id);
+    if (sys->pool != NULL)
+        picture_pool_Release(sys->pool);
+    if (sys->hw_ctx.config_id != VA_INVALID_ID)
+        vlc_vaapi_DestroyConfig(o, sys->hw_ctx.display, sys->hw_ctx.config_id);
+    if (sys->va_inst != NULL)
+        vlc_vaapi_ReleaseInstance(sys->va_inst);
+    free(sys);
+    return VLC_EGENERIC;
+}
+#endif
+
 vlc_module_begin ()
+#ifdef VLC_VA_BACKEND_DRM
+    set_description( N_("VA-API video decoder via DRM") )
+    set_capability( "hw decoder", 0 )
+    set_callbacks( CreateDRM, DeleteDRM )
+    add_shortcut( "vaapi", "vaapi_drm" )
+#else
     set_description( N_("VA-API video decoder") )
-    set_va_callback( Create, 100 )
+    set_capability( "hw decoder", 100 )
+    set_callbacks( Create, Delete )
     add_shortcut( "vaapi" )
+#endif
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
 vlc_module_end ()

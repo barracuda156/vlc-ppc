@@ -22,7 +22,6 @@
 # include "config.h"
 #endif
 
-#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -35,17 +34,20 @@
 #include <vlc_modules.h>
 #include <vlc_plugin.h>
 #include <vlc_charset.h>
-#include "ansi_term.h"
 #include "modules/modules.h"
 #include "config/configuration.h"
 #include "libvlc.h"
 
 #if defined( _WIN32 )
-# define wcwidth(cp) ((void)(cp), 1) /* LOL */
+# include <vlc_charset.h>
+# define wcwidth(cp) (cp, 1) /* LOL */
+#else
+# include <unistd.h>
+# include <termios.h>
+# include <sys/ioctl.h>
 #endif
-#include <unistd.h>
 
-#if defined( _WIN32 ) && !defined( VLC_WINSTORE_APP )
+#if defined( _WIN32 ) && !VLC_WINSTORE_APP
 static void ShowConsole (void);
 static void PauseConsole (void);
 #else
@@ -53,10 +55,10 @@ static void PauseConsole (void);
 # define PauseConsole() (void)0
 #endif
 
-static void Help (libvlc_int_t *, const char *);
-static void Usage (libvlc_int_t *, const char *);
+static void Help (vlc_object_t *, const char *);
+static void Usage (vlc_object_t *, const char *);
 static void Version (void);
-static void ListModules (libvlc_int_t *, bool);
+static void ListModules (vlc_object_t *, bool);
 
 /**
  * Returns the console width or a best guess.
@@ -75,7 +77,7 @@ static unsigned ConsoleWidth(void)
     if (ioctl(STDOUT_FILENO, WIOCGETD, &uw) == 0)
         return uw.uw_height / uw.uw_vs;
 #endif
-#if defined (_WIN32) && !defined(VLC_WINSTORE_APP)
+#if defined (_WIN32) && !VLC_WINSTORE_APP
     CONSOLE_SCREEN_BUFFER_INFO buf;
 
     if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buf))
@@ -88,11 +90,18 @@ static unsigned ConsoleWidth(void)
  * Checks for help command line options such as --help or --version.
  * If one is found, print the corresponding text.
  * \return true if a command line options caused some help message to be
- * printed, false otherwise.
+ * printed, false otherwise. 
  */
-bool config_PrintHelp (libvlc_int_t *obj)
+bool config_PrintHelp (vlc_object_t *obj)
 {
     char *str;
+
+    /* Check for short help option */
+    if (var_InheritBool (obj, "help"))
+    {
+        Help (obj, "help");
+        return true;
+    }
 
     /* Check for version option */
     if (var_InheritBool (obj, "version"))
@@ -113,6 +122,8 @@ bool config_PrintHelp (libvlc_int_t *obj)
     /* Check for full help option */
     if (var_InheritBool (obj, "full-help"))
     {
+        var_Create (obj, "advanced", VLC_VAR_BOOL);
+        var_SetBool (obj, "advanced", true);
         var_Create (obj, "help-verbose", VLC_VAR_BOOL);
         var_SetBool (obj, "help-verbose", true);
         Help (obj, "full-help");
@@ -125,23 +136,17 @@ bool config_PrintHelp (libvlc_int_t *obj)
         Help (obj, "longhelp");
         return true;
     }
-    /* Check for short help option */
-    if (var_InheritBool (obj, "help"))
+
+    /* Check for module list option */
+    if (var_InheritBool (obj, "list"))
     {
-        Help (obj, "help");
+        ListModules (obj, false );
         return true;
     }
 
     if (var_InheritBool (obj, "list-verbose"))
     {
         ListModules (obj, true);
-        return true;
-    }
-
-    /* Check for module list option */
-    if (var_InheritBool (obj, "list"))
-    {
-        ListModules (obj, false );
         return true;
     }
 
@@ -193,7 +198,7 @@ static const char vlc_usage[] = N_(
   "  vlc://quit                     Special item to quit VLC\n"
   "\n");
 
-static void Help (libvlc_int_t *p_this, char const *psz_help_name)
+static void Help (vlc_object_t *p_this, char const *psz_help_name)
 {
     ShowConsole();
 
@@ -227,6 +232,15 @@ static void Help (libvlc_int_t *p_this, char const *psz_help_name)
  *****************************************************************************
  * Print a short inline help. Message interface is initialized at this stage.
  *****************************************************************************/
+#   define COL(x)  "\033[" #x ";1m"
+#   define RED     COL(31)
+#   define GREEN   COL(32)
+#   define YELLOW  COL(33)
+#   define BLUE    COL(34)
+#   define MAGENTA COL(35)
+#   define CYAN    COL(36)
+#   define WHITE   COL(0)
+#   define GRAY    "\033[0m"
 #   define LINE_START      8
 #   define PADDING_SPACES 25
 
@@ -239,10 +253,10 @@ static void print_section(const module_t *m, const module_config_t **sect,
         return;
     *sect = NULL;
 
-    printf(color ? TS_RED_BOLD "   %s:\n" TS_RESET : "   %s:\n",
+    printf(color ? RED"   %s:\n"GRAY : "   %s:\n",
            module_gettext(m, item->psz_text));
     if (desc && item->psz_longtext != NULL)
-        printf(color ? TS_MAGENTA_BOLD "   %s\n" TS_RESET : "   %s\n",
+        printf(color ? MAGENTA"   %s\n"GRAY : "   %s\n",
                module_gettext(m, item->psz_longtext));
 }
 
@@ -251,19 +265,18 @@ static void print_desc(const char *str, unsigned margin, bool color)
     unsigned width = ConsoleWidth() - margin;
 
     if (color)
-        fputs(TS_BLUE_BOLD, stdout);
+        fputs(BLUE, stdout);
 
     const char *word = str;
-    size_t wordlen = 0;
-    int wordwidth = 0;
+    int wordlen = 0, wordwidth = 0;
     unsigned offset = 0;
     bool newline = true;
 
     while (str[0])
     {
         uint32_t cp;
-        ssize_t charlen = vlc_towc(str, &cp);
-        if (unlikely(charlen == -1))
+        size_t charlen = vlc_towc(str, &cp);
+        if (unlikely(charlen == (size_t)-1))
             break;
 
         int charwidth = wcwidth(cp);
@@ -309,7 +322,7 @@ static void print_desc(const char *str, unsigned margin, bool color)
 
     if (!newline)
         putchar(' ');
-    printf(color ? "%s\n" TS_RESET : "%s\n", word);
+    printf(color ? "%s\n"GRAY : "%s\n", word);
 }
 
 static int vlc_swidth(const char *str)
@@ -317,11 +330,11 @@ static int vlc_swidth(const char *str)
     for (int total = 0;;)
     {
         uint32_t cp;
-        ssize_t charlen = vlc_towc(str, &cp);
+        size_t charlen = vlc_towc(str, &cp);
 
         if (charlen == 0)
             return total;
-        if (charlen == -1)
+        if (charlen == (size_t)-1)
             return -1;
         str += charlen;
 
@@ -332,10 +345,9 @@ static int vlc_swidth(const char *str)
     }
 }
 
-static void print_item(const module_t *m, const struct vlc_param *param,
+static void print_item(const vlc_object_t *p_this, const module_t *m, const module_config_t *item,
                        const module_config_t **section, bool color, bool desc)
 {
-    const module_config_t *item = &param->item;
 #ifndef _WIN32
 # define OPTION_VALUE_SEP " "
 #else
@@ -351,16 +363,13 @@ static void print_item(const module_t *m, const struct vlc_param *param,
             switch (item->i_type)
             {
                 case CONFIG_HINT_CATEGORY:
-                    printf(color ? TS_GREEN_BOLD "\n %s\n" TS_RESET : "\n %s\n",
+                case CONFIG_HINT_USAGE:
+                    printf(color ? GREEN "\n %s\n" GRAY : "\n %s\n",
                            module_gettext(m, item->psz_text));
 
                     if (desc && item->psz_longtext != NULL)
-                        printf(color ? TS_CYAN_BOLD " %s\n" TS_RESET : " %s\n",
+                        printf(color ? CYAN " %s\n" GRAY : " %s\n",
                                module_gettext(m, item->psz_longtext));
-                    break;
-
-                case CONFIG_SUBCATEGORY:
-                    /* We ignore these here, using 'hints' instead */
                     break;
 
                 case CONFIG_SECTION:
@@ -375,13 +384,13 @@ static void print_item(const module_t *m, const struct vlc_param *param,
 
             char **ppsz_values, **ppsz_texts;
 
-            ssize_t i_count = config_GetPszChoices(item->psz_name, &ppsz_values, &ppsz_texts);
+            ssize_t i_count = config_GetPszChoices(VLC_OBJECT(p_this), item->psz_name, &ppsz_values, &ppsz_texts);
 
             if (i_count > 0)
             {
                 size_t len = 0;
 
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < i_count; i++)
                     len += strlen(ppsz_values[i]) + 1;
 
                 typebuf = malloc(len);
@@ -393,7 +402,7 @@ static void print_item(const module_t *m, const struct vlc_param *param,
                 ket = "}";
 
                 *typebuf = 0;
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < i_count; i++)
                 {
                     if (i > 0)
                         strcat(typebuf, ",");
@@ -401,7 +410,7 @@ static void print_item(const module_t *m, const struct vlc_param *param,
                 }
 
             end_string:
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < i_count; i++)
                 {
                     free(ppsz_values[i]);
                     free(ppsz_texts[i]);
@@ -419,13 +428,13 @@ static void print_item(const module_t *m, const struct vlc_param *param,
             int64_t *pi_values;
             char **ppsz_texts;
 
-            ssize_t i_count = config_GetIntChoices(item->psz_name, &pi_values, &ppsz_texts);
+            ssize_t i_count = config_GetIntChoices(VLC_OBJECT(p_this), item->psz_name, &pi_values, &ppsz_texts);
 
             if (i_count > 0)
             {
                 size_t len = 0;
 
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < i_count; i++)
                     len += strlen(ppsz_texts[i])
                            + 4 * sizeof (int64_t) + 5;
 
@@ -438,7 +447,7 @@ static void print_item(const module_t *m, const struct vlc_param *param,
                 ket = "}";
 
                 *typebuf = 0;
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < item->list_count; i++)
                 {
                     if (i != 0)
                         strcat(typebuf, ", ");
@@ -448,7 +457,7 @@ static void print_item(const module_t *m, const struct vlc_param *param,
                 }
 
             end_integer:
-                for (size_t i = 0; i < (size_t)i_count; i++)
+                for (unsigned i = 0; i < i_count; i++)
                     free(ppsz_texts[i]);
                 free(pi_values);
                 free(ppsz_texts);
@@ -478,8 +487,8 @@ static void print_item(const module_t *m, const struct vlc_param *param,
         case CONFIG_ITEM_BOOL:
             bra = type = ket = "";
             prefix = ", --no-";
-            suffix = item->orig.i ? _("(default enabled)")
-                                  : _("(default disabled)");
+            suffix = item->value.i ? _("(default enabled)")
+                                   : _("(default disabled)");
             break;
        default:
             return;
@@ -489,17 +498,17 @@ static void print_item(const module_t *m, const struct vlc_param *param,
 
     /* Add short option if any */
     char shortopt[4];
-    if (param->shortname != '\0')
-        sprintf(shortopt, "-%c,", param->shortname);
+    if (item->i_short != '\0')
+        sprintf(shortopt, "-%c,", item->i_short);
     else
         strcpy(shortopt, "   ");
 
     if (CONFIG_CLASS(item->i_type) == CONFIG_ITEM_BOOL)
-        printf(color ? TS_BOLD "  %s --%s"      "%s%s%s%s%s " TS_RESET
+        printf(color ? WHITE"  %s --%s"      "%s%s%s%s%s "GRAY
                      : "  %s --%s%s%s%s%s%s ", shortopt, item->psz_name,
                prefix, item->psz_name, bra, type, ket);
     else
-        printf(color ? TS_BOLD "  %s --%s" TS_YELLOW_BOLD "%s%s%s%s%s " TS_RESET
+        printf(color ? WHITE"  %s --%s"YELLOW"%s%s%s%s%s "GRAY
                      : "  %s --%s%s%s%s%s%s ", shortopt, item->psz_name,
                "", "",  /* XXX */      bra, type, ket);
 
@@ -556,25 +565,29 @@ static bool module_match(const module_t *m, const char *pattern, bool strict)
     return false;
 }
 
-static bool plugin_show(const vlc_plugin_t *plugin)
+static bool plugin_show(const vlc_plugin_t *plugin, bool advanced)
 {
     for (size_t i = 0; i < plugin->conf.size; i++)
     {
-        const struct vlc_param *param = plugin->conf.params + i;
-        const module_config_t *item = &param->item;
+        const module_config_t *item = plugin->conf.items + i;
 
         if (!CONFIG_ITEM(item->i_type))
             continue;
-        if (param->obsolete)
+        if (item->b_removed)
+            continue;
+        if ((!advanced) && item->b_advanced)
             continue;
         return true;
     }
     return false;
 }
 
-static void Usage (libvlc_int_t *p_this, char const *psz_search)
+static void Usage (vlc_object_t *p_this, char const *psz_search)
 {
+    bool b_has_advanced = false;
     bool found = false;
+    unsigned i_only_advanced = 0; /* Number of modules ignored because they
+                               * only have advanced options */
     bool strict = false;
     if (psz_search != NULL && psz_search[0] == '=')
     {
@@ -583,12 +596,13 @@ static void Usage (libvlc_int_t *p_this, char const *psz_search)
     }
 
     bool color = false;
-#ifdef HAVE_ISATTY
+#ifndef _WIN32
     if (isatty(STDOUT_FILENO))
         color = var_InheritBool(p_this, "color");
 #endif
 
     const bool desc = var_InheritBool(p_this, "help-verbose");
+    const bool advanced = var_InheritBool(p_this, "advanced");
 
     /* Enumerate the config for each module */
     for (const vlc_plugin_t *p = vlc_plugins; p != NULL; p = p->next)
@@ -597,39 +611,55 @@ static void Usage (libvlc_int_t *p_this, char const *psz_search)
         const module_config_t *section = NULL;
         const char *objname = module_get_object(m);
 
-        if (psz_search == NULL && p->conf.count == 0)
+        if (p->conf.count == 0)
             continue; /* Ignore modules without config options */
         if (!module_match(m, psz_search, strict))
             continue;
         found = true;
 
-        if (psz_search == NULL && !plugin_show(p))
+        if (!plugin_show(p, advanced))
+        {   /* Ignore plugins with only advanced config options if requested */
+            i_only_advanced++;
             continue;
+        }
 
         /* Print name of module */
-        printf(color ? "\n " TS_GREEN_BOLD "%s" TS_RESET " (%s)\n" : "\n %s (%s)\n",
+        printf(color ? "\n " GREEN "%s" GRAY " (%s)\n" : "\n %s (%s)\n",
                module_gettext(m, m->psz_longname), objname);
         if (m->psz_help != NULL)
-            printf(color ? TS_CYAN_BOLD" %s\n" TS_RESET : " %s\n",
+            printf(color ? CYAN" %s\n"GRAY : " %s\n",
                    module_gettext(m, m->psz_help));
-
-        if (psz_search != NULL && p->conf.count == 0)
-            printf("  %s\n", _("This module has no options."));
 
         /* Print module options */
         for (size_t j = 0; j < p->conf.size; j++)
         {
-            const struct vlc_param *param = p->conf.params + j;
+            const module_config_t *item = p->conf.items + j;
 
-            if (param->obsolete)
+            if (item->b_removed)
                 continue; /* Skip removed options */
-
-            print_item(m, param, &section, color, desc);
+            if (item->b_advanced && !advanced)
+            {   /* Skip advanced options unless requested */
+                b_has_advanced = true;
+                continue;
+            }
+            print_item(p_this, m, item, &section, color, desc);
         }
     }
 
-    if (!found)
-        printf(color ? "\n" TS_BOLD "%s" TS_RESET "\n" : "\n%s\n",
+    if( b_has_advanced )
+        printf(color ? "\n" WHITE "%s" GRAY " %s\n"
+                     : "\n%s %s\n", _( "Note:" ), _( "add --advanced to your "
+                                     "command line to see advanced options."));
+    if( i_only_advanced > 0 )
+    {
+        printf(color ? "\n" WHITE "%s" GRAY " " : "\n%s ", _( "Note:" ) );
+        printf(vlc_ngettext("%u module was not displayed because it only has "
+               "advanced options.\n", "%u modules were not displayed because "
+               "they only have advanced options.\n", i_only_advanced),
+               i_only_advanced);
+    }
+    else if (!found)
+        printf(color ? "\n" WHITE "%s" GRAY "\n" : "\n%s\n",
                _("No matching module found. Use --list or "
                  "--list-verbose to list available modules."));
 }
@@ -640,12 +670,12 @@ static void Usage (libvlc_int_t *p_this, char const *psz_search)
  * Print a list of all available modules (builtins and plugins) and a short
  * description for each one.
  *****************************************************************************/
-static void ListModules (libvlc_int_t *p_this, bool b_verbose)
+static void ListModules (vlc_object_t *p_this, bool b_verbose)
 {
     bool color = false;
 
     ShowConsole();
-#ifdef HAVE_ISATTY
+#ifndef _WIN32
     if (isatty(STDOUT_FILENO))
         color = var_InheritBool(p_this, "color");
 #else
@@ -661,7 +691,7 @@ static void ListModules (libvlc_int_t *p_this, bool b_verbose)
     {
         module_t *p_parser = list[j];
         const char *objname = module_get_object (p_parser);
-        printf(color ? TS_GREEN_BOLD "  %-22s " TS_RESET_BOLD "%s\n" TS_RESET : "  %-22s %s\n",
+        printf(color ? GREEN"  %-22s "WHITE"%s\n"GRAY : "  %-22s %s\n",
                objname, module_gettext(p_parser, p_parser->psz_longname));
 
         if( b_verbose )
@@ -669,10 +699,10 @@ static void ListModules (libvlc_int_t *p_this, bool b_verbose)
             const char *const *pp_shortcuts = p_parser->pp_shortcuts;
             for( unsigned i = 0; i < p_parser->i_shortcuts; i++ )
                 if( strcmp( pp_shortcuts[i], objname ) )
-                    printf(color ? TS_CYAN_BOLD "   s %s\n" TS_RESET : "   s %s\n",
+                    printf(color ? CYAN"   s %s\n"GRAY : "   s %s\n",
                            pp_shortcuts[i]);
             if (p_parser->psz_capability != NULL)
-                printf(color ? TS_MAGENTA_BOLD "   c %s (%d)\n" TS_RESET : "   c %s (%d)\n",
+                printf(color ? MAGENTA"   c %s (%d)\n"GRAY : "   c %s (%d)\n",
                        p_parser->psz_capability, p_parser->i_score);
         }
     }
@@ -696,7 +726,7 @@ static void Version( void )
     PauseConsole();
 }
 
-#if defined( _WIN32 ) && !defined(VLC_WINSTORE_APP)
+#if defined( _WIN32 ) && !VLC_WINSTORE_APP
 /*****************************************************************************
  * ShowConsole: On Win32, create an output console for debug messages
  *****************************************************************************

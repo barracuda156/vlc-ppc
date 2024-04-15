@@ -2,6 +2,7 @@
  * file.c: configuration file handling
  *****************************************************************************
  * Copyright (C) 2001-2007 VLC authors and VideoLAN
+ * $Id: 6270a6bc9d621ae6a0d7a23da5dbb6e7a176487a $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -27,7 +28,6 @@
 #include <errno.h>                                                  /* errno */
 #include <assert.h>
 #include <limits.h>
-#include <stdatomic.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #ifdef __APPLE__
@@ -47,19 +47,22 @@
 
 #include "configuration.h"
 #include "modules/modules.h"
-#include "misc/rcu.h"
+
+static inline char *strdupnull (const char *src)
+{
+    return src ? strdup (src) : NULL;
+}
 
 /**
  * Get the user's configuration file
  */
-static char *config_GetConfigFile( libvlc_int_t *obj )
+static char *config_GetConfigFile( vlc_object_t *obj )
 {
-    char *psz_file = var_InheritString( obj, "config" );
+    char *psz_file = var_CreateGetNonEmptyString( obj, "config" );
+    var_Destroy( obj, "config" );
     if( psz_file == NULL )
     {
         char *psz_dir = config_GetUserDir( VLC_CONFIG_DIR );
-        if (psz_dir == NULL)
-            return NULL;
 
         if( asprintf( &psz_file, "%s" DIR_SEP CONFIG_FILE, psz_dir ) == -1 )
             psz_file = NULL;
@@ -68,7 +71,7 @@ static char *config_GetConfigFile( libvlc_int_t *obj )
     return psz_file;
 }
 
-static FILE *config_OpenConfigFile( libvlc_int_t *p_obj )
+static FILE *config_OpenConfigFile( vlc_object_t *p_obj )
 {
     char *psz_filename = config_GetConfigFile( p_obj );
     if( psz_filename == NULL )
@@ -101,7 +104,7 @@ static FILE *config_OpenConfigFile( libvlc_int_t *p_obj )
                 /* Old config file found. We want to write it at the
                  * new location now. */
                 msg_Info( p_obj, "Found old config file at %s. "
-                          "now using %s.", psz_old, psz_filename );
+                          "VLC will now use %s.", psz_old, psz_filename );
                 char *psz_readme;
                 if( asprintf(&psz_readme,"%s/.vlc/README",
                              home ) != -1 )
@@ -134,6 +137,7 @@ static FILE *config_OpenConfigFile( libvlc_int_t *p_obj )
     return p_stream;
 }
 
+
 static int64_t vlc_strtoi (const char *str)
 {
     char *end;
@@ -155,13 +159,14 @@ static int64_t vlc_strtoi (const char *str)
     return l;
 }
 
+#undef config_LoadConfigFile
 /*****************************************************************************
  * config_LoadConfigFile: loads the configuration file.
  *****************************************************************************
  * This function is called to load the config options stored in the config
  * file.
  *****************************************************************************/
-int config_LoadConfigFile( libvlc_int_t *p_this )
+int config_LoadConfigFile( vlc_object_t *p_this )
 {
     FILE *file;
 
@@ -182,7 +187,7 @@ int config_LoadConfigFile( libvlc_int_t *p_this )
     locale_t loc = newlocale (LC_NUMERIC_MASK, "C", NULL);
     locale_t baseloc = uselocale (loc);
 
-    config_Lock();
+    vlc_rwlock_wrlock (&config_lock);
     while ((linelen = getline (&line, &bufsize, file)) != -1)
     {
         line[linelen - 1] = '\0'; /* trim newline */
@@ -199,18 +204,10 @@ int config_LoadConfigFile( libvlc_int_t *p_this )
             continue; /* syntax error */
         *ptr = '\0';
 
-        struct vlc_param *param = vlc_param_Find(psz_option_name);
-        if (param == NULL)
+        module_config_t *item = config_FindConfig(psz_option_name);
+        if (item == NULL)
             continue;
 
-        /* Reject values of options that are unsaveable */
-        if (param->unsaved)
-            continue;
-        /* Ignore options that are obsolete */
-        if (param->obsolete)
-            continue;
-
-        module_config_t *item = &param->item;
         const char *psz_option_value = ptr + 1;
         switch (CONFIG_CLASS(item->i_type))
         {
@@ -228,32 +225,23 @@ int config_LoadConfigFile( libvlc_int_t *p_this )
                               psz_option_value, psz_option_name,
                               vlc_strerror_c(errno));
                 else
-                {
-                    atomic_store_explicit(&param->value.i, l,
-                                          memory_order_relaxed);
                     item->value.i = l;
-                }
                 break;
             }
 
             case CONFIG_ITEM_FLOAT:
-            {
                 if (!*psz_option_value)
                     break;                    /* ignore empty option */
-
-                float f = (float)atof(psz_option_value);
-                atomic_store_explicit(&param->value.f, f,
-                                      memory_order_relaxed);
-                item->value.f = f;
+                item->value.f = (float)atof (psz_option_value);
                 break;
-            }
 
             default:
-                vlc_param_SetString(param, psz_option_value);
+                free (item->value.psz);
+                item->value.psz = strdupnull (psz_option_value);
                 break;
         }
     }
-    config_Unlock();
+    vlc_rwlock_unlock (&config_lock);
     free (line);
 
     if (ferror (file))
@@ -275,7 +263,7 @@ int config_LoadConfigFile( libvlc_int_t *p_this )
 /*****************************************************************************
  * config_CreateDir: Create configuration directory if it doesn't exist.
  *****************************************************************************/
-static int config_CreateDir( libvlc_int_t *p_this, char *psz_dirname )
+int config_CreateDir( vlc_object_t *p_this, const char *psz_dirname )
 {
     if( !psz_dirname || !*psz_dirname ) return -1;
 
@@ -290,13 +278,14 @@ static int config_CreateDir( libvlc_int_t *p_this, char *psz_dirname )
         case ENOENT:
         {
             /* Let's try to create the parent directory */
-            char *psz_end = strrchr( psz_dirname, DIR_SEP_CHAR );
-            if( psz_end && psz_end != psz_dirname )
+            char psz_parent[strlen( psz_dirname ) + 1], *psz_end;
+            strcpy( psz_parent, psz_dirname );
+
+            psz_end = strrchr( psz_parent, DIR_SEP_CHAR );
+            if( psz_end && psz_end != psz_parent )
             {
                 *psz_end = '\0';
-                int res = config_CreateDir( p_this, psz_dirname );
-                *psz_end = DIR_SEP_CHAR;
-                if( res == 0 )
+                if( config_CreateDir( p_this, psz_parent ) == 0 )
                 {
                     if( !vlc_mkdir( psz_dirname, 0700 ) )
                         return 0;
@@ -310,7 +299,7 @@ static int config_CreateDir( libvlc_int_t *p_this, char *psz_dirname )
     return -1;
 }
 
-VLC_FORMAT(6, 7) static int
+static int
 config_Write (FILE *file, const char *desc, const char *type,
               bool comment, const char *name, const char *fmt, ...)
 {
@@ -336,7 +325,7 @@ config_Write (FILE *file, const char *desc, const char *type,
 }
 
 
-static int config_PrepareDir (libvlc_int_t *obj)
+static int config_PrepareDir (vlc_object_t *obj)
 {
     char *psz_configdir = config_GetUserDir (VLC_CONFIG_DIR);
     if (psz_configdir == NULL)
@@ -347,11 +336,12 @@ static int config_PrepareDir (libvlc_int_t *obj)
     return ret;
 }
 
+#undef config_SaveConfigFile
 /**
  * Saves the in-memory configuration into a file.
  * @return 0 on success, -1 on error.
  */
-int (config_SaveConfigFile) (libvlc_int_t *p_this)
+int config_SaveConfigFile (vlc_object_t *p_this)
 {
 
     if( config_PrepareDir( p_this ) )
@@ -386,6 +376,9 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
         }
     }
 
+    /* Configuration lock must be taken before vlcrc serializer below. */
+    vlc_rwlock_rdlock (&config_lock);
+
     /* The temporary configuration file is per-PID. Therefore this function
      * should be serialized against itself within a given process. */
     static vlc_mutex_t lock = VLC_STATIC_MUTEX;
@@ -394,6 +387,7 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
     int fd = vlc_open (temporary, O_CREAT|O_WRONLY|O_TRUNC, S_IRUSR|S_IWUSR);
     if (fd == -1)
     {
+        vlc_rwlock_unlock (&config_lock);
         vlc_mutex_unlock (&lock);
         goto error;
     }
@@ -402,6 +396,7 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
     {
         msg_Err (p_this, "cannot create configuration file: %s",
                  vlc_strerror_c(errno));
+        vlc_rwlock_unlock (&config_lock);
         vlc_close (fd);
         vlc_mutex_unlock (&lock);
         goto error;
@@ -421,12 +416,15 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
     locale_t loc = newlocale (LC_NUMERIC_MASK, "C", NULL);
     locale_t baseloc = uselocale (loc);
 
-    vlc_rcu_read_lock(); /* preserve string values */
+    /* We would take the config lock here. But this would cause a lock
+     * inversion with the serializer above and config_AutoSaveConfigFile().
+    vlc_rwlock_rdlock (&config_lock);*/
 
     /* Look for the selected module, if NULL then save everything */
     for (vlc_plugin_t *p = vlc_plugins; p != NULL; p = p->next)
     {
         module_t *p_parser = p->module;
+        module_config_t *p_item, *p_end;
 
         if (p->conf.count == 0)
             continue;
@@ -437,22 +435,18 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
         else
             fprintf( file, "\n\n" );
 
-        for (struct vlc_param *param = p->conf.params,
-                              *end = param + p->conf.size;
-             param < end;
-             param++)
+        for (p_item = p->conf.items, p_end = p_item + p->conf.size;
+             p_item < p_end;
+             p_item++)
         {
-            module_config_t *p_item = &param->item;
-
             if (!CONFIG_ITEM(p_item->i_type)   /* ignore hint */
-             || param->obsolete                /* ignore deprecated option */
-             || param->unsaved)                /* ignore volatile option */
+             || p_item->b_removed              /* ignore deprecated option */
+             || p_item->b_unsaveable)          /* ignore volatile option */
                 continue;
 
             if (IsConfigIntegerType (p_item->i_type))
             {
-                int64_t val = atomic_load_explicit(&param->value.i,
-                                                   memory_order_relaxed);
+                int64_t val = p_item->value.i;
                 config_Write (file, p_item->psz_text,
                              (CONFIG_CLASS(p_item->i_type) == CONFIG_ITEM_BOOL)
                                   ? N_("boolean") : N_("integer"),
@@ -462,31 +456,27 @@ int (config_SaveConfigFile) (libvlc_int_t *p_this)
             else
             if (IsConfigFloatType (p_item->i_type))
             {
-                float val = atomic_load_explicit(&param->value.f,
-                                                 memory_order_relaxed);
+                float val = p_item->value.f;
                 config_Write (file, p_item->psz_text, N_("float"),
                               val == p_item->orig.f,
                               p_item->psz_name, "%f", val);
             }
             else
             {
-                const char *val = atomic_load_explicit(&param->value.str,
-                                                       memory_order_relaxed);
-                const char *orig = p_item->orig.psz;
+                const char *psz_value = p_item->value.psz;
+                bool modified;
 
-                if (val == NULL)
-                    val = "";
-                if (orig == NULL)
-                    orig = "";
+                assert (IsConfigStringType (p_item->i_type));
 
-                assert(IsConfigStringType(p_item->i_type));
-                config_Write(file, p_item->psz_text, N_("string"),
-                             strcmp(val, orig) == 0, p_item->psz_name, "%s",
-                             val);
+                modified = !!strcmp (psz_value ? psz_value : "",
+                                     p_item->orig.psz ? p_item->orig.psz : "");
+                config_Write (file, p_item->psz_text, N_("string"),
+                              !modified, p_item->psz_name, "%s",
+                              psz_value ? psz_value : "");
             }
         }
     }
-    vlc_rcu_read_unlock();
+    vlc_rwlock_unlock (&config_lock);
 
     if (loc != (locale_t)0)
     {
@@ -530,4 +520,22 @@ error:
     free (temporary);
     free (permanent);
     return -1;
+}
+
+int config_AutoSaveConfigFile( vlc_object_t *p_this )
+{
+    int ret = 0;
+
+    assert( p_this );
+
+    vlc_rwlock_rdlock (&config_lock);
+    if (config_dirty)
+    {
+        /* Note: this will get the read lock recursively. Ok. */
+        ret = config_SaveConfigFile (p_this);
+        config_dirty = (ret != 0);
+    }
+    vlc_rwlock_unlock (&config_lock);
+
+    return ret;
 }

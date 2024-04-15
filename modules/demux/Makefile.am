@@ -10,19 +10,13 @@ libflacsys_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
 libflacsys_plugin_la_LIBADD = libxiph_metadata.la
 demux_LTLIBRARIES += libflacsys_plugin.la
 
-libogg_plugin_la_SOURCES = demux/ogg.c demux/ogg.h \
-                           demux/oggseek.c demux/oggseek.h \
-                           demux/ogg_granule.c demux/ogg_granule.h \
-                           demux/xiph.h demux/opus.h
+libogg_plugin_la_SOURCES = demux/ogg.c demux/ogg.h demux/oggseek.c demux/oggseek.h \
+	demux/xiph.h demux/opus.h
 libogg_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBVORBIS_CFLAGS) $(OGG_CFLAGS)
 libogg_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
 libogg_plugin_la_LIBADD = $(LIBVORBIS_LIBS) $(OGG_LIBS) $(LIBM) libxiph_metadata.la
 EXTRA_LTLIBRARIES += libogg_plugin.la
 demux_LTLIBRARIES += $(LTLIBogg)
-
-xiph_test_SOURCES = demux/xiph_test.c demux/xiph.h
-check_PROGRAMS += xiph_test
-TESTS += xiph_test
 
 libdemuxdump_plugin_la_SOURCES = demux/demuxdump.c
 demux_LTLIBRARIES += libdemuxdump_plugin.la
@@ -45,8 +39,8 @@ demux_LTLIBRARIES += libwav_plugin.la
 libnsv_plugin_la_SOURCES = demux/nsv.c
 demux_LTLIBRARIES += libnsv_plugin.la
 
-libhx_plugin_la_SOURCES = demux/hx.c
-demux_LTLIBRARIES += libhx_plugin.la
+libreal_plugin_la_SOURCES = demux/real.c
+demux_LTLIBRARIES += libreal_plugin.la
 
 libps_plugin_la_SOURCES = demux/mpeg/ps.c demux/mpeg/ps.h demux/mpeg/pes.h
 demux_LTLIBRARIES += libps_plugin.la
@@ -58,10 +52,10 @@ libmod_plugin_la_LIBADD = $(LIBS_mod)
 EXTRA_LTLIBRARIES += libmod_plugin.la
 demux_LTLIBRARIES += $(LTLIBmod)
 
-libpva_plugin_la_SOURCES = demux/pva.c demux/mpeg/pes.h demux/mpeg/timestamps.h
+libpva_plugin_la_SOURCES = demux/pva.c
 demux_LTLIBRARIES += libpva_plugin.la
 
-libaiff_plugin_la_SOURCES = demux/aiff.c demux/mp4/coreaudio.h
+libaiff_plugin_la_SOURCES = demux/aiff.c
 demux_LTLIBRARIES += libaiff_plugin.la
 
 libmjpeg_plugin_la_SOURCES = demux/mjpeg.c demux/mxpeg_helper.h
@@ -71,8 +65,7 @@ libsubtitle_plugin_la_SOURCES = demux/subtitle.c
 libsubtitle_plugin_la_LIBADD = $(LIBM)
 demux_LTLIBRARIES += libsubtitle_plugin.la
 
-libty_plugin_la_SOURCES = demux/ty.c codec/cc.h \
-                          demux/mpeg/pes.h demux/mpeg/timestamps.h
+libty_plugin_la_SOURCES = demux/ty.c codec/cc.h
 demux_LTLIBRARIES += libty_plugin.la
 
 libvobsub_plugin_la_SOURCES = demux/vobsub.c demux/vobsub.h \
@@ -87,8 +80,10 @@ libxa_plugin_la_SOURCES = demux/xa.c
 demux_LTLIBRARIES += libxa_plugin.la
 
 libnuv_plugin_la_SOURCES = demux/nuv.c
-libnuv_plugin_la_LIBADD = $(LIBM)
 demux_LTLIBRARIES += libnuv_plugin.la
+
+libnsc_plugin_la_SOURCES = demux/nsc.c
+demux_LTLIBRARIES += libnsc_plugin.la
 
 libmpc_plugin_la_SOURCES = demux/mpc.c
 libmpc_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
@@ -109,9 +104,6 @@ demux_LTLIBRARIES += libdemux_cdg_plugin.la
 libsmf_plugin_la_SOURCES = demux/smf.c
 demux_LTLIBRARIES += libsmf_plugin.la
 
-libdmxmus_plugin_la_SOURCES = demux/dmxmus.c
-demux_LTLIBRARIES += libdmxmus_plugin.la
-
 libgme_plugin_la_SOURCES = demux/gme.c
 libgme_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
 libgme_plugin_la_LIBADD = $(LIBS_gme)
@@ -119,11 +111,15 @@ EXTRA_LTLIBRARIES += libgme_plugin.la
 demux_LTLIBRARIES += $(LTLIBgme)
 
 libsid_plugin_la_SOURCES = demux/sid.cpp
-libsid_plugin_la_CXXFLAGS = $(AM_CXXFLAGS) $(CXXFLAGS_sid)
+libsid_plugin_la_CFLAGS = $(AM_CFLAGS) $(CFLAGS_sid)
 libsid_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
 libsid_plugin_la_LIBADD = $(LIBS_sid)
 EXTRA_LTLIBRARIES += libsid_plugin.la
 demux_LTLIBRARIES += $(LTLIBsid)
+
+libdiracsys_plugin_la_SOURCES = demux/dirac.c
+libdiracsys_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
+demux_LTLIBRARIES += libdiracsys_plugin.la
 
 libimage_plugin_la_SOURCES = demux/image.c demux/mxpeg_helper.h
 demux_LTLIBRARIES += libimage_plugin.la
@@ -137,8 +133,7 @@ libasf_plugin_la_SOURCES = demux/asf/asf.c demux/asf/libasf.c demux/asf/libasf.h
                            demux/asf/libasf_guid.h
 demux_LTLIBRARIES += libasf_plugin.la
 
-libavi_plugin_la_SOURCES = demux/avi/avi.c demux/avi/libavi.c demux/avi/libavi.h \
-                           demux/avi/bitmapinfoheader.h
+libavi_plugin_la_SOURCES = demux/avi/avi.c demux/avi/libavi.c demux/avi/libavi.h
 demux_LTLIBRARIES += libavi_plugin.la
 
 libcaf_plugin_la_SOURCES = demux/caf.c
@@ -152,8 +147,14 @@ if ENABLE_SOUT
 libavformat_plugin_la_SOURCES += demux/avformat/mux.c
 endif
 libavformat_plugin_la_CFLAGS = $(AM_CFLAGS) $(AVFORMAT_CFLAGS) $(AVUTIL_CFLAGS)
-libavformat_plugin_la_LIBADD = $(AVFORMAT_LIBS) $(AVUTIL_LIBS) $(LIBM) $(LIBZ) libavcodec_common.la
+libavformat_plugin_la_LIBADD = $(AVFORMAT_LIBS) $(AVUTIL_LIBS) $(LIBM) libavcodec_common.la
 libavformat_plugin_la_LDFLAGS = $(AM_LDFLAGS) $(SYMBOLIC_LDFLAGS)
+if HAVE_ZLIB
+libavformat_plugin_la_LIBADD += -lz
+endif
+if HAVE_DARWIN
+libavformat_plugin_la_LDFLAGS += -Wl,-read_only_relocs,suppress
+endif
 if HAVE_AVFORMAT
 if !MERGE_FFMPEG
 demux_LTLIBRARIES += libavformat_plugin.la
@@ -177,13 +178,11 @@ demux_LTLIBRARIES += libh26x_plugin.la
 
 libmkv_plugin_la_SOURCES = \
 	demux/mkv/util.hpp demux/mkv/util.cpp \
-	demux/mkv/dvd_types.hpp \
 	demux/mkv/virtual_segment.hpp demux/mkv/virtual_segment.cpp \
 	demux/mkv/matroska_segment.hpp demux/mkv/matroska_segment.cpp \
 	demux/mkv/matroska_segment_parse.cpp \
 	demux/mkv/matroska_segment_seeker.hpp demux/mkv/matroska_segment_seeker.cpp \
 	demux/mkv/demux.hpp demux/mkv/demux.cpp \
-	demux/mkv/events.hpp demux/mkv/events.cpp \
 	demux/mkv/dispatcher.hpp \
 	demux/mkv/string_dispatcher.hpp \
 	demux/mkv/Ebml_parser.hpp demux/mkv/Ebml_parser.cpp \
@@ -191,39 +190,36 @@ libmkv_plugin_la_SOURCES = \
 	demux/mkv/chapters.hpp demux/mkv/chapters.cpp \
 	demux/mkv/chapter_command.hpp demux/mkv/chapter_command.cpp \
 	demux/mkv/stream_io_callback.hpp demux/mkv/stream_io_callback.cpp \
-	demux/vobsub.h \
+	demux/mp4/libmp4.c demux/vobsub.h \
 	demux/mkv/mkv.hpp demux/mkv/mkv.cpp \
         demux/av1_unpack.h codec/webvtt/helpers.h \
 	demux/windows_audio_commons.h
 libmkv_plugin_la_SOURCES += packetizer/dts_header.h packetizer/dts_header.c
 libmkv_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(CFLAGS_mkv)
 libmkv_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
-libmkv_plugin_la_LIBADD = $(LIBS_mkv) $(LIBZ) libvlc_mp4.la
+libmkv_plugin_la_LIBADD = $(LIBS_mkv)
+if HAVE_ZLIB
+libmkv_plugin_la_LIBADD += -lz
+endif
 demux_LTLIBRARIES += $(LTLIBmkv)
 EXTRA_LTLIBRARIES += libmkv_plugin.la
 
-libvlc_mp4_la_SOURCES = demux/mp4/libmp4.c demux/mp4/libmp4.h
-libvlc_mp4_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/demux/mp4
-libvlc_mp4_la_LIBADD = $(LIBM) $(LIBZ)
-libvlc_mp4_la_LDFLAGS = -static
-noinst_LTLIBRARIES += libvlc_mp4.la
-
 libmp4_plugin_la_SOURCES = demux/mp4/mp4.c demux/mp4/mp4.h \
                            demux/mp4/fragments.c demux/mp4/fragments.h \
-                           demux/mp4/attachments.c demux/mp4/attachments.h \
+                           demux/mp4/libmp4.c demux/mp4/libmp4.h \
                            demux/mp4/languages.h \
-                           demux/mp4/heif.c demux/mp4/heif.h \
-                           demux/mp4/avci.h \
-                           demux/mp4/essetup.c \
-                           demux/mp4/meta.c demux/mp4/meta.h \
                            demux/mp4/mpeg4.h \
-                           demux/mp4/coreaudio.h \
                            demux/av1_unpack.h \
                            demux/asf/asfpacket.c demux/asf/asfpacket.h \
+                           demux/mp4/avci.h \
+                           demux/mp4/essetup.c demux/mp4/meta.c \
                            packetizer/iso_color_tables.h \
                            meta_engine/ID3Genres.h
-libmp4_plugin_la_LIBADD = libvlc_mp4.la
+libmp4_plugin_la_LIBADD = $(LIBM)
 libmp4_plugin_la_LDFLAGS = $(AM_LDFLAGS)
+if HAVE_ZLIB
+libmp4_plugin_la_LIBADD += -lz
+endif
 demux_LTLIBRARIES += libmp4_plugin.la
 
 libmpgv_plugin_la_SOURCES = demux/mpeg/mpgv.c
@@ -232,7 +228,6 @@ demux_LTLIBRARIES += libmpgv_plugin.la
 libplaylist_plugin_la_SOURCES = \
 	demux/playlist/asx.c \
 	demux/playlist/b4s.c \
-	demux/playlist/bdmv.c \
 	demux/playlist/dvb.c \
 	demux/playlist/ifo.c \
 	demux/playlist/itml.c \
@@ -243,7 +238,7 @@ libplaylist_plugin_la_SOURCES = \
 	demux/playlist/qtl.c \
 	demux/playlist/ram.c \
 	demux/playlist/sgimb.c \
-	demux/playlist/wms.c \
+	demux/playlist/shoutcast.c \
 	demux/playlist/wpl.c \
 	demux/playlist/xspf.c \
 	demux/playlist/playlist.c demux/playlist/playlist.h
@@ -265,11 +260,8 @@ libts_plugin_la_SOURCES = demux/mpeg/ts.c demux/mpeg/ts.h \
         demux/mpeg/ts_metadata.c demux/mpeg/ts_metadata.h \
         demux/mpeg/ts_hotfixes.c demux/mpeg/ts_hotfixes.h \
         demux/mpeg/ts_strings.h demux/mpeg/ts_streams_private.h \
-        demux/mpeg/ts_pes.c demux/mpeg/ts_pes.h \
-        demux/mpeg/ts_streamwrapper.h \
         demux/mpeg/pes.h \
         demux/mpeg/timestamps.h \
-	demux/mpeg/ts_descriptions.h \
         demux/dvb-text.h \
         demux/opus.h \
 	mux/mpeg/csa.c \
@@ -349,8 +341,6 @@ libvlc_adaptive_la_SOURCES = \
     demux/adaptive/logic/RateBasedAdaptationLogic.cpp \
     demux/adaptive/logic/Representationselectors.hpp \
     demux/adaptive/logic/Representationselectors.cpp \
-    demux/adaptive/logic/RoundRobinLogic.cpp \
-    demux/adaptive/logic/RoundRobinLogic.hpp \
     demux/adaptive/mp4/AtomsReader.cpp \
     demux/adaptive/mp4/AtomsReader.hpp \
     demux/adaptive/http/AuthStorage.cpp \
@@ -409,6 +399,8 @@ libvlc_adaptive_la_SOURCES = \
     demux/adaptive/xml/Node.cpp \
     demux/adaptive/xml/Node.h
 libvlc_adaptive_la_SOURCES += \
+     demux/mp4/libmp4.c \
+     demux/mp4/libmp4.h \
      meta_engine/ID3Tag.h
 # DASH specific
 libvlc_adaptive_la_SOURCES += \
@@ -432,6 +424,8 @@ libvlc_adaptive_la_SOURCES += \
     demux/dash/mpd/Representation.h \
     demux/dash/mpd/TemplatedUri.cpp \
     demux/dash/mpd/TemplatedUri.hpp \
+    demux/dash/mpd/TrickModeType.cpp \
+    demux/dash/mpd/TrickModeType.h \
     demux/dash/mp4/IndexReader.cpp \
     demux/dash/mp4/IndexReader.hpp \
     demux/dash/DASHManager.cpp \
@@ -460,8 +454,6 @@ libvlc_adaptive_la_SOURCES += meta_engine/ID3Meta.h
 libvlc_adaptive_la_SOURCES += \
     demux/smooth/mp4/SmoothIndexReader.cpp \
     demux/smooth/mp4/SmoothIndexReader.hpp \
-    demux/smooth/playlist/CodecParameters.cpp \
-    demux/smooth/playlist/CodecParameters.hpp \
     demux/smooth/playlist/ForgedInitSegment.hpp \
     demux/smooth/playlist/ForgedInitSegment.cpp \
     demux/smooth/playlist/Manifest.hpp \
@@ -484,9 +476,15 @@ libvlc_adaptive_la_SOURCES += \
     packetizer/h264_nal.c \
     packetizer/hevc_nal.c
 libvlc_adaptive_la_CXXFLAGS = $(AM_CXXFLAGS) -I$(srcdir)/demux/adaptive
-libvlc_adaptive_la_LIBADD = $(SOCKET_LIBS) $(LIBM) libvlc_mp4.la
+libvlc_adaptive_la_LIBADD = $(SOCKET_LIBS) $(LIBM)
 libvlc_adaptive_la_LDFLAGS = -static
+if !HAVE_WIN32
+libvlc_adaptive_la_LDFLAGS += -lpthread
+endif
 libvlc_adaptive_la_LIBADD += libvlc_http.la
+if HAVE_ZLIB
+libvlc_adaptive_la_LIBADD += -lz
+endif
 if HAVE_GCRYPT
 libvlc_adaptive_la_CXXFLAGS += $(GCRYPT_CFLAGS)
 libvlc_adaptive_la_LIBADD += $(GCRYPT_LIBS)
@@ -517,30 +515,5 @@ adaptive_test_LDADD = libvlc_adaptive.la
 check_PROGRAMS += adaptive_test
 TESTS += adaptive_test
 
-libytdl_plugin_la_SOURCES = demux/ytdl.c
-libytdl_plugin_la_LIBADD = libvlc_json.la
-if !HAVE_WIN32
-if !HAVE_ANDROID
-if !HAVE_EMSCRIPTEN
-demux_LTLIBRARIES += libytdl_plugin.la
-endif
-endif
-endif
-
 libnoseek_plugin_la_SOURCES = demux/filter/noseek.c
 demux_LTLIBRARIES += libnoseek_plugin.la
-
-libdemux_mock_plugin_la_SOURCES = demux/mock.c
-libdemux_mock_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(demuxdir)'
-libdemux_mock_plugin_la_LIBADD = $(LIBM)
-noinst_LTLIBRARIES += libdemux_mock_plugin.la
-
-BUILT_SOURCES += demux/json/grammar.h
-libvlc_json_la_SOURCES = \
-	demux/json/lexicon.l \
-	demux/json/grammar.y \
-	demux/json/json.c demux/json/json.h
-libvlc_json_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/demux/json
-libvlc_json_la_LIBADD = $(LTLIBVLCCORE) ../compat/libcompat.la $(LIBM)
-libvlc_json_la_LDFLAGS = -static
-noinst_LTLIBRARIES += libvlc_json.la

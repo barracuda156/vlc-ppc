@@ -2,6 +2,7 @@
  * snapshot.c : vout internal snapshot
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
+ * $Id: 7cdaa5dd049d7868b6b81aaa598ac72a4bb36938 $
  *
  * Authors: Gildas Bazin <gbazin _AT_ videolan _DOT_ org>
  *          Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
@@ -28,6 +29,7 @@
 #include <assert.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 #include <time.h>
 
 #include <vlc_common.h>
@@ -39,48 +41,31 @@
 #include "snapshot.h"
 #include "vout_internal.h"
 
-struct vout_snapshot {
-    vlc_mutex_t lock;
-    vlc_cond_t  wait;
-
-    bool        is_available;
-    int         request_count;
-    vlc_picture_chain_t pics;
-};
-
-vout_snapshot_t *vout_snapshot_New(void)
+/* */
+void vout_snapshot_Init(vout_snapshot_t *snap)
 {
-    vout_snapshot_t *snap = malloc(sizeof (*snap));
-    if (unlikely(snap == NULL))
-        return NULL;
-
     vlc_mutex_init(&snap->lock);
     vlc_cond_init(&snap->wait);
 
     snap->is_available = true;
     snap->request_count = 0;
-    vlc_picture_chain_Init( &snap->pics );
-    return snap;
+    snap->picture = NULL;
 }
-
-void vout_snapshot_Destroy(vout_snapshot_t *snap)
+void vout_snapshot_Clean(vout_snapshot_t *snap)
 {
-    if (snap == NULL)
-        return;
-
-    while ( !vlc_picture_chain_IsEmpty( &snap->pics ) ) {
-        picture_t *picture = vlc_picture_chain_PopFront( &snap->pics );
+    picture_t *picture = snap->picture;
+    while (picture) {
+        picture_t *next = picture->p_next;
         picture_Release(picture);
+        picture = next;
     }
 
-    free(snap);
+    vlc_cond_destroy(&snap->wait);
+    vlc_mutex_destroy(&snap->lock);
 }
 
 void vout_snapshot_End(vout_snapshot_t *snap)
 {
-    if (snap == NULL)
-        return;
-
     vlc_mutex_lock(&snap->lock);
 
     snap->is_available = false;
@@ -92,10 +77,7 @@ void vout_snapshot_End(vout_snapshot_t *snap)
 /* */
 picture_t *vout_snapshot_Get(vout_snapshot_t *snap, vlc_tick_t timeout)
 {
-    if (snap == NULL)
-        return NULL;
-
-    const vlc_tick_t deadline = vlc_tick_now() + timeout;
+    const vlc_tick_t deadline = mdate() + timeout;
 
     vlc_mutex_lock(&snap->lock);
 
@@ -103,12 +85,14 @@ picture_t *vout_snapshot_Get(vout_snapshot_t *snap, vlc_tick_t timeout)
     snap->request_count++;
 
     /* */
-    while (snap->is_available && vlc_picture_chain_IsEmpty( &snap->pics ) &&
+    while (snap->is_available && !snap->picture &&
         vlc_cond_timedwait(&snap->wait, &snap->lock, deadline) == 0);
 
     /* */
-    picture_t *picture = vlc_picture_chain_PopFront( &snap->pics );
-    if (!picture && snap->request_count > 0)
+    picture_t *picture = snap->picture;
+    if (picture)
+        snap->picture = picture->p_next;
+    else if (snap->request_count > 0)
         snap->request_count--;
 
     vlc_mutex_unlock(&snap->lock);
@@ -116,11 +100,9 @@ picture_t *vout_snapshot_Get(vout_snapshot_t *snap, vlc_tick_t timeout)
     return picture;
 }
 
+/* */
 bool vout_snapshot_IsRequested(vout_snapshot_t *snap)
 {
-    if (snap == NULL)
-        return false;
-
     bool has_request = false;
     if (!vlc_mutex_trylock(&snap->lock)) {
         has_request = snap->request_count > 0;
@@ -128,14 +110,10 @@ bool vout_snapshot_IsRequested(vout_snapshot_t *snap)
     }
     return has_request;
 }
-
 void vout_snapshot_Set(vout_snapshot_t *snap,
                        const video_format_t *fmt,
                        picture_t *picture)
 {
-    if (snap == NULL)
-        return;
-
     if (!fmt)
         fmt = &picture->format;
 
@@ -147,7 +125,8 @@ void vout_snapshot_Set(vout_snapshot_t *snap,
 
         video_format_CopyCrop( &dup->format, fmt );
 
-        vlc_picture_chain_Append( &snap->pics, dup );
+        dup->p_next = snap->picture;
+        snap->picture = dup;
         snap->request_count--;
     }
     vlc_cond_broadcast(&snap->wait);
@@ -166,11 +145,12 @@ int vout_snapshot_SaveImage(char **name, int *sequential,
 {
     /* */
     char *filename;
+    input_thread_t *input = (input_thread_t*)p_vout->p->input;
 
     /* */
     char *prefix = NULL;
     if (cfg->prefix_fmt)
-        prefix = str_format(NULL, NULL, cfg->prefix_fmt);
+        prefix = str_format(input, cfg->prefix_fmt);
     if (prefix)
         filename_sanitize(prefix);
     else {

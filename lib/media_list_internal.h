@@ -3,6 +3,7 @@
  * Also contains some internal utility functions
  *****************************************************************************
  * Copyright (C) 2005-2009 VLC authors and VideoLAN
+ * $Id: dd95703dc838769d36a3243260ccf7ecfc751bba $
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *
@@ -36,8 +37,10 @@
 struct libvlc_media_list_t
 {
     libvlc_event_manager_t      event_manager;
+    libvlc_instance_t *         p_libvlc_instance;
+    int                         i_refcount;
     vlc_mutex_t                 object_lock;
-    vlc_atomic_rc_t             rc;
+    vlc_mutex_t                 refcount_lock;
     libvlc_media_t * p_md; /* The media from which the
                                        * mlist comes, if any. */
     libvlc_media_t * p_internal_md; /* media set from media.c */
@@ -62,5 +65,4 @@ int libvlc_media_list_internal_remove_index(
 
 void libvlc_media_list_internal_end_reached(
         libvlc_media_list_t * p_mlist );
-
 #endif

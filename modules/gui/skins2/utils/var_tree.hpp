@@ -2,6 +2,7 @@
  * var_tree.hpp
  *****************************************************************************
  * Copyright (C) 2005 the VideoLAN team
+ * $Id: 982f0a1edc7ec56ca6f1264dcfb6d7a04479e2bb $
  *
  * Authors: Antoine Cellerier <dionoea@videolan.org>
  *          Clément Stenac <zorglub@videolan.org>
@@ -32,8 +33,6 @@
 #include "ustring.hpp"
 #include "var_percent.hpp"
 
-#include <vlc_input_item.h>
-
 class VarTree;
 struct tree_update;
 
@@ -45,7 +44,7 @@ class VarTree: public Variable,
 public:
     VarTree( intf_thread_t *pIntf );
 
-    VarTree( intf_thread_t *pIntf, VarTree *pParent, input_item_t *media,
+    VarTree( intf_thread_t *pIntf, VarTree *pParent, int id,
              const UStringPtr &rcString, bool selected, bool playing,
              bool expanded, bool readonly );
     VarTree( const VarTree& );
@@ -60,9 +59,8 @@ public:
     virtual const std::string &getType() const { return m_type; }
 
     /// Add a pointer on string in the children's list
-    virtual Iterator add( input_item_t * media, const UStringPtr &rcString,
-                          bool selected, bool playing,
-                          bool expanded, bool readonly, int pos = -1 );
+    virtual Iterator add( int id, const UStringPtr &rcString, bool selected,
+                    bool playing, bool expanded, bool readonly, int pos = -1 );
 
     /// Remove the selected item from the children's list
     virtual void delSelected();
@@ -70,7 +68,7 @@ public:
     /// Remove all elements from the children's list
     virtual void clear();
 
-    input_item_t* getMedia() { return m_media; }
+    inline int  getId() { return m_id; }
     inline UString* getString() {return (UString*)m_cString.get(); }
     inline void setString( UStringPtr val ) { m_cString = val; }
 
@@ -84,7 +82,6 @@ public:
     inline void setPlaying( bool val ) { m_playing = val; }
     inline void setExpanded( bool val ) { m_expanded = val; }
     inline void setFlat( bool val ) { m_flat = val; }
-    void setMedia( input_item_t* media );
 
     inline void toggleSelected() { m_selected = !m_selected; }
     inline void toggleExpanded() { setExpanded( !m_expanded ); }
@@ -276,7 +273,7 @@ private:
     /// Pointer to parent node
     VarTree *m_pParent;
 
-    input_item_t* m_media;
+    int m_id;
     UStringPtr m_cString;
 
     /// indicators
@@ -312,7 +309,5 @@ typedef struct tree_update
     tree_update( enum type_t t, VarTree::IteratorVisible item ) :
         type( t ), it( item ) {}
 } tree_update;
-
-
 
 #endif

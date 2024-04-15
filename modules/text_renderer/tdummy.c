@@ -2,6 +2,7 @@
  * tdummy.c : dummy text rendering functions
  *****************************************************************************
  * Copyright (C) 2000, 2001 VLC authors and VideoLAN
+ * $Id: 38c1b807580da9e0da70aa55e8778fc6c522433a $
  *
  * Authors: Sigmund Augdal Helberg <dnumgis@videolan.org>
  *
@@ -28,12 +29,13 @@
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
 
-static int OpenRenderer( filter_t * );
+static int OpenRenderer( vlc_object_t * );
 
 vlc_module_begin ()
     set_shortname( N_("Dummy") )
     set_description( N_("Dummy font renderer") )
-    set_callback_text_renderer( OpenRenderer, 1 )
+    set_capability( "text renderer", 1 )
+    set_callbacks( OpenRenderer, NULL )
 vlc_module_end ()
 
 
@@ -46,12 +48,9 @@ static int RenderText( filter_t *p_filter, subpicture_region_t *p_region_out,
     return VLC_EGENERIC;
 }
 
-static const struct vlc_filter_operations filter_ops = {
-    .render = RenderText,
-};
-
-static int OpenRenderer( filter_t *p_filter )
+static int OpenRenderer( vlc_object_t *p_this )
 {
-    p_filter->ops = &filter_ops;
+    filter_t *p_filter = (filter_t *)p_this;
+    p_filter->pf_render = RenderText;
     return VLC_SUCCESS;
 }

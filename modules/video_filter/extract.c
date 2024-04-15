@@ -2,6 +2,7 @@
  * extract.c : Extract RGB components
  *****************************************************************************
  * Copyright (C) 2000-2006 VLC authors and VideoLAN
+ * $Id: 870db76b0f318a12eaf0836c1d7f1e9f113de3de $
  *
  * Authors: Antoine Cellerier <dionoea .t videolan d@t org>
  *
@@ -39,11 +40,12 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create      ( filter_t * );
+static int  Create      ( vlc_object_t * );
+static void Destroy     ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static int ExtractCallback( vlc_object_t *, char const *,
                             vlc_value_t, vlc_value_t, void * );
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 static void make_projection_matrix( filter_t *, int color, int *matrix );
 static void get_custom_from_yuv( picture_t *, picture_t *, int const, int const, int const, int const * );
@@ -51,13 +53,12 @@ static void get_custom_from_packedyuv422( picture_t *, picture_t *, int * );
 
 
 #define COMPONENT_TEXT N_("RGB component to extract")
-#define COMPONENT_LONGTEXT N_("RGB component to extract, as an RGB hexadecimal mask. "\
-    "E.g. 0xFF0000 for red; 0x00FF00 for green and 0x0000FF for blue.")
+#define COMPONENT_LONGTEXT N_("RGB component to extract. 0 for Red, 1 for Green and 2 for Blue.")
 #define FILTER_PREFIX "extract-"
 
 static const int pi_component_values[] = { 0xFF0000, 0x00FF00, 0x0000FF };
 static const char *const ppsz_component_descriptions[] = {
-    N_("Red"), N_("Green"), N_("Blue") };
+    "Red", "Green", "Blue" };
 
 /*****************************************************************************
  * Module descriptor
@@ -65,14 +66,16 @@ static const char *const ppsz_component_descriptions[] = {
 vlc_module_begin ()
     set_description( N_("Extract RGB component video filter") )
     set_shortname( N_("Extract" ))
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
     add_shortcut( "extract" )
 
     add_integer_with_range( FILTER_PREFIX "component", 0xFF0000, 1, 0xFFFFFF,
-                            COMPONENT_TEXT, COMPONENT_LONGTEXT )
+                            COMPONENT_TEXT, COMPONENT_LONGTEXT, false )
         change_integer_list( pi_component_values, ppsz_component_descriptions )
 
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -80,18 +83,20 @@ static const char *const ppsz_filter_options[] = {
 };
 
 enum { RED=0xFF0000, GREEN=0x00FF00, BLUE=0x0000FF };
-typedef struct
+struct filter_sys_t
 {
     vlc_mutex_t lock;
     int *projection_matrix;
     uint32_t i_color;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Create
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     switch( p_filter->fmt_in.video.i_chroma )
     {
         case VLC_CODEC_I420:
@@ -114,31 +119,29 @@ static int Create( filter_t *p_filter )
     }
 
     /* Allocate structure */
-    filter_sys_t *p_sys = malloc( sizeof( filter_sys_t ) );
-    if( p_sys == NULL )
+    p_filter->p_sys = malloc( sizeof( filter_sys_t ) );
+    if( p_filter->p_sys == NULL )
         return VLC_ENOMEM;
-    p_filter->p_sys = p_sys;
-
-    p_sys->projection_matrix = malloc( 9 * sizeof( int ) );
-    if( !p_sys->projection_matrix )
+    p_filter->p_sys->projection_matrix = malloc( 9 * sizeof( int ) );
+    if( !p_filter->p_sys->projection_matrix )
     {
-        free( p_sys );
+        free( p_filter->p_sys );
         return VLC_ENOMEM;
     }
 
     config_ChainParse( p_filter, FILTER_PREFIX, ppsz_filter_options,
                        p_filter->p_cfg );
 
-    p_sys->i_color = var_CreateGetIntegerCommand( p_filter,
+    p_filter->p_sys->i_color = var_CreateGetIntegerCommand( p_filter,
                                                FILTER_PREFIX "component" );
     /* Matrix won't be used for RED, GREEN or BLUE in planar formats */
-    make_projection_matrix( p_filter, p_sys->i_color,
-                            p_sys->projection_matrix );
-    vlc_mutex_init( &p_sys->lock );
+    make_projection_matrix( p_filter, p_filter->p_sys->i_color,
+                            p_filter->p_sys->projection_matrix );
+    vlc_mutex_init( &p_filter->p_sys->lock );
     var_AddCallback( p_filter, FILTER_PREFIX "component",
-                     ExtractCallback, p_sys );
+                     ExtractCallback, p_filter->p_sys );
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     return VLC_SUCCESS;
 }
@@ -146,12 +149,14 @@ static int Create( filter_t *p_filter )
 /*****************************************************************************
  * Destroy
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     var_DelCallback( p_filter, FILTER_PREFIX "component", ExtractCallback,
                      p_sys );
+    vlc_mutex_destroy( &p_sys->lock );
     free( p_sys->projection_matrix );
     free( p_sys );
 }
@@ -159,9 +164,19 @@ static void Destroy( filter_t *p_filter )
 /*****************************************************************************
  * Render
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
     filter_sys_t *p_sys = p_filter->p_sys;
+
+    if( !p_pic ) return NULL;
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     vlc_mutex_lock( &p_sys->lock );
     switch( p_pic->format.i_chroma )
@@ -181,9 +196,15 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
             break;
 
     default:
-        vlc_assert_unreachable();
+        vlc_mutex_unlock( &p_sys->lock );
+        msg_Warn( p_filter, "Unsupported input chroma (%4.4s)",
+                  (char*)&(p_pic->format.i_chroma) );
+        picture_Release( p_pic );
+        return NULL;
     }
     vlc_mutex_unlock( &p_sys->lock );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 #define U8 128
@@ -384,7 +405,7 @@ static int ExtractCallback( vlc_object_t *p_this, char const *psz_var,
                             void *p_data )
 {
     VLC_UNUSED(oldval);
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *)p_data;
 
     vlc_mutex_lock( &p_sys->lock );
     if( !strcmp( psz_var, FILTER_PREFIX "component" ) )

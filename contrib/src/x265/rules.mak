@@ -6,9 +6,7 @@ X265_SNAPURL := https://bitbucket.org/multicoreware/x265_git/downloads/x265_$(X2
 
 ifdef BUILD_ENCODERS
 ifdef GPL
-ifndef HAVE_WINSTORE
 PKGS += x265
-endif
 endif
 endif
 
@@ -35,13 +33,9 @@ ifndef HAVE_WIN32
 endif
 	$(MOVE)
 
-X265_CONF := -DENABLE_SHARED=OFF -DENABLE_CLI=OFF
-
 .x265: x265 toolchain.cmake
 	$(REQUIRE_GPL)
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) -S $</source $(X265_CONF)
-	+$(CMAKEBUILD)
-	sed -e s/'[^ ]*clang_rt[^ ]*'//g -i.orig "$(BUILD_DIR)/x265.pc"
-	$(CMAKEINSTALL)
+	cd $</source && $(HOSTVARS_PIC) $(CMAKE) -DENABLE_SHARED=OFF -DCMAKE_SYSTEM_PROCESSOR=$(ARCH) -DENABLE_CLI=OFF
+	cd $< && $(CMAKEBUILD) source --target install
+	sed -e s/'[^ ]*clang_rt[^ ]*'//g -i.orig "$(PREFIX)/lib/pkgconfig/x265.pc"
 	touch $@

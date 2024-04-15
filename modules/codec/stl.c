@@ -2,6 +2,7 @@
  * stl.c: EBU STL decoder
  *****************************************************************************
  * Copyright (C) 2010 Laurent Aimar
+ * $Id: d9b97bc49b8dfe5e2724116ab2e18f35667b7991 $
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -31,6 +32,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_codec.h>
+#include <vlc_memory.h>
 #include <vlc_charset.h>
 
 #include "substext.h" /* required for font scaling / updater */
@@ -43,6 +45,7 @@ static void Close(vlc_object_t *);
 
 vlc_module_begin()
     set_description(N_("EBU STL subtitles decoder"))
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_SCODEC)
     set_capability("spu decoder", 10)
     set_callbacks(Open, Close)
@@ -85,8 +88,8 @@ typedef struct
 {
     uint8_t i_accumulating;
     uint8_t i_justify;
-    vlc_tick_t i_start;
-    vlc_tick_t i_end;
+    int64_t i_start;
+    int64_t i_end;
     text_style_t *p_style;
     text_segment_t *p_segment;
     text_segment_t **pp_segment_last;
@@ -97,12 +100,11 @@ typedef struct {
     const char *str;
 } cct_number_t;
 
-typedef struct
-{
+struct decoder_sys_t {
     stl_sg_t groups[STL_GROUPS_MAX + 1];
     cct_number_value_t cct;
     uint8_t i_fps;
-} decoder_sys_t;
+};
 
 static cct_number_t cct_nums[] = { {CCT_ISO_6937_2, "ISO_6937-2"},
                                    {CCT_ISO_8859_5, "ISO_8859-5"},
@@ -110,7 +112,7 @@ static cct_number_t cct_nums[] = { {CCT_ISO_6937_2, "ISO_6937-2"},
                                    {CCT_ISO_8859_7, "ISO_8859-7"},
                                    {CCT_ISO_8859_8, "ISO_8859-8"} };
 
-static text_style_t * CreateGroupStyle(void)
+static text_style_t * CreateGroupStyle()
 {
     text_style_t *p_style = text_style_Create(STYLE_NO_DEFAULTS);
     if(p_style)
@@ -244,12 +246,12 @@ static void GroupApplyStyle(stl_sg_t *p_group, uint8_t code)
     }
 }
 
-static vlc_tick_t ParseTimeCode(const uint8_t *data, double fps)
+static int64_t ParseTimeCode(const uint8_t *data, double fps)
 {
-    return vlc_tick_from_sec( data[0] * 3600 +
-                         data[1] *   60 +
-                         data[2] *    1 +
-                         data[3] /  fps);
+    return INT64_C(1000000) * (data[0] * 3600 +
+                               data[1] *   60 +
+                               data[2] *    1 +
+                               data[3] /  fps);
 }
 
 static void ClearTeletextStyles(stl_sg_t *p_group)
@@ -330,7 +332,7 @@ static bool ParseTTI(stl_sg_t *p_group, const uint8_t *p_data, const char *psz_c
     return false;
 }
 
-static void FillSubpictureUpdater(stl_sg_t *p_group, subtext_updater_sys_t *p_spu_sys)
+static void FillSubpictureUpdater(stl_sg_t *p_group, subpicture_updater_sys_t *p_spu_sys)
 {
     if(p_group->i_accumulating)
     {
@@ -369,8 +371,8 @@ static void ResetGroups(decoder_sys_t *p_sys)
         }
 
         p_group->i_accumulating = false;
-        p_group->i_end = VLC_TICK_INVALID;
-        p_group->i_start = VLC_TICK_INVALID;
+        p_group->i_end = 0;
+        p_group->i_start = 0;
         p_group->i_justify = 0;
     }
 }
@@ -379,8 +381,6 @@ static int Decode(decoder_t *p_dec, block_t *p_block)
 {
     if (p_block == NULL) /* No Drain */
         return VLCDEC_SUCCESS;
-
-    decoder_sys_t *p_sys = p_dec->p_sys;
 
     if(p_block->i_buffer < STL_TTI_SIZE)
         p_block->i_flags |= BLOCK_FLAG_CORRUPTED;
@@ -396,11 +396,11 @@ static int Decode(decoder_t *p_dec, block_t *p_block)
         }
     }
 
-    const char *psz_charset = cct_nums[p_sys->cct - CCT_BEGIN].str;
+    const char *psz_charset = cct_nums[p_dec->p_sys->cct - CCT_BEGIN].str;
     for (size_t i = 0; i < p_block->i_buffer / STL_TTI_SIZE; i++)
     {
-        stl_sg_t *p_group = &p_sys->groups[p_block->p_buffer[0]];
-        if(ParseTTI(p_group, &p_block->p_buffer[i * STL_TTI_SIZE], psz_charset, p_sys->i_fps) &&
+        stl_sg_t *p_group = &p_dec->p_sys->groups[p_block->p_buffer[0]];
+        if(ParseTTI(p_group, &p_block->p_buffer[i * STL_TTI_SIZE], psz_charset, p_dec->p_sys->i_fps) &&
            p_group->p_segment != NULL )
         {
             /* output */
@@ -411,7 +411,7 @@ static int Decode(decoder_t *p_dec, block_t *p_block)
 
                 p_sub->b_absolute = false;
 
-                if(p_group->i_end != VLC_TICK_INVALID && p_group->i_start >= p_block->i_dts)
+                if(p_group->i_end && p_group->i_start >= p_block->i_dts)
                 {
                     p_sub->i_start = VLC_TICK_0 + p_group->i_start;
                     p_sub->i_stop =  VLC_TICK_0 + p_group->i_end;
@@ -420,29 +420,29 @@ static int Decode(decoder_t *p_dec, block_t *p_block)
                 {
                     p_sub->i_start    = p_block->i_pts;
                     p_sub->i_stop     = p_block->i_pts + p_block->i_length;
-                    p_sub->b_ephemer  = (p_block->i_length == VLC_TICK_INVALID);
+                    p_sub->b_ephemer  = (p_block->i_length == 0);
                 }
                 decoder_QueueSub(p_dec, p_sub);
             }
         }
     }
 
-    ResetGroups(p_sys);
+    ResetGroups(p_dec->p_sys);
 
     block_Release(p_block);
     return VLCDEC_SUCCESS;
 }
 
-static int ParseGSI(decoder_t *dec, decoder_sys_t *p_sys)
+static int ParseGSI(const decoder_t *dec, decoder_sys_t *p_sys)
 {
-    uint8_t *header = dec->fmt_in->p_extra;
+    uint8_t *header = dec->fmt_in.p_extra;
     if (!header) {
         msg_Err(dec, "NULL EBU header (GSI block)\n");
         return VLC_EGENERIC;
     }
 
-    if (GSI_BLOCK_SIZE != dec->fmt_in->i_extra) {
-        msg_Err(dec, "EBU header is not in expected size (%d)\n", dec->fmt_in->i_extra);
+    if (GSI_BLOCK_SIZE != dec->fmt_in.i_extra) {
+        msg_Err(dec, "EBU header is not in expected size (%d)\n", dec->fmt_in.i_extra);
         return VLC_EGENERIC;
     }
 
@@ -470,7 +470,7 @@ static int Open(vlc_object_t *object)
 {
     decoder_t *dec = (decoder_t*)object;
 
-    if (dec->fmt_in->i_codec != VLC_CODEC_EBU_STL)
+    if (dec->fmt_in.i_codec != VLC_CODEC_EBU_STL)
         return VLC_EGENERIC;
 
     decoder_sys_t *sys = calloc(1, sizeof(*sys));

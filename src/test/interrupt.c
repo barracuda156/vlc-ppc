@@ -32,8 +32,6 @@
 #include <vlc_interrupt.h>
 #include <vlc_network.h>
 
-const char vlc_module_name[] = "test_interrupt";
-
 static vlc_sem_t sem;
 static int fds[2];
 
@@ -177,16 +175,16 @@ int main (void)
 
     test_context_simple(ctx);
 
-    assert(!vlc_clone(&th, test_thread_simple, ctx));
+    assert(!vlc_clone(&th, test_thread_simple, ctx, VLC_THREAD_PRIORITY_LOW));
     vlc_interrupt_raise(ctx);
     vlc_sem_post(&sem);
     vlc_sem_post(&sem);
     vlc_join(th, NULL);
 
-    assert(!vlc_clone(&th, test_thread_cleanup, ctx));
+    assert(!vlc_clone(&th, test_thread_cleanup, ctx, VLC_THREAD_PRIORITY_LOW));
     vlc_join(th, NULL);
 
-    assert(!vlc_clone(&th, test_thread_cancel, ctx));
+    assert(!vlc_clone(&th, test_thread_cancel, ctx, VLC_THREAD_PRIORITY_LOW));
     vlc_cancel(th);
     vlc_join(th, NULL);
 
@@ -207,5 +205,6 @@ int main (void)
 
     vlc_close(fds[1]);
     vlc_close(fds[0]);
+    vlc_sem_destroy(&sem);
     return 0;
 }

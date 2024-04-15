@@ -2,6 +2,7 @@
  * misc.h
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
+ * $Id: e4f2f00df35810bfc40599b13e364cc3ae43688b $
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *          Pierre d'Herbemont <pdherbemont # videolan.org>
@@ -30,7 +31,6 @@ void *vlclua_get_object( lua_State *, void *id );
 vlc_object_t * vlclua_get_this( lua_State * );
 
 int vlclua_push_ret( lua_State *, int );
-vlc_player_t *vlclua_get_player_internal(lua_State *L);
 
 #endif
 

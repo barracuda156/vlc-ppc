@@ -207,7 +207,7 @@ test_dialogs(vlc_object_t *p_obj, struct cb_answer *p_ans,
                                        "Indeterminate non cancellable dialog "
                                        "for %" PRId64 " us", i_dialog_wait);
     assert(p_id != NULL);
-    vlc_tick_sleep(i_dialog_wait);
+    msleep(i_dialog_wait);
     vlc_dialog_release(p_obj, p_id);
     assert(i_ret == VLC_SUCCESS);
 
@@ -220,7 +220,7 @@ test_dialogs(vlc_object_t *p_obj, struct cb_answer *p_ans,
                                        "Cancel It!");
     assert(p_id != NULL);
     while(!vlc_dialog_is_cancelled(p_obj, p_id))
-        vlc_tick_sleep(i_dialog_wait / 30);
+        msleep(i_dialog_wait / 30);
     vlc_dialog_release(p_obj, p_id);
 
     set_answer(p_ans, false, NULL, 0);
@@ -229,7 +229,7 @@ test_dialogs(vlc_object_t *p_obj, struct cb_answer *p_ans,
     assert(p_id != NULL);
     while (f_position <= 1.0f)
     {
-        vlc_tick_sleep(i_dialog_wait / 30);
+        msleep(i_dialog_wait / 30);
         f_position += 0.02f;
         i_ret = vlc_dialog_update_progress(p_obj, p_id, f_position);
         assert(i_ret == VLC_SUCCESS);
@@ -244,7 +244,7 @@ test_dialogs(vlc_object_t *p_obj, struct cb_answer *p_ans,
     assert(p_id != NULL);
     while (f_position <= 1.0f)
     {
-        vlc_tick_sleep(i_dialog_wait / 30);
+        msleep(i_dialog_wait / 30);
         f_position += 0.02f;
         i_ret = vlc_dialog_update_progress_text(p_obj, p_id, f_position,
                                                 "Non cancellable dialog in progress.\n"
@@ -274,7 +274,7 @@ test_dialogs(vlc_object_t *p_obj, struct cb_answer *p_ans,
                                      "Error");
     assert(i_ret == 0);
     while(!vlc_dialog_is_cancelled(p_obj, p_id))
-        vlc_tick_sleep(i_dialog_wait / 30);
+        msleep(i_dialog_wait / 30);
     vlc_dialog_release(p_obj, p_id);
 }
 
@@ -287,13 +287,13 @@ main(int i_argc, char *ppsz_argv[])
         alarm(10);
 
     setenv("VLC_PLUGIN_PATH", "../modules", 1);
-    setenv("VLC_LIB_PATH", "../modules", 1);
 
     libvlc_instance_t *p_libvlc = libvlc_new(0, NULL);
     assert(p_libvlc != NULL);
 
     printf("testing dialog callbacks\n");
     const vlc_dialog_cbs cbs = {
+        .pf_display_error = display_error_cb,
         .pf_display_login = display_login_cb,
         .pf_display_question = display_question_cb,
         .pf_display_progress = display_progress_cb,
@@ -302,9 +302,7 @@ main(int i_argc, char *ppsz_argv[])
     };
     struct cb_answer ans = { 0 };
     vlc_dialog_provider_set_callbacks(p_libvlc->p_libvlc_int, &cbs, &ans);
-    vlc_dialog_provider_set_error_callback(p_libvlc->p_libvlc_int, &display_error_cb, &ans);
     test_dialogs(VLC_OBJECT(p_libvlc->p_libvlc_int), &ans, 100000);
-    vlc_dialog_provider_set_error_callback(p_libvlc->p_libvlc_int, NULL, NULL);
     vlc_dialog_provider_set_callbacks(p_libvlc->p_libvlc_int, NULL, NULL);
 
     libvlc_release(p_libvlc);
@@ -315,7 +313,7 @@ main(int i_argc, char *ppsz_argv[])
         static const char *args[] = {
             "--no-qt-privacy-ask", /* avoid dialog that ask for privacy */
         };
-        p_libvlc = libvlc_new(1, args);
+        libvlc_instance_t *p_libvlc = libvlc_new(1, args);
         assert(p_libvlc != NULL);
 
         int i_ret = libvlc_InternalAddIntf(p_libvlc->p_libvlc_int, "qt");

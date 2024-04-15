@@ -1,9 +1,10 @@
 /*****************************************************************************
  * mtime.c: high resolution time management functions
- * Functions are prototyped in vlc_tick.h.
+ * Functions are prototyped in vlc_mtime.h.
  *****************************************************************************
  * Copyright (C) 1998-2007 VLC authors and VideoLAN
  * Copyright © 2006-2007 Rémi Denis-Courmont
+ * $Id: c7a41bcad8b0c2b170ccee9c871623f6ba713a3c $
  *
  * Authors: Vincent Seguin <seguin@via.ecp.fr>
  *          Rémi Denis-Courmont
@@ -36,18 +37,26 @@
 #include <assert.h>
 
 #include <time.h>
-#include <stdlib.h>
 
-char *vlc_tick_to_str( char *psz_buffer, vlc_tick_t ticks )
+/**
+ * Convert seconds to a time in the format h:mm:ss.
+ *
+ * This function is provided for any interface function which need to print a
+ * time string in the format h:mm:ss
+ * date.
+ * \param secs  the date to be converted
+ * \param psz_buffer should be a buffer at least MSTRTIME_MAX_SIZE characters
+ * \return psz_buffer is returned so this can be used as printf parameter.
+ */
+char *secstotimestr( char *psz_buffer, int32_t i_seconds )
 {
-    if( unlikely(ticks < 0) )
+    if( unlikely(i_seconds < 0) )
     {
-        vlc_tick_to_str( psz_buffer + 1, -ticks );
+        secstotimestr( psz_buffer + 1, -i_seconds );
         *psz_buffer = '-';
         return psz_buffer;
     }
 
-    int i_seconds = SEC_FROM_VLC_TICK(ticks);
     div_t d;
 
     d = div( i_seconds, 60 );
@@ -67,27 +76,82 @@ char *vlc_tick_to_str( char *psz_buffer, vlc_tick_t ticks )
  * Date management (internal and external)
  */
 
+/**
+ * Initialize a date_t.
+ *
+ * \param date to initialize
+ * \param divider (sample rate) numerator
+ * \param divider (sample rate) denominator
+ */
+
 void date_Init( date_t *p_date, uint32_t i_divider_n, uint32_t i_divider_d )
 {
-    p_date->date = VLC_TICK_INVALID;
+    p_date->date = 0;
     p_date->i_divider_num = i_divider_n;
     p_date->i_divider_den = i_divider_d;
     p_date->i_remainder = 0;
 }
 
+/**
+ * Change a date_t.
+ *
+ * \param date to change
+ * \param divider (sample rate) numerator
+ * \param divider (sample rate) denominator
+ */
+
 void date_Change( date_t *p_date, uint32_t i_divider_n, uint32_t i_divider_d )
 {
-    assert( p_date->i_divider_num != 0 );
     /* change time scale of remainder */
     p_date->i_remainder = p_date->i_remainder * i_divider_n / p_date->i_divider_num;
     p_date->i_divider_num = i_divider_n;
     p_date->i_divider_den = i_divider_d;
 }
 
+/**
+ * Set the date value of a date_t.
+ *
+ * \param date to set
+ * \param date value
+ */
+void date_Set( date_t *p_date, vlc_tick_t i_new_date )
+{
+    p_date->date = i_new_date;
+    p_date->i_remainder = 0;
+}
+
+/**
+ * Get the date of a date_t
+ *
+ * \param date to get
+ * \return date value
+ */
+vlc_tick_t date_Get( const date_t *p_date )
+{
+    return p_date->date;
+}
+
+/**
+ * Move forwards or backwards the date of a date_t.
+ *
+ * \param date to move
+ * \param difference value
+ */
+void date_Move( date_t *p_date, vlc_tick_t i_difference )
+{
+    p_date->date += i_difference;
+}
+
+/**
+ * Increment the date and return the result, taking into account
+ * rounding errors.
+ *
+ * \param date to increment
+ * \param incrementation in number of samples
+ * \return date value
+ */
 vlc_tick_t date_Increment( date_t *p_date, uint32_t i_nb_samples )
 {
-    if(unlikely(p_date->date == VLC_TICK_INVALID))
-        return VLC_TICK_INVALID;
     assert( p_date->i_divider_num != 0 );
     vlc_tick_t i_dividend = i_nb_samples * CLOCK_FREQ * p_date->i_divider_den;
     lldiv_t d = lldiv( i_dividend, p_date->i_divider_num );
@@ -106,10 +170,16 @@ vlc_tick_t date_Increment( date_t *p_date, uint32_t i_nb_samples )
     return p_date->date;
 }
 
+/**
+ * Decrement the date and return the result, taking into account
+ * rounding errors.
+ *
+ * \param date to decrement
+ * \param decrementation in number of samples
+ * \return date value
+ */
 vlc_tick_t date_Decrement( date_t *p_date, uint32_t i_nb_samples )
 {
-    if(unlikely(p_date->date == VLC_TICK_INVALID))
-        return VLC_TICK_INVALID;
     vlc_tick_t i_dividend = (vlc_tick_t)i_nb_samples * CLOCK_FREQ * p_date->i_divider_den;
     p_date->date -= i_dividend / p_date->i_divider_num;
     unsigned i_rem_adjust = i_dividend % p_date->i_divider_num;
@@ -127,6 +197,9 @@ vlc_tick_t date_Decrement( date_t *p_date, uint32_t i_nb_samples )
     return p_date->date;
 }
 
+/**
+ * @return NTP 64-bits timestamp in host byte order.
+ */
 uint64_t NTPtime64(void)
 {
     struct timespec ts;
@@ -142,14 +215,4 @@ uint64_t NTPtime64(void)
      */
     t |= ((UINT64_C(70) * 365 + 17) * 24 * 60 * 60 + ts.tv_sec) << 32;
     return t;
-}
-
-struct timespec *vlc_tick_to_timespec(struct timespec *restrict ts,
-                                      vlc_tick_t tick)
-{
-    lldiv_t d = lldiv(tick, CLOCK_FREQ);
-
-    ts->tv_sec = d.quot;
-    ts->tv_nsec = NS_FROM_VLC_TICK(d.rem);;
-    return ts;
 }

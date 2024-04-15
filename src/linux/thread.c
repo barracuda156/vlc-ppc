@@ -28,18 +28,15 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <linux/futex.h>
 
 #ifndef FUTEX_PRIVATE_FLAG
 #define FUTEX_WAKE_PRIVATE FUTEX_WAKE
 #define FUTEX_WAIT_PRIVATE FUTEX_WAIT
-#define FUTEX_WAIT_BITSET_PRIVATE FUTEX_WAIT_BITSET
 #endif
 
 #include <vlc_common.h>
-#include <vlc_atomic.h>
 
 unsigned long vlc_thread_id(void)
 {
@@ -49,11 +46,6 @@ unsigned long vlc_thread_id(void)
          tid = syscall(__NR_gettid);
 
      return tid;
-}
-
-void (vlc_thread_set_name)(const char *name)
-{
-    prctl(PR_SET_NAME, name);
 }
 
 static int sys_futex(void *addr, int op, unsigned val,
@@ -87,64 +79,30 @@ static int vlc_futex_wake(void *addr, int nr)
     return sys_futex(addr, FUTEX_WAKE_PRIVATE, nr, NULL, NULL, 0);
 }
 
-static int vlc_futex_wait(void *addr, unsigned flags,
-                          unsigned val, const struct timespec *to)
+static int vlc_futex_wait(void *addr, unsigned val, const struct timespec *to)
 {
-    return sys_futex(addr, FUTEX_WAIT_BITSET_PRIVATE | flags, val, to, NULL,
-                     FUTEX_BITSET_MATCH_ANY);
+    return sys_futex(addr, FUTEX_WAIT_PRIVATE, val, to, NULL, 0);
 }
 
-void vlc_atomic_notify_one(void *addr)
+void vlc_addr_signal(void *addr)
 {
     vlc_futex_wake(addr, 1);
 }
 
-void vlc_atomic_notify_all(void *addr)
+void vlc_addr_broadcast(void *addr)
 {
     vlc_futex_wake(addr, INT_MAX);
 }
 
-void vlc_atomic_wait(void *addr, unsigned val)
+void vlc_addr_wait(void *addr, unsigned val)
 {
-    vlc_futex_wait(addr, 0, val, NULL);
+    vlc_futex_wait(addr, val, NULL);
 }
 
-int vlc_atomic_timedwait(void *addr, unsigned val, vlc_tick_t deadline)
+bool vlc_addr_timedwait(void *addr, unsigned val, vlc_tick_t delay)
 {
-    struct timespec ts;
+    lldiv_t d = lldiv(delay, CLOCK_FREQ);
+    struct timespec ts = { d.quot, d.rem * (1000000000 / CLOCK_FREQ) };
 
-    if (vlc_futex_wait(addr, 0, val, vlc_tick_to_timespec(&ts, deadline)) == 0)
-        return 0;
-
-    switch (errno) {
-        case EINTR:
-        case EAGAIN:
-            return 0;
-        case EFAULT:
-        case EINVAL:
-            vlc_assert_unreachable(); /* BUG! */
-        default:
-            break;
-     }
-     return errno;
-}
-
-int vlc_atomic_timedwait_daytime(void *addr, unsigned val, time_t deadline)
-{
-    struct timespec ts = { .tv_sec = deadline, .tv_nsec = 0 };
-
-    if (vlc_futex_wait(addr, FUTEX_CLOCK_REALTIME, val, &ts) == 0)
-        return 0;
-
-    switch (errno) {
-        case EINTR:
-        case EAGAIN:
-            return 0;
-        case EFAULT:
-        case EINVAL:
-            vlc_assert_unreachable(); /* BUG! */
-        default:
-            break;
-     }
-     return errno;
+    return (vlc_futex_wait(addr, val, &ts) == 0 || errno != ETIMEDOUT);
 }

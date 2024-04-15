@@ -4,9 +4,7 @@ CACA_URL := $(GITHUB)/cacalabs/libcaca/releases/download/v$(CACA_VERSION)/libcac
 
 ifndef HAVE_DARWIN_OS
 ifndef HAVE_LINUX # see VLC Trac 17251
-ifndef HAVE_WINSTORE
 PKGS += caca
-endif
 endif
 endif
 
@@ -46,9 +44,6 @@ CACA_CONF := \
 ifdef HAVE_MACOSX
 CACA_CONF += --disable-x11
 endif
-ifndef WITH_OPTIMIZATION
-CACA_CONF += --enable-debug
-endif
 ifdef HAVE_WIN32
 CACA_CONF += --disable-ncurses \
     ac_cv_func_vsnprintf_s=yes \
@@ -65,8 +60,6 @@ CACA_CONF += \
 	CPPFLAGS="$(CPPFLAGS) -DCACA_STATIC"
 
 .caca: caca
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(CACA_CONF)
-	+$(MAKEBUILD) -C $<
-	+$(MAKEBUILD) -C $< install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) $(CACA_CONF)
+	cd $< && $(MAKE) -C $< install
 	touch $@

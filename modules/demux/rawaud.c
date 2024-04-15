@@ -2,6 +2,7 @@
  * rawaud.c : raw audio input module for vlc
  *****************************************************************************
  * Copyright (C) 2009 VLC authors and VideoLAN
+ * $Id: 48ef94615bcc3d38c4f73427e0be5e7b5d22b68c $
  *
  * Authors: Jarmo Torvinen <jarmo.torvinen@jutel.fi>
  *
@@ -43,7 +44,7 @@ static void Close( vlc_object_t * );
 #define SAMPLERATE_LONGTEXT N_("Audio sample rate in Hertz. Default is 48000 Hz.")
 
 #define CHANNELS_TEXT N_("Audio channels")
-#define CHANNELS_LONGTEXT N_("Audio channels in input stream. Default is 2 (stereo).")
+#define CHANNELS_LONGTEXT N_("Audio channels in input stream. Numeric value >0. Default is 2.")
 
 #define FOURCC_TEXT N_("FOURCC code of raw input format")
 #define FOURCC_LONGTEXT N_( \
@@ -62,23 +63,24 @@ vlc_module_begin();
     set_shortname( "Raw Audio" );
     set_description( N_("Raw audio demuxer") );
     set_capability( "demux", 0 );
+    set_category( CAT_INPUT );
     set_subcategory( SUBCAT_INPUT_DEMUX );
     set_callbacks( Open, Close );
     add_shortcut( "rawaud" );
-    add_integer_with_range( "rawaud-channels", 2, 1, 32, CHANNELS_TEXT, CHANNELS_LONGTEXT )
+    add_integer( "rawaud-channels", 2, CHANNELS_TEXT, CHANNELS_LONGTEXT, false );
         change_safe()
-    add_integer_with_range( "rawaud-samplerate", 48000, 1, 384000, SAMPLERATE_TEXT, SAMPLERATE_LONGTEXT )
+    add_integer( "rawaud-samplerate", 48000, SAMPLERATE_TEXT, SAMPLERATE_LONGTEXT, false );
         change_safe()
     add_string( "rawaud-fourcc", FOURCC_DEFAULT,
-                FOURCC_TEXT, FOURCC_LONGTEXT );
+                FOURCC_TEXT, FOURCC_LONGTEXT, false );
         change_safe()
-    add_string( "rawaud-lang", "eng", LANG_TEXT, LANG_LONGTEXT);
+    add_string( "rawaud-lang", "eng", LANG_TEXT, LANG_LONGTEXT, false);
 vlc_module_end();
 
 /*****************************************************************************
  * Definitions of structures used by this plugin
  *****************************************************************************/
-typedef struct
+struct demux_sys_t
 {
     es_out_id_t *p_es;
     es_format_t  fmt;
@@ -86,7 +88,7 @@ typedef struct
     unsigned int i_frame_samples;
     unsigned int i_seek_step;
     date_t       pts;
-} demux_sys_t;
+};
 
 
 /*****************************************************************************
@@ -164,6 +166,22 @@ static int Open( vlc_object_t * p_this )
     p_sys->fmt.audio.i_channels = var_CreateGetInteger( p_demux, "rawaud-channels" );
     p_sys->fmt.audio.i_rate = var_CreateGetInteger( p_demux, "rawaud-samplerate" );
 
+    if( p_sys->fmt.audio.i_rate == 0 || p_sys->fmt.audio.i_rate > 384000 )
+    {
+        msg_Err( p_demux, "invalid sample rate");
+        es_format_Clean( &p_sys->fmt );
+        free( p_sys );
+        return VLC_EGENERIC;
+    }
+
+    if( p_sys->fmt.audio.i_channels == 0 || p_sys->fmt.audio.i_channels > 32 )
+    {
+        msg_Err( p_demux, "invalid number of channels");
+        es_format_Clean( &p_sys->fmt );
+        free( p_sys );
+        return VLC_EGENERIC;
+    }
+
     p_sys->fmt.i_bitrate = p_sys->fmt.audio.i_rate *
                            p_sys->fmt.audio.i_channels *
                            p_sys->fmt.audio.i_bitspersample;
@@ -185,13 +203,12 @@ static int Open( vlc_object_t * p_this )
             p_sys->fmt.i_bitrate);
 
     /* add the es */
-    p_sys->fmt.i_id = 0;
     p_sys->p_es = es_out_Add( p_demux->out, &p_sys->fmt );
     msg_Dbg( p_demux, "elementary stream added");
 
     /* initialize timing */
     date_Init( &p_sys->pts, p_sys->fmt.audio.i_rate, 1 );
-    date_Set( &p_sys->pts, VLC_TICK_0 );
+    date_Set( &p_sys->pts, 0 );
 
     /* calculate 50ms frame size/time */
     p_sys->i_frame_samples = __MAX( p_sys->fmt.audio.i_rate / 20, 1 );
@@ -229,16 +246,19 @@ static int Demux( demux_t *p_demux )
 
     p_block = vlc_stream_Block( p_demux->s, p_sys->i_frame_size );
     if( p_block == NULL )
-        return VLC_DEMUXER_EOF;
+    {
+        /* EOF */
+        return 0;
+    }
 
-    p_block->i_dts = p_block->i_pts = date_Get( &p_sys->pts );
+    p_block->i_dts = p_block->i_pts = VLC_TICK_0 + date_Get( &p_sys->pts );
 
     es_out_SetPCR( p_demux->out, p_block->i_pts );
     es_out_Send( p_demux->out, p_sys->p_es, p_block );
 
     date_Increment( &p_sys->pts, p_sys->i_frame_samples );
 
-    return VLC_DEMUXER_SUCCESS;
+    return 1;
 }
 
 /*****************************************************************************

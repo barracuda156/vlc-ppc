@@ -3,22 +3,23 @@
  *               -> gives the feeling of a real room with a simple headphone
  *****************************************************************************
  * Copyright (C) 2002-2006 the VideoLAN team
+ * $Id: 8e79bcdcdc46c56bc8c75722acd0beefe2c54bb5 $
  *
  * Authors: Boris Dorès <babal@via.ecp.fr>
  *
  * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation; either version 2.1 of the License, or
- * (at your option) any later version.
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc., 51
+ * Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
 /*****************************************************************************
@@ -31,6 +32,7 @@
 
 #include <math.h>                                        /* sqrt */
 
+#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
@@ -41,7 +43,7 @@
  * Local prototypes
  *****************************************************************************/
 static int  OpenFilter ( vlc_object_t * );
-static void CloseFilter( filter_t * );
+static void CloseFilter( vlc_object_t * );
 static block_t *Convert( filter_t *, block_t * );
 
 /*****************************************************************************
@@ -74,17 +76,18 @@ vlc_module_begin ()
     set_description( N_("Headphone virtual spatialization effect") )
     set_shortname( N_("Headphone effect") )
     set_help( MODULE_DESCRIPTION )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_AFILTER )
 
     add_integer( "headphone-dim", 10, HEADPHONE_DIM_TEXT,
-                 HEADPHONE_DIM_LONGTEXT )
+                 HEADPHONE_DIM_LONGTEXT, false )
     add_bool( "headphone-compensate", false, HEADPHONE_COMPENSATE_TEXT,
-              HEADPHONE_COMPENSATE_LONGTEXT )
+              HEADPHONE_COMPENSATE_LONGTEXT, true )
     add_bool( "headphone-dolby", false, HEADPHONE_DOLBY_TEXT,
-              HEADPHONE_DOLBY_LONGTEXT )
+              HEADPHONE_DOLBY_LONGTEXT, true )
 
     set_capability( "audio filter", 0 )
-    set_callback( OpenFilter )
+    set_callbacks( OpenFilter, CloseFilter )
     add_shortcut( "headphone" )
 vlc_module_end ()
 
@@ -100,13 +103,13 @@ struct atomic_operation_t
     double d_amplitude_factor;
 };
 
-typedef struct
+struct filter_sys_t
 {
     size_t i_overflow_buffer_size;/* in bytes */
     float * p_overflow_buffer;
     unsigned int i_nb_atomic_operations;
     struct atomic_operation_t * p_atomic_operations;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Init: initialize internal data structures
@@ -126,7 +129,7 @@ typedef struct
  *
  *          x-axis
  *  */
-static void ComputeChannelOperations( filter_sys_t * p_data
+static void ComputeChannelOperations( struct filter_sys_t * p_data
         , unsigned int i_rate, unsigned int i_next_atomic_operation
         , int i_source_channel_offset, double d_x, double d_z
         , double d_compensation_length, double d_channel_amplitude_factor )
@@ -183,7 +186,7 @@ static void ComputeChannelOperations( filter_sys_t * p_data
     }
 }
 
-static int Init( vlc_object_t *p_this, filter_sys_t * p_data
+static int Init( vlc_object_t *p_this, struct filter_sys_t * p_data
         , unsigned int i_nb_channels, uint32_t i_physical_channels
         , unsigned int i_rate )
 {
@@ -448,7 +451,7 @@ static int OpenFilter( vlc_object_t *p_this )
     }
 
     /* Allocate the memory needed to store the module's structure */
-    p_sys = p_filter->p_sys = malloc( sizeof(filter_sys_t) );
+    p_sys = p_filter->p_sys = malloc( sizeof(struct filter_sys_t) );
     if( p_sys == NULL )
         return VLC_ENOMEM;
     p_sys->i_overflow_buffer_size = 0;
@@ -477,12 +480,7 @@ static int OpenFilter( vlc_object_t *p_this )
     {
         p_filter->fmt_in.audio.i_physical_channels = AOUT_CHANS_5_0;
     }
-
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_audio = Convert, .close = CloseFilter,
-    };
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = Convert;
 
     aout_FormatPrepare(&p_filter->fmt_in.audio);
     aout_FormatPrepare(&p_filter->fmt_out.audio);
@@ -493,13 +491,13 @@ static int OpenFilter( vlc_object_t *p_this )
 /*****************************************************************************
  * CloseFilter : deallocate data structures
  *****************************************************************************/
-static void CloseFilter( filter_t *p_filter )
+static void CloseFilter( vlc_object_t *p_this )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_t *p_filter = (filter_t *)p_this;
 
-    free( p_sys->p_overflow_buffer );
-    free( p_sys->p_atomic_operations );
-    free( p_sys );
+    free( p_filter->p_sys->p_overflow_buffer );
+    free( p_filter->p_sys->p_atomic_operations );
+    free( p_filter->p_sys );
 }
 
 static block_t *Convert( filter_t *p_filter, block_t *p_block )

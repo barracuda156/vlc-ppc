@@ -28,7 +28,6 @@
 #include <assert.h>
 #include <vlc_common.h>
 #include <vlc_picture.h>
-#include <vlc_picture_pool.h>
 #include "vlc_vdpau.h"
 
 #pragma GCC visibility push(default)
@@ -36,11 +35,9 @@
 static_assert(offsetof (vlc_vdp_video_field_t, context) == 0,
               "Cast assumption failure");
 
-static void VideoSurfaceDestroy(struct picture_context_t *ctx)
+static void SurfaceDestroy(struct picture_context_t *ctx)
 {
-    struct vlc_vdp_device *device = GetVDPAUOpaqueContext(ctx->vctx);
-    vlc_vdp_video_field_t *field = container_of(ctx, vlc_vdp_video_field_t,
-                                                context);
+    vlc_vdp_video_field_t *field = (vlc_vdp_video_field_t *)ctx;
     vlc_vdp_video_frame_t *frame = field->frame;
     VdpStatus err;
 
@@ -51,24 +48,30 @@ static void VideoSurfaceDestroy(struct picture_context_t *ctx)
         return;
 
     /* Destroy frame (video surface) */
-    err = vdp_video_surface_destroy(device->vdp, frame->surface);
+    err = vdp_video_surface_destroy(frame->vdp, frame->surface);
     if (err != VDP_STATUS_OK)
         fprintf(stderr, "video surface destruction failure: %s\n",
-                vdp_get_error_string(device->vdp, err));
+                vdp_get_error_string(frame->vdp, err));
+    vdp_release_x11(frame->vdp);
     free(frame);
 }
 
-static picture_context_t *VideoSurfaceCopy(picture_context_t *ctx)
+static picture_context_t *SurfaceCopy(picture_context_t *ctx)
 {
-    vlc_vdp_video_field_t *fold = container_of(ctx, vlc_vdp_video_field_t,
-                                               context);
+    vlc_vdp_video_field_t *fold = (vlc_vdp_video_field_t *)ctx;
+    vlc_vdp_video_frame_t *frame = fold->frame;
     vlc_vdp_video_field_t *fnew = malloc(sizeof (*fnew));
     if (unlikely(fnew == NULL))
         return NULL;
 
-    *fnew = *fold;
-    vlc_video_context_Hold(ctx->vctx);
-    atomic_fetch_add(&fold->frame->refs, 1);
+    fnew->context.destroy = SurfaceDestroy;
+    fnew->context.copy = SurfaceCopy;
+    fnew->frame = frame;
+    fnew->structure = fold->structure;
+    fnew->procamp = fold->procamp;
+    fnew->sharpen = fold->sharpen;
+
+    atomic_fetch_add(&frame->refs, 1);
     return &fnew->context;
 }
 
@@ -81,15 +84,12 @@ static const VdpProcamp procamp_default =
     .hue = 0.f,
 };
 
-vlc_vdp_video_field_t *vlc_vdp_video_create(struct vlc_video_context *vctx,
+vlc_vdp_video_field_t *vlc_vdp_video_create(vdp_t *vdp,
                                             VdpVideoSurface surface)
 {
-    struct vlc_vdp_device *device = GetVDPAUOpaqueContext(vctx);
     vlc_vdp_video_field_t *field = malloc(sizeof (*field));
     vlc_vdp_video_frame_t *frame = malloc(sizeof (*frame));
 
-    if (device == NULL)
-        vlc_assert_unreachable();
     if (unlikely(field == NULL || frame == NULL))
     {
         free(frame);
@@ -97,9 +97,8 @@ vlc_vdp_video_field_t *vlc_vdp_video_create(struct vlc_video_context *vctx,
         return NULL;
     }
 
-    field->context = (picture_context_t) {
-        VideoSurfaceDestroy, VideoSurfaceCopy, vlc_video_context_Hold(vctx),
-    };
+    field->context.destroy = SurfaceDestroy;
+    field->context.copy = SurfaceCopy;
     field->frame = frame;
     field->structure = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME;
     field->procamp = procamp_default;
@@ -107,92 +106,21 @@ vlc_vdp_video_field_t *vlc_vdp_video_create(struct vlc_video_context *vctx,
 
     atomic_init(&frame->refs, 1);
     frame->surface = surface;
+    frame->vdp = vdp_hold_x11(vdp, &frame->device);
     return field;
 }
 
-VdpStatus vlc_vdp_video_attach(struct vlc_video_context *vctx,
-                               VdpVideoSurface surface, picture_t *pic)
+VdpStatus vlc_vdp_video_attach(vdp_t *vdp, VdpVideoSurface surface,
+                               picture_t *pic)
 {
-    vlc_vdp_video_field_t *field = vlc_vdp_video_create(vctx, surface);
+    vlc_vdp_video_field_t *field = vlc_vdp_video_create(vdp, surface);
     if (unlikely(field == NULL))
         return VDP_STATUS_RESOURCES;
 
-    assert(pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO);
+    assert(pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_420
+        || pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_422
+        || pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_444);
     assert(pic->context == NULL);
     pic->context = &field->context;
     return VDP_STATUS_OK;
-}
-
-static void vlc_vdp_output_surface_destroy(picture_t *pic)
-{
-    vlc_vdp_output_surface_t *sys = pic->p_sys;
-    struct vlc_vdp_device *device = GetVDPAUOpaqueContext(sys->vctx);
-
-    vdp_output_surface_destroy(device->vdp, sys->surface);
-    vlc_video_context_Release(sys->vctx);
-    free(sys);
-}
-
-static
-picture_t *vlc_vdp_output_surface_create(struct vlc_video_context *vctx,
-                                         VdpRGBAFormat rgb_fmt,
-                                         const video_format_t *restrict fmt)
-{
-    struct vlc_vdp_device *device = GetVDPAUOpaqueContext(vctx);
-    vlc_vdp_output_surface_t *sys = malloc(sizeof (*sys));
-    if (unlikely(sys == NULL))
-        return NULL;
-
-    sys->gl_nv_surface = 0;
-
-    VdpStatus err = vdp_output_surface_create(device->vdp, device->device,
-        rgb_fmt,
-        fmt->i_visible_width, fmt->i_visible_height, &sys->surface);
-    if (err != VDP_STATUS_OK)
-    {
-error:
-        free(sys);
-        return NULL;
-    }
-
-    picture_resource_t res = {
-        .p_sys = sys,
-        .pf_destroy = vlc_vdp_output_surface_destroy,
-    };
-
-    picture_t *pic = picture_NewFromResource(fmt, &res);
-    if (unlikely(pic == NULL))
-    {
-        vdp_output_surface_destroy(device->vdp, sys->surface);
-        goto error;
-    }
-
-    sys->vctx = vlc_video_context_Hold(vctx);
-    return pic;
-}
-
-picture_pool_t *vlc_vdp_output_pool_create(struct vlc_video_context *vctx,
-                                           VdpRGBAFormat rgb_fmt,
-                                           const video_format_t *restrict fmt,
-                                           unsigned requested_count)
-{
-    picture_t *pics[requested_count];
-    unsigned count = 0;
-
-    while (count < requested_count)
-    {
-        pics[count] = vlc_vdp_output_surface_create(vctx, rgb_fmt, fmt);
-        if (pics[count] == NULL)
-            break;
-        count++;
-    }
-
-    if (count == 0)
-        return NULL;
-
-    picture_pool_t *pool = picture_pool_New(count, pics);
-    if (unlikely(pool == NULL))
-        while (count > 0)
-            picture_Release(pics[--count]);
-    return pool;
 }

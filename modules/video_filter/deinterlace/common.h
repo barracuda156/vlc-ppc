@@ -2,6 +2,7 @@
  * common.h : Common macros for the VLC deinterlacer
  *****************************************************************************
  * Copyright (C) 2000-2017 VLC authors and VideoLAN
+ * $Id: cf7420b7e8e67db00d693a973f82e9a82f61421c $
  *
  * Author: Sam Hocevar <sam@zoy.org>
  *         Steve Lhomme <robux4@gmail.com>
@@ -122,6 +123,5 @@ picture_t *DoDeinterlacing( filter_t *, struct deinterlace_ctx *, picture_t * );
  */
 void FlushDeinterlacing( struct deinterlace_ctx * );
 
-picture_t *AllocPicture( filter_t * );
 
 #endif

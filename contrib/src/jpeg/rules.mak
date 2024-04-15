@@ -1,22 +1,23 @@
 # jpeg
 
-JPEG_VERSION := 2.0.8-esr
-JPEG_URL := $(GITHUB)/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/$(JPEG_VERSION).tar.gz
+JPEG_VERSION := 9b
+JPEG_URL := http://www.ijg.org/files/jpegsrc.v$(JPEG_VERSION).tar.gz
 
-$(TARBALLS)/libjpeg-turbo-$(JPEG_VERSION).tar.gz:
+$(TARBALLS)/jpegsrc.v$(JPEG_VERSION).tar.gz:
 	$(call download_pkg,$(JPEG_URL),jpeg)
 
-.sum-jpeg: libjpeg-turbo-$(JPEG_VERSION).tar.gz
+.sum-jpeg: jpegsrc.v$(JPEG_VERSION).tar.gz
 
-jpeg: libjpeg-turbo-$(JPEG_VERSION).tar.gz .sum-jpeg
+jpeg: jpegsrc.v$(JPEG_VERSION).tar.gz .sum-jpeg
 	$(UNPACK)
+	mv jpeg-$(JPEG_VERSION) jpegsrc.v$(JPEG_VERSION)
+	$(APPLY) $(SRC)/jpeg/no_executables.patch
+	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 
-JPEG_CONF:= -DENABLE_SHARED=OFF -DWITH_TURBOJPEG=OFF
-
-.jpeg: jpeg toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(JPEG_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+.jpeg: jpeg
+	$(RECONF)
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) install
+	cd $< && if test -e $(PREFIX)/lib/libjpeg.a; then $(RANLIB) $(PREFIX)/lib/libjpeg.a; fi
 	touch $@

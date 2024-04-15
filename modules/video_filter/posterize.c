@@ -2,6 +2,7 @@
  * posterize.c : Posterize video plugin for vlc
  *****************************************************************************
  * Copyright (C) 2010 VLC authors and VideoLAN
+ * $Id: 2eab2d70193355b12361ca122c86137c29ec7740 $
  *
  * Authors: Branko Kokanovic <branko.kokanovic@gmail.com>
  *
@@ -29,10 +30,10 @@
 #endif
 
 #include <assert.h>
-#include <stdatomic.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+#include <vlc_atomic.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include "filter_picture.h"
@@ -40,14 +41,15 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create      ( filter_t * );
+static int  Create      ( vlc_object_t * );
+static void Destroy     ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static void PlanarYUVPosterize( picture_t *, picture_t *, int);
 static void PackedYUVPosterize( picture_t *, picture_t *, int);
 static void RVPosterize( picture_t *, picture_t *, bool, int );
 static void YuvPosterization( uint8_t *, uint8_t *, uint8_t *, uint8_t *,
                     uint8_t, uint8_t, uint8_t, uint8_t, int );
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 static const char *const ppsz_filter_options[] = {
     "level", NULL
@@ -66,10 +68,13 @@ vlc_module_begin ()
     set_description( N_("Posterize video filter") )
     set_shortname( N_("Posterize" ) )
     set_help( N_("Posterize video by lowering the number of colors") )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
     add_integer_with_range( CFG_PREFIX "level", 6, 2, 256,
-                           POSTERIZE_LEVEL_TEXT, POSTERIZE_LEVEL_LONGTEXT )
-    set_callback_video_filter( Create )
+                           POSTERIZE_LEVEL_TEXT, POSTERIZE_LEVEL_LONGTEXT,
+                           false )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -81,18 +86,19 @@ static int FilterCallback( vlc_object_t *, char const *,
 /*****************************************************************************
  * filter_sys_t: adjust filter method descriptor
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     atomic_int i_level;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Create: allocates Posterize video thread output method
  *****************************************************************************
  * This function allocates and initializes a Posterize vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     switch( p_filter->fmt_in.video.i_chroma )
@@ -129,7 +135,7 @@ static int Create( filter_t *p_filter )
 
     var_AddCallback( p_filter, CFG_PREFIX "level", FilterCallback, p_sys );
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     return VLC_SUCCESS;
 }
@@ -139,8 +145,9 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method created by PosterizeCreateOutputMethod
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     var_DelCallback( p_filter, CFG_PREFIX "level", FilterCallback, p_sys );
@@ -154,10 +161,22 @@ static void Destroy( filter_t *p_filter )
  * until it is displayed and switch the two rendering buffers, preparing next
  * frame.
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
+
+    if( !p_pic ) return NULL;
+
     filter_sys_t *p_sys = p_filter->p_sys;
     int level = atomic_load( &p_sys->i_level );
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        msg_Warn( p_filter, "can't get output picture" );
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     switch( p_pic->format.i_chroma )
     {
@@ -176,6 +195,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
         default:
             vlc_assert_unreachable();
     }
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 /*****************************************************************************

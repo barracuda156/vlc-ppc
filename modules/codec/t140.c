@@ -2,6 +2,7 @@
  * t140.c : trivial T.140 text encoder
  *****************************************************************************
  * Copyright © 2007 Rémi Denis-Courmont
+ * $Id: a4f186b1e71e55488f87d11f4e88ddedb9bfb888 $
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,11 +30,12 @@
 #include <vlc_sout.h>
 
 static int  Open ( vlc_object_t * );
+static void Close( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("T.140 text encoder") )
-    set_capability( "spu encoder", 100 )
-    set_callback( Open )
+    set_capability( "encoder", 100 )
+    set_callbacks( Open, Close )
 vlc_module_end ()
 
 
@@ -64,11 +66,17 @@ static int Open( vlc_object_t *p_this )
             p_enc->fmt_out.i_codec = VLC_CODEC_ITU_T140;
     }
 
-    static const struct vlc_encoder_operations ops =
-        { .encode_sub = Encode };
-    p_enc->ops = &ops;
+    p_enc->p_sys = NULL;
 
+    p_enc->pf_encode_sub = Encode;
+    p_enc->fmt_out.i_cat = SPU_ES;
     return VLC_SUCCESS;
+}
+
+
+static void Close( vlc_object_t *p_this )
+{
+    (void)p_this;
 }
 
 
@@ -78,7 +86,7 @@ static block_t *Encode( encoder_t *p_enc, subpicture_t *p_spu )
 
     subpicture_region_t *p_region;
     block_t *p_block;
-    size_t len = 0;
+    size_t len;
 
     if( p_spu == NULL )
         return NULL;
@@ -91,30 +99,9 @@ static block_t *Encode( encoder_t *p_enc, subpicture_t *p_spu )
         return NULL;
 
     /* This should already be UTF-8 encoded, so not much effort... */
-    for( const text_segment_t *p_segment = p_region->p_text;
-                               p_segment; p_segment = p_segment->p_next )
-    {
-        if( p_segment->psz_text == NULL )
-            continue;
-        len += strlen( p_segment->psz_text );
-    }
-
-    p_block = block_Alloc( len + 1 );
-    if( !p_block )
-        return NULL;
-
-    p_block->i_buffer = 0;
-    for( const text_segment_t *p_segment = p_region->p_text;
-                               p_segment; p_segment = p_segment->p_next )
-    {
-        if( p_segment->psz_text == NULL )
-            continue;
-        len = strlen( p_segment->psz_text );
-        memcpy( &p_block->p_buffer[p_block->i_buffer],
-                p_segment->psz_text, len );
-        p_block->i_buffer += len;
-    }
-    p_block->p_buffer[p_block->i_buffer] = 0;
+    len = strlen( p_region->p_text->psz_text );
+    p_block = block_Alloc( len );
+    memcpy( p_block->p_buffer, p_region->p_text->psz_text, len );
 
     p_block->i_pts = p_block->i_dts = p_spu->i_start;
     if( !p_spu->b_ephemer && ( p_spu->i_stop > p_spu->i_start ) )

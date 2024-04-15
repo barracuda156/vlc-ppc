@@ -27,14 +27,10 @@ endif
 	cd $(UNPACK_DIR) && $(CC) -iquote . -E - </dev/null || sed -i 's/-iquote /-I/' libfaad/Makefile.am
 	$(MOVE)
 
-FAAD2_CONF := --without-drm
-
 .faad2: faad2
 	$(REQUIRE_GPL)
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(FAAD2_CONF)
-	sed -i.orig "s/shrext_cmds/shrext/g" $(BUILD_DIR)/libtool
-	+$(MAKEBUILD) -C libfaad
-	+$(MAKEBUILD) -C libfaad install
+	cd $< && $(HOSTVARS) ./configure --without-drm $(HOSTCONF)
+	cd $< && sed -i.orig "s/shrext_cmds/shrext/g" libtool
+	cd $< && $(MAKE) -C libfaad install
 	touch $@

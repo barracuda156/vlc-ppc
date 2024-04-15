@@ -2,6 +2,7 @@
  * common.c : Common helper function for the VLC deinterlacer
  *****************************************************************************
  * Copyright (C) 2000-2017 VLC authors and VideoLAN
+ * $Id: 89155f4a4c4bac841c79410f50255d65549b7166 $
  *
  * Author: Sam Hocevar <sam@zoy.org>
  *         Christophe Massiot <massiot@via.ecp.fr>
@@ -80,7 +81,7 @@ vlc_tick_t GetFieldDuration(const struct deinterlace_ctx *p_context,
     /* Find oldest valid logged date.
        The current input frame doesn't count. */
     for( ; i < iend; i++ )
-        if( p_context->meta[i].pi_date != VLC_TICK_INVALID )
+        if( p_context->meta[i].pi_date > VLC_TICK_INVALID )
             break;
     if( i < iend )
     {
@@ -92,8 +93,8 @@ vlc_tick_t GetFieldDuration(const struct deinterlace_ctx *p_context,
         /* One field took this long. */
         i_field_dur = (p_pic->date - p_context->meta[i].pi_date) / i_fields_total;
     }
-    else if (fmt->i_frame_rate)
-        i_field_dur = vlc_tick_from_samples( fmt->i_frame_rate_base, fmt->i_frame_rate);
+    else if (fmt->i_frame_rate_base)
+        i_field_dur = CLOCK_FREQ * fmt->i_frame_rate_base / fmt->i_frame_rate;
 
     /* Note that we default to field duration 0 if it could not be
        determined. This behaves the same as the old code - leaving the
@@ -138,7 +139,7 @@ picture_t *DoDeinterlacing( filter_t *p_filter,
     bool b_top_field_first;
 
     /* Request output picture */
-    p_dst[0] = AllocPicture( p_filter );
+    p_dst[0] = filter_NewPicture( p_filter );
     if( p_dst[0] == NULL )
     {
         picture_Release( p_pic );
@@ -220,7 +221,7 @@ picture_t *DoDeinterlacing( filter_t *p_filter,
         {
             /* Note that the effective buffer size depends also on the constant
                private_picture in vout_wrapper.c, since that determines the
-               maximum number of output pictures AllocPicture() will
+               maximum number of output pictures filter_NewPicture() will
                successfully allocate for one input frame.
             */
             msg_Err( p_filter, "Framerate doubler: output buffer too small; "\
@@ -233,10 +234,10 @@ picture_t *DoDeinterlacing( filter_t *p_filter,
         /* Allocate output frames. */
         for( int i = 1; i < i_double_rate_alloc_end ; ++i )
         {
-            p_dst[i]           = AllocPicture( p_filter );
+            p_dst[i-1]->p_next =
+            p_dst[i]           = filter_NewPicture( p_filter );
             if( p_dst[i] )
             {
-                vlc_picture_chain_AppendChain( p_dst[i-1], p_dst[i] );
                 picture_CopyProperties( p_dst[i], p_pic );
             }
             else
@@ -323,7 +324,7 @@ picture_t *DoDeinterlacing( filter_t *p_filter,
             {
                 /* XXX it's not really good especially for the first picture, but
                  * I don't think that delaying by one frame is worth it */
-                if( i_base_pts != VLC_TICK_INVALID )
+                if( i_base_pts > VLC_TICK_INVALID )
                     p_dst[i]->date = i_base_pts + i * i_field_dur;
                 else
                     p_dst[i]->date = VLC_TICK_INVALID;

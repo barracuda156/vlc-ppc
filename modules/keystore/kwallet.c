@@ -47,6 +47,7 @@ static void Close( vlc_object_t * );
 vlc_module_begin()
     set_shortname( N_("KWallet keystore") )
     set_description( N_("Secrets are stored via KWallet") )
+    set_category( CAT_ADVANCED )
     set_subcategory( SUBCAT_ADVANCED_MISC )
     set_capability( "keystore", 100 )
     set_callbacks( Open, Close )
@@ -205,6 +206,8 @@ values2key( const char* const* ppsz_values, bool b_search )
 end:
     free( psz_b64_realm );
     free( psz_b64_auth );
+    if ( vlc_memstream_flush( &ms ) != 0 )
+        b_state = false;
     char *psz_key = vlc_memstream_close( &ms ) == 0 ? ms.ptr : NULL;
     if ( !b_state )
     {
@@ -237,10 +240,7 @@ key2values( char* psz_key, vlc_keystore_entry* p_entry )
         goto end;
     if ( url.i_port && asprintf( &p_entry->ppsz_values[KEY_PORT],
                                  "%d", url.i_port) == -1 )
-    {
-        p_entry->ppsz_values[KEY_PORT] = NULL;
         goto end;
-    }
     if ( url.psz_path && !( p_entry->ppsz_values[KEY_PATH] =
                             strdup( url.psz_path ) ) )
         goto end;

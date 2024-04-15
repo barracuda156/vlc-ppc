@@ -314,6 +314,7 @@ bool SegmentList::getSegmentNumberByTime(vlc_tick_t time, uint64_t *ret) const
     const Timescale timescale = inheritTimescale();
     if(!timescale.isValid())
         return false;
+
     stime_t st = timescale.ToScaled(time);
     *ret = AbstractSegmentBaseType::findSegmentNumberByScaledTime(segments, st);
     return *ret != std::numeric_limits<uint64_t>::max();

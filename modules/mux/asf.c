@@ -2,6 +2,7 @@
  * asf.c: asf muxer module for vlc
  *****************************************************************************
  * Copyright (C) 2003-2004, 2006 VLC authors and VideoLAN
+ * $Id: 95c841fd61baf4c1efb381a18f6998729b487eef $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@videolan.org>
@@ -42,6 +43,7 @@
 #include "../demux/asf/libasf_guid.h"
 
 #define MAX_ASF_TRACKS 128
+#define ASF_DATA_PACKET_SIZE 4096  // deprecated -- added sout-asf-packet-size
 
 /*****************************************************************************
  * Module descriptor
@@ -69,6 +71,7 @@ static void Close  ( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("ASF muxer") )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_MUX )
     set_shortname( "ASF" )
 
@@ -76,19 +79,20 @@ vlc_module_begin ()
     add_shortcut( "asf", "asfh" )
     set_callbacks( Open, Close )
 
-    add_string( SOUT_CFG_PREFIX "title", "", TITLE_TEXT, TITLE_LONGTEXT )
+    add_string( SOUT_CFG_PREFIX "title", "", TITLE_TEXT, TITLE_LONGTEXT,
+                                 true )
     add_string( SOUT_CFG_PREFIX "author",   "", AUTHOR_TEXT,
-                                 AUTHOR_LONGTEXT )
+                                 AUTHOR_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "copyright","", COPYRIGHT_TEXT,
-                                 COPYRIGHT_LONGTEXT )
+                                 COPYRIGHT_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "comment",  "", COMMENT_TEXT,
-                                 COMMENT_LONGTEXT )
+                                 COMMENT_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "rating",  "", RATING_TEXT,
-                                 RATING_LONGTEXT )
+                                 RATING_LONGTEXT, true )
     add_integer( SOUT_CFG_PREFIX "packet-size", 4096, PACKETSIZE_TEXT,
-                                 PACKETSIZE_LONGTEXT )
+                                 PACKETSIZE_LONGTEXT, true )
     add_integer( SOUT_CFG_PREFIX "bitrate-override", 0, BITRATE_TEXT,
-                                 BITRATE_LONGTEXT )
+                                 BITRATE_LONGTEXT, true )
 
 vlc_module_end ()
 
@@ -126,14 +130,14 @@ typedef struct
 
 } asf_track_t;
 
-typedef struct
+struct sout_mux_sys_t
 {
-    vlc_guid_t      fid;    /* file id */
+    guid_t          fid;    /* file id */
     int             i_packet_size;
     int64_t         i_packet_count;
     vlc_tick_t      i_dts_first;
     vlc_tick_t      i_dts_last;
-    int64_t         i_preroll_time; /* in milliseconds */
+    vlc_tick_t      i_preroll_time;
     int64_t         i_bitrate;
     int64_t         i_bitrate_override;
 
@@ -155,7 +159,7 @@ typedef struct
     char            *psz_copyright;
     char            *psz_comment;
     char            *psz_rating;
-} sout_mux_sys_t;
+};
 
 static block_t *asf_header_create( sout_mux_t *, bool );
 static block_t *asf_packet_create( sout_mux_t *, asf_track_t *, block_t * );
@@ -303,7 +307,13 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     {
        case MUX_CAN_ADD_STREAM_WHILE_MUXING:
            pb_bool = va_arg( args, bool * );
-           *pb_bool = false;
+           if( p_sys->b_asf_http ) *pb_bool = true;
+           else *pb_bool = false;
+           return VLC_SUCCESS;
+
+       case MUX_GET_ADD_STREAM_WAIT:
+           pb_bool = va_arg( args, bool * );
+           *pb_bool = true;
            return VLC_SUCCESS;
 
        case MUX_GET_MIME:
@@ -551,7 +561,7 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
             else
             {
                 tk->psz_name = _("Unknown Video");
-                tk->i_fourcc = p_fmt->i_original_fourcc ? p_fmt->i_original_fourcc : p_fmt->i_codec;
+                tk->i_fourcc = p_fmt->i_original_fourcc ?: p_fmt->i_codec;
             }
             if( !i_codec_extra && p_fmt->i_extra > 0 )
             {
@@ -694,7 +704,7 @@ static int Mux( sout_mux_t *p_mux )
             return VLC_SUCCESS;
         }
 
-        if( p_sys->i_dts_first == VLC_TICK_INVALID )
+        if( p_sys->i_dts_first <= VLC_TICK_INVALID )
         {
             p_sys->i_dts_first = i_dts;
         }
@@ -807,7 +817,7 @@ static void bo_addle_str16_nosize( bo_t *bo, const char *str )
 /****************************************************************************
  * GUID definitions
  ****************************************************************************/
-static void bo_add_guid( bo_t *p_bo, const vlc_guid_t *id )
+static void bo_add_guid( bo_t *p_bo, const guid_t *id )
 {
     bo_addle_u32( p_bo, id->Data1 );
     bo_addle_u16( p_bo, id->Data2 );
@@ -834,17 +844,20 @@ static void asf_chunk_add( bo_t *bo,
 static block_t *asf_header_create( sout_mux_t *p_mux, bool b_broadcast )
 {
     sout_mux_sys_t *p_sys = p_mux->p_sys;
+    asf_track_t    *tk;
     vlc_tick_t i_duration = 0;
     int i_size, i_header_ext_size;
     int i_ci_size, i_cm_size = 0, i_cd_size = 0;
     block_t *out;
     bo_t bo;
+    tk=NULL;
 
     msg_Dbg( p_mux, "Asf muxer creating header" );
 
-    if( p_sys->i_dts_first != VLC_TICK_INVALID && p_sys->i_dts_last > p_sys->i_dts_first )
+    if( p_sys->i_dts_first > VLC_TICK_INVALID )
     {
         i_duration = p_sys->i_dts_last - p_sys->i_dts_first;
+        if( i_duration < 0 ) i_duration = 0;
     }
 
     /* calculate header size */
@@ -852,7 +865,7 @@ static block_t *asf_header_create( sout_mux_t *p_mux, bool b_broadcast )
     i_ci_size = 44;
     for( size_t i = 0; i < vlc_array_count( &p_sys->tracks ); i++ )
     {
-        asf_track_t *tk = vlc_array_item_at_index( &p_sys->tracks, i );
+        tk = vlc_array_item_at_index( &p_sys->tracks, i );
         /* update also track-id */
         tk->i_id = i + 1;
 
@@ -927,8 +940,8 @@ static block_t *asf_header_create( sout_mux_t *p_mux, bool b_broadcast )
                                 p_sys->i_packet_size ); /* file size */
     bo_addle_u64( &bo, 0 );                 /* creation date */
     bo_addle_u64( &bo, b_broadcast ? 0xffffffffLL : p_sys->i_packet_count );
-    bo_addle_u64( &bo, MSFTIME_FROM_VLC_TICK(i_duration) );   /* play duration (100ns) */
-    bo_addle_u64( &bo, MSFTIME_FROM_VLC_TICK(i_duration) );   /* send duration (100ns) */
+    bo_addle_u64( &bo, i_duration * 10 );   /* play duration (100ns) */
+    bo_addle_u64( &bo, i_duration * 10 );   /* send duration (100ns) */
     bo_addle_u64( &bo, p_sys->i_preroll_time ); /* preroll duration (ms) */
     bo_addle_u32( &bo, b_broadcast ? 0x01 : 0x02 /* seekable */ ); /* flags */
     bo_addle_u32( &bo, p_sys->i_packet_size );  /* packet size min */
@@ -1044,7 +1057,7 @@ static block_t *asf_header_create( sout_mux_t *p_mux, bool b_broadcast )
     /* stream properties */
     for( size_t i = 0; i < vlc_array_count( &p_sys->tracks ); i++ )
     {
-        asf_track_t *tk = vlc_array_item_at_index( &p_sys->tracks, i);
+        tk = vlc_array_item_at_index( &p_sys->tracks, i);
 
         bo_add_guid ( &bo, &asf_object_stream_properties_guid );
         bo_addle_u64( &bo, 78 + tk->i_extra + (tk->b_audio_correction ? 8:0) );
@@ -1088,7 +1101,7 @@ static block_t *asf_header_create( sout_mux_t *p_mux, bool b_broadcast )
     bo_addle_u32( &bo, vlc_array_count( &p_sys->tracks ) );
     for( size_t i = 0; i < vlc_array_count( &p_sys->tracks ); i++ )
     {
-        asf_track_t *tk = vlc_array_item_at_index( &p_sys->tracks ,i);
+        tk = vlc_array_item_at_index( &p_sys->tracks ,i);
 
         if( tk->i_cat == VIDEO_ES ) bo_addle_u16( &bo, 1 /* video */ );
         else if( tk->i_cat == AUDIO_ES ) bo_addle_u16( &bo, 2 /* audio */ );
@@ -1143,7 +1156,7 @@ static block_t *asf_packet_flush( sout_mux_t *p_mux )
     bo_add_u8( &bo, 0x11 );
     bo_add_u8( &bo, 0x5d );
     bo_addle_u16( &bo, i_pad );
-    bo_addle_u32( &bo, MS_FROM_VLC_TICK(p_sys->i_pk_dts - p_sys->i_dts_first) +
+    bo_addle_u32( &bo, (p_sys->i_pk_dts - p_sys->i_dts_first) / 1000 +
                   p_sys->i_preroll_time );
     bo_addle_u16( &bo, 0 /* data->i_length */ );
     bo_add_u8( &bo, 0x80 | p_sys->i_pk_frame );
@@ -1203,7 +1216,7 @@ static block_t *asf_packet_create( sout_mux_t *p_mux,
         bo_addle_u32( &bo, i_pos );
         bo_add_u8   ( &bo, 0x08 );  /* flags */
         bo_addle_u32( &bo, i_data );
-        bo_addle_u32( &bo, MS_FROM_VLC_TICK(data->i_dts - p_sys->i_dts_first) +
+        bo_addle_u32( &bo, (data->i_dts - p_sys->i_dts_first) / 1000 +
                       p_sys->i_preroll_time );
         bo_addle_u16( &bo, i_payload );
         bo_add_mem  ( &bo, &p_data[i_pos], i_payload );

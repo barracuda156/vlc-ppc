@@ -2,6 +2,7 @@
  * chroma.h: decoder and encoder using libavcodec
  *****************************************************************************
  * Copyright (C) 2001-2008 VLC authors and VideoLAN
+ * $Id: 99dc1d6344194a71afa515e8264ceac1db5e74ed $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -25,12 +26,10 @@
 #ifndef VLC_AVUTIL_CHROMA_H_
 #define VLC_AVUTIL_CHROMA_H_
 
-#include <libavutil/pixfmt.h>
+int FindFfmpegChroma( vlc_fourcc_t );
+int GetFfmpegChroma( int *i_ffmpeg_chroma, const video_format_t *fmt );
 
-enum AVPixelFormat FindFfmpegChroma( vlc_fourcc_t );
-int GetFfmpegChroma( enum AVPixelFormat *i_ffmpeg_chroma, const video_format_t *fmt );
-
-vlc_fourcc_t FindVlcChroma( enum AVPixelFormat );
-int GetVlcChroma( video_format_t *fmt, enum AVPixelFormat i_ffmpeg_chroma );
+vlc_fourcc_t FindVlcChroma( int );
+int GetVlcChroma( video_format_t *fmt, int i_ffmpeg_chroma );
 
 #endif

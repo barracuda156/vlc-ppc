@@ -263,7 +263,11 @@ EsOutMediaProgressCommand * CommandsFactory::createEsOutMediaProgressCommand( co
 std::ostream& operator<<(std::ostream& ostr, const std::list<AbstractCommand *>& list)
 {
     for (auto &i : list) {
+<<<<<<< HEAD
+        ostr << "[" << i->getType() << "]" << (i->getTime() / CLOCK_FREQ) << " ";
+=======
         ostr << "[" << i->getType() << "]" << SEC_FROM_VLC_TICK(i->getTimes().continuous) << " ";
+>>>>>>> 7f9221f31f (demux: adaptive: propagate and interpolate asynchronous times)
     }
     return ostr;
 }

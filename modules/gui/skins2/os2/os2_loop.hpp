@@ -42,8 +42,6 @@ public:
     /// Destroy the instance of OS2Loop
     static void destroy( intf_thread_t *pIntf );
 
-    OS2Loop( intf_thread_t *pIntf );
-
     /// Enter the event loop
     virtual void run();
 
@@ -55,6 +53,10 @@ public:
                                            MPARAM mp1, MPARAM mp2 );
 
 private:
+    // Private because it is a singleton
+    OS2Loop( intf_thread_t *pIntf );
+    virtual ~OS2Loop();
+
     /// Map associating special (i.e. non ascii) virtual key codes with
     /// internal vlc key codes
     std::map<int, int> virtKeyToVlcKey;

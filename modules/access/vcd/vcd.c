@@ -2,6 +2,7 @@
  * vcd.c : VCD input module for vlc
  *****************************************************************************
  * Copyright © 2000-2011 VLC authors and VideoLAN
+ * $Id: 817fc96dd2ea2357d6fe620f75d9f0b83d70b5af $
  *
  * Author: Johan Bilien <jobi@via.ecp.fr>
  *
@@ -42,16 +43,15 @@
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
-#define HELP_TEXT N_("Usage hint: [vcd:][device][#[title][,[chapter]]]")
-
 vlc_module_begin ()
     set_shortname( N_("VCD"))
     set_description( N_("VCD input") )
-    set_help( HELP_TEXT )
-    set_capability( "access", 0 )
+    set_capability( "access", 60 )
     set_callbacks( Open, Close )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
 
+    add_usage_hint( N_("[vcd:][device][#[title][,[chapter]]]") )
     add_shortcut( "vcd", "svcd" )
 vlc_module_end ()
 
@@ -63,7 +63,7 @@ vlc_module_end ()
 #define VCD_BLOCKS_ONCE 20
 #define VCD_DATA_ONCE   (VCD_BLOCKS_ONCE * VCD_DATA_SIZE)
 
-typedef struct
+struct access_sys_t
 {
     vcddev_t    *vcddev;                            /* vcd device descriptor */
     uint64_t    offset;
@@ -79,9 +79,9 @@ typedef struct
     int         i_current_title;
     unsigned    i_current_seekpoint;
     int         i_sector;                                  /* Current Sector */
-} access_sys_t;
+};
 
-static block_t *Block( stream_t *, bool * restrict);
+static block_t *Block( stream_t *, bool * );
 static int      Seek( stream_t *, uint64_t );
 static int      Control( stream_t *, int, va_list );
 static int      EntryPoints( stream_t * );
@@ -151,7 +151,7 @@ static int Open( vlc_object_t *p_this )
         p_sys->titles[i].seekpoints = NULL;
 
     /* We read the Table Of Content information */
-    p_sys->p_toc = ioctl_GetTOC( VLC_OBJECT(p_access), p_sys->vcddev );
+    p_sys->p_toc = ioctl_GetTOC( VLC_OBJECT(p_access), p_sys->vcddev, true );
     if( p_sys->p_toc == NULL )
     {
         msg_Err( p_access, "unable to count tracks" );
@@ -258,8 +258,8 @@ static int Control( stream_t *p_access, int i_query, va_list args )
 
         /* */
         case STREAM_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) = VLC_TICK_FROM_MS(
-                var_InheritInteger(p_access, "disc-caching") );
+            *va_arg( args, int64_t * ) = INT64_C(1000)
+                * var_InheritInteger(p_access, "disc-caching");
             break;
 
         /* */

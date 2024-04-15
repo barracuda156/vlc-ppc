@@ -2,6 +2,7 @@
  * chapters.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2004 VLC authors and VideoLAN
+ * $Id: adb7b88877881353b8d15c05ae116b7335f36f4b $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -27,8 +28,6 @@
 
 #include <functional>
 #include <algorithm>
-
-namespace mkv {
 
 chapter_item_c::~chapter_item_c()
 {
@@ -235,4 +234,3 @@ std::string chapter_edition_c::GetMainName() const
     return "";
 }
 
-} // namespace

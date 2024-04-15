@@ -2,6 +2,7 @@
  * equalizer.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 8813d0b5ec03268353058d6e3fc9f3f92d4413f2 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *
@@ -25,6 +26,8 @@
 #endif
 
 #include <vlc_common.h>
+#include <vlc_playlist.h>
+#include <vlc_input.h>
 #include <vlc_aout.h>
 #include "equalizer.hpp"
 #include "../utils/var_percent.hpp"
@@ -81,11 +84,10 @@ VariablePtr EqualizerBands::getBand( int band )
 void EqualizerBands::onUpdate( Subject<VarPercent> &rBand, void *arg )
 {
     (void)rBand; (void)arg;
-    vlc_player_t* player = vlc_playlist_GetPlayer( getPL() );
-    audio_output_t* pAout = vlc_player_aout_Hold( player );
+    audio_output_t *pAout = playlist_GetAout( getPL() );
 
     // Make sure we are not called from set()
-    if( !m_isUpdating )
+    if (!m_isUpdating)
     {
         float val;
         std::stringstream ss;
@@ -103,7 +105,7 @@ void EqualizerBands::onUpdate( Subject<VarPercent> &rBand, void *arg )
 
         std::string bands = ss.str();
 
-        config_PutPsz( "equalizer-bands", bands.c_str() );
+        config_PutPsz( getIntf(), "equalizer-bands", bands.c_str() );
         if( pAout )
         {
             // Update the audio output
@@ -112,7 +114,7 @@ void EqualizerBands::onUpdate( Subject<VarPercent> &rBand, void *arg )
     }
 
     if( pAout )
-        aout_Release( pAout );
+        vlc_object_release( pAout );
 }
 
 
@@ -125,8 +127,7 @@ EqualizerPreamp::EqualizerPreamp( intf_thread_t *pIntf ): VarPercent( pIntf )
 
 void EqualizerPreamp::set( float percentage, bool updateVLC )
 {
-    vlc_player_t* player = vlc_playlist_GetPlayer( getPL() );
-    audio_output_t* pAout = vlc_player_aout_Hold( player );
+    audio_output_t *pAout = playlist_GetAout( getPL() );
 
     VarPercent::set( percentage );
 
@@ -135,7 +136,7 @@ void EqualizerPreamp::set( float percentage, bool updateVLC )
     {
         float val = 40 * percentage - 20;
 
-        config_PutFloat( "equalizer-preamp", val );
+        config_PutFloat( getIntf(), "equalizer-preamp", val );
         if( pAout )
         {
             // Update the audio output
@@ -144,5 +145,5 @@ void EqualizerPreamp::set( float percentage, bool updateVLC )
     }
 
     if( pAout )
-        aout_Release( pAout );
+        vlc_object_release( pAout );
 }

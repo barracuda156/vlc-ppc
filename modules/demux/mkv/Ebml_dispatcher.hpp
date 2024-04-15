@@ -2,6 +2,7 @@
  * Ebml_dispatcher.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2016 VLC authors, VideoLAN, Videolabs SAS
+ * $Id: c58e5801ce20e111014fdfcafecfe4aec85c4c0a $
  *
  * Authors: Filip Roseen <filip@videolabs.io>
  *
@@ -74,14 +75,18 @@ namespace {
         if ( element == nullptr )
             return false;
 
-        EbmlProcessorEntry eb(static_cast<EbmlId const&> (*element), NULL);
+        EbmlProcessorEntry eb = EbmlProcessorEntry (
+          static_cast<EbmlId const&> (*element), NULL
+        );
 
         // --------------------------------------------------------------
         // Find the appropriate callback for the received EbmlElement
         // --------------------------------------------------------------
 
-        auto cit_end = _processors.cend();
-        auto cit     = std::lower_bound(_processors.cbegin(), cit_end, eb);
+        ProcessorContainer::const_iterator cit_end = _processors.end();
+        ProcessorContainer::const_iterator cit     = std::lower_bound (
+            _processors.begin(), cit_end, eb
+        );
 
         /* Check that the processor is valid and unique. */
         if (cit != cit_end &&

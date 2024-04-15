@@ -27,8 +27,6 @@
 # include "config.h"
 #endif
 
-#include <stdatomic.h>
-
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_codec.h>
@@ -42,32 +40,37 @@
 
 #include <shine/layer3.h>
 
-typedef struct
+struct encoder_sys_t
 {
     shine_t s;
     unsigned int samples_per_frame;
-    block_t *first, **lastp;
+    block_fifo_t *p_fifo;
 
     unsigned int i_buffer;
     uint8_t *p_buffer;
-} encoder_sys_t;
+};
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
 static int  OpenEncoder   ( vlc_object_t * );
-static void CloseEncoder  ( encoder_t * );
+static void CloseEncoder  ( vlc_object_t * );
 
 static block_t *EncodeFrame  ( encoder_t *, block_t * );
 
 vlc_module_begin();
+    set_category( CAT_INPUT );
     set_subcategory( SUBCAT_INPUT_ACODEC );
     set_description( N_("MP3 fixed point audio encoder") );
-    set_capability( "audio encoder", 50 );
-    set_callback( OpenEncoder );
+    set_capability( "encoder", 50 );
+    set_callbacks( OpenEncoder, CloseEncoder );
 vlc_module_end();
 
-static atomic_bool busy = ATOMIC_VAR_INIT(false);
+static struct
+{
+    bool busy;
+    vlc_mutex_t lock;
+} entrant = { false, VLC_STATIC_MUTEX, };
 
 static int OpenEncoder( vlc_object_t *p_this )
 {
@@ -97,18 +100,25 @@ static int OpenEncoder( vlc_object_t *p_this )
              p_enc->fmt_out.i_bitrate, p_enc->fmt_out.audio.i_rate,
              p_enc->fmt_out.audio.i_channels );
 
-    if( atomic_exchange(&busy, true) )
+    vlc_mutex_lock( &entrant.lock );
+    if( entrant.busy )
     {
         msg_Err( p_enc, "encoder already in progress" );
+        vlc_mutex_unlock( &entrant.lock );
         return VLC_EGENERIC;
     }
+    entrant.busy = true;
+    vlc_mutex_unlock( &entrant.lock );
 
     p_enc->p_sys = p_sys = calloc( 1, sizeof( *p_sys ) );
     if( !p_sys )
         goto enomem;
 
-    p_sys->first = NULL;
-    p_sys->lastp = &p_sys->first;
+    if( !( p_sys->p_fifo = block_FifoNew() ) )
+    {
+        free( p_sys );
+        goto enomem;
+    }
 
     shine_config_t cfg = {
         .wave = {
@@ -121,7 +131,6 @@ static int OpenEncoder( vlc_object_t *p_this )
     cfg.mpeg.bitr = p_enc->fmt_out.i_bitrate / 1000;
 
     if (shine_check_config(cfg.wave.samplerate, cfg.mpeg.bitr) == -1) {
-        atomic_store(&busy, false);
         msg_Err(p_enc, "Invalid bitrate %d\n", cfg.mpeg.bitr);
         free(p_sys);
         return VLC_EGENERIC;
@@ -130,19 +139,17 @@ static int OpenEncoder( vlc_object_t *p_this )
     p_sys->s = shine_initialise(&cfg);
     p_sys->samples_per_frame = shine_samples_per_pass(p_sys->s);
 
-    p_enc->fmt_in.i_codec = VLC_CODEC_S16N;
+    p_enc->pf_encode_audio = EncodeFrame;
+    p_enc->fmt_out.i_cat = AUDIO_ES;
 
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = CloseEncoder,
-        .encode_audio = EncodeFrame,
-    };
-    p_enc->ops = &ops;
+    p_enc->fmt_in.i_codec = VLC_CODEC_S16N;
 
     return VLC_SUCCESS;
 
 enomem:
-    atomic_store(&busy, false);
+    vlc_mutex_lock( &entrant.lock );
+    entrant.busy = false;
+    vlc_mutex_unlock( &entrant.lock );
     return VLC_ENOMEM;
 }
 
@@ -178,8 +185,7 @@ static block_t *GetPCM( encoder_t *p_enc, block_t *p_block )
 
         p_block->i_buffer -= p_sys->samples_per_frame * 4 - i_buffer;
 
-        *(p_sys->lastp) = p_pcm_block;
-        p_sys->lastp = &p_pcm_block->p_next;
+        block_FifoPut( p_sys->p_fifo, p_pcm_block );
     }
 
     /* We hadn't enough data to make a block, put it in standby */
@@ -209,15 +215,7 @@ static block_t *GetPCM( encoder_t *p_enc, block_t *p_block )
 
 buffered:
     /* and finally get a block back */
-    p_pcm_block = p_sys->first;
-
-    if( p_pcm_block != NULL ) {
-        p_sys->first = p_pcm_block->p_next;
-        if( p_pcm_block->p_next == NULL )
-            p_sys->lastp = &p_sys->first;
-    }
-
-    return p_pcm_block;
+    return block_FifoCount( p_sys->p_fifo ) > 0 ? block_FifoGet( p_sys->p_fifo ) : NULL;
 }
 
 static block_t *EncodeFrame( encoder_t *p_enc, block_t *p_block )
@@ -230,7 +228,7 @@ static block_t *EncodeFrame( encoder_t *p_enc, block_t *p_block )
     block_t *p_chain = NULL;
     unsigned int i_samples = p_block->i_buffer >> 2 /* s16l stereo */;
     vlc_tick_t start_date = p_block->i_pts;
-    start_date -= vlc_tick_from_samples(i_samples, p_enc->fmt_out.audio.i_rate);
+    start_date -= (vlc_tick_t)i_samples * (vlc_tick_t)1000000 / (vlc_tick_t)p_enc->fmt_out.audio.i_rate;
 
     VLC_UNUSED(p_enc);
 
@@ -262,8 +260,8 @@ static block_t *EncodeFrame( encoder_t *p_enc, block_t *p_block )
         memcpy( p_mp3_block->p_buffer, buf, written );
 
         /* date management */
-        p_mp3_block->i_length = vlc_tick_from_samples(p_sys->samples_per_frame,
-            p_enc->fmt_out.audio.i_rate);
+        p_mp3_block->i_length = p_sys->samples_per_frame * 1000000 /
+            p_enc->fmt_out.audio.i_rate;
 
         start_date += p_mp3_block->i_length;
         p_mp3_block->i_dts = p_mp3_block->i_pts = start_date;
@@ -277,9 +275,13 @@ static block_t *EncodeFrame( encoder_t *p_enc, block_t *p_block )
     return p_chain;
 }
 
-static void CloseEncoder( encoder_t *p_enc )
+static void CloseEncoder( vlc_object_t *p_this )
 {
-    encoder_sys_t *p_sys = p_enc->p_sys;
+    encoder_sys_t *p_sys = ((encoder_t*)p_this)->p_sys;
+
+    vlc_mutex_lock( &entrant.lock );
+    entrant.busy = false;
+    vlc_mutex_unlock( &entrant.lock );
 
     /* TODO: we should send the last PCM block padded with 0
      * But we don't know if other blocks will come before it's too late */
@@ -287,8 +289,7 @@ static void CloseEncoder( encoder_t *p_enc )
         free( p_sys->p_buffer );
 
     shine_close(p_sys->s);
-    atomic_store(&busy, false);
 
-    block_ChainRelease(p_sys->first);
+    block_FifoRelease( p_sys->p_fifo );
     free( p_sys );
 }

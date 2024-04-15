@@ -58,6 +58,7 @@ static int DecodeBlock  ( decoder_t *, block_t * );
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_description( N_("SVG video decoder") )
     set_capability( "video decoder", 100 )
@@ -65,22 +66,22 @@ vlc_module_begin ()
     add_shortcut( "svg" )
 
     /* svg options */
-    add_integer_with_range( "svg-width", -1, -1, 65535,
-                            TEXT_WIDTH, LONG_TEXT_WIDTH )
+    add_integer_with_range( "svg-width", -1, 1, 65535,
+                            TEXT_WIDTH, LONG_TEXT_WIDTH, false )
         change_safe()
-    add_integer_with_range( "svg-height", -1, -1, 65535,
-                            TEXT_HEIGHT, LONG_TEXT_HEIGHT )
+    add_integer_with_range( "svg-height", -1, 1, 65535,
+                            TEXT_HEIGHT, LONG_TEXT_HEIGHT, false )
         change_safe()
 
-    add_float( "svg-scale", -1.0, TEXT_SCALE, LONG_TEXT_SCALE )
+    add_float( "svg-scale", -1.0, TEXT_SCALE, LONG_TEXT_SCALE, false )
 vlc_module_end ()
 
-typedef struct
+struct decoder_sys_t
 {
     int32_t i_width;
     int32_t i_height;
     double  f_scale;
-} decoder_sys_t;
+};
 
 /*****************************************************************************
  * OpenDecoder: probe the decoder and return score
@@ -89,7 +90,7 @@ static int OpenDecoder( vlc_object_t *p_this )
 {
     decoder_t *p_dec = (decoder_t*)p_this;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_SVG )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_SVG )
         return VLC_EGENERIC;
 
     decoder_sys_t *p_sys = malloc( sizeof(decoder_sys_t) );
@@ -243,7 +244,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
         goto done;
     }
 
-    p_pic->date = p_block->i_pts != VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
+    p_pic->date = p_block->i_pts > VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
 
 done:
     if( rsvg )

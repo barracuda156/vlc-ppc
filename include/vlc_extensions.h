@@ -2,6 +2,7 @@
  * vlc_extensions.h: Extensions (meta data, web information, ...)
  *****************************************************************************
  * Copyright (C) 2009-2010 VideoLAN and authors
+ * $Id: 8523fe6c4ce8a644a68db95520bf16f4c00ddb75 $
  *
  * Authors: Jean-Philippe André < jpeg # videolan.org >
  *
@@ -29,18 +30,10 @@
 /* Structures */
 typedef struct extensions_manager_sys_t extensions_manager_sys_t;
 typedef struct extensions_manager_t extensions_manager_t;
-struct vlc_player_t;
-struct vlc_logger;
+typedef struct extension_sys_t extension_sys_t;
 
 /** Extension descriptor: name, title, author, ... */
 typedef struct extension_t {
-    void *p_sys;              /**< Reserved for the manager module */
-
-    /**
-     * The LibVLC logger to use for the extension.
-     */
-    struct vlc_logger *logger;
-
     /* Below, (ro) means read-only for the GUI */
     char *psz_name;           /**< Real name of the extension (ro) */
 
@@ -52,22 +45,23 @@ typedef struct extension_t {
     char *psz_shortdescription; /**< Short description (eg. 1 line)  (ro) */
     char *p_icondata;         /**< Embedded data for the icon (ro) */
     int   i_icondata_size;    /**< Size of that data */
+
+    extension_sys_t *p_sys;   /**< Reserved for the manager module */
 } extension_t;
 
 /** Extensions manager object */
 struct extensions_manager_t
 {
-    struct vlc_object_t obj;
+    VLC_COMMON_MEMBERS
 
     module_t *p_module;                /**< Extensions manager module */
-    void *p_sys;              /**< Reserved for the module */
-    struct vlc_player_t *player;
+    extensions_manager_sys_t *p_sys;   /**< Reserved for the module */
 
     DECL_ARRAY(extension_t*) extensions; /**< Array of extension descriptors */
     vlc_mutex_t lock;                  /**< A lock for the extensions array */
 
     /** Control, see extension_Control */
-    int (*pf_control)(extensions_manager_t*, int, extension_t *, va_list);
+    int ( *pf_control ) ( extensions_manager_t*, int, va_list );
 };
 
 /* Control commands */
@@ -82,7 +76,7 @@ enum
     EXTENSION_TRIGGER_ONLY,   /**< arg1: extension_t*, arg2: bool* */
     EXTENSION_TRIGGER,        /**< arg1: extension_t* */
     EXTENSION_TRIGGER_MENU,   /**< arg1: extension_t*, int (uint16_t) */
-    EXTENSION_SET_INPUT,      /**< arg1: extension_t*, arg2 (input_item_t*) */
+    EXTENSION_SET_INPUT,      /**< arg1: extension_t*, arg2 (input_thread_t*) */
     EXTENSION_PLAYING_CHANGED, /**< arg1: extension_t*, arg2 int( playing status ) */
     EXTENSION_META_CHANGED,   /**< arg1: extension_t*, arg2 (input_item_t*) */
 };
@@ -92,12 +86,11 @@ enum
  * Every GUI -> extension command will go through this function.
  **/
 static inline int extension_Control( extensions_manager_t *p_mgr,
-                                     int i_control,
-                                     extension_t *ext, ... )
+                                     int i_control, ... )
 {
     va_list args;
-    va_start(args, ext);
-    int i_ret = p_mgr->pf_control(p_mgr, i_control, ext, args);
+    va_start( args, i_control );
+    int i_ret = p_mgr->pf_control( p_mgr, i_control, args );
     va_end( args );
     return i_ret;
 }
@@ -106,9 +99,10 @@ static inline int extension_Control( extensions_manager_t *p_mgr,
  * Helper for extension_HasMenu, extension_IsActivated...
  * Do not use.
  **/
-static inline bool
-vlc_extension_GetBool( extensions_manager_t *p_mgr, extension_t *p_ext,
-                       int i_flag, bool b_default )
+static inline bool __extension_GetBool( extensions_manager_t *p_mgr,
+                                        extension_t *p_ext,
+                                        int i_flag,
+                                        bool b_default )
 {
     bool b = b_default;
     int i_ret = extension_Control( p_mgr, i_flag, p_ext, &b );
@@ -132,11 +126,11 @@ vlc_extension_GetBool( extensions_manager_t *p_mgr, extension_t *p_ext,
 
 /** Is this extension activated? */
 #define extension_IsActivated( mgr, ext ) \
-        vlc_extension_GetBool( mgr, ext, EXTENSION_IS_ACTIVATED, false )
+        __extension_GetBool( mgr, ext, EXTENSION_IS_ACTIVATED, false )
 
 /** Does this extension have a sub-menu? */
 #define extension_HasMenu( mgr, ext ) \
-        vlc_extension_GetBool( mgr, ext, EXTENSION_HAS_MENU, false )
+        __extension_GetBool( mgr, ext, EXTENSION_HAS_MENU, false )
 
 /** Get this extension's sub-menu */
 static inline int extension_GetMenu( extensions_manager_t *p_mgr,
@@ -156,11 +150,11 @@ static inline int extension_TriggerMenu( extensions_manager_t *p_mgr,
 }
 
 /** Trigger an entry of the extension menu */
-/* TODO: use player */
 static inline int extension_SetInput( extensions_manager_t *p_mgr,
-                                      extension_t *p_ext, input_item_t *p_item )
+                                        extension_t *p_ext,
+                                        struct input_thread_t *p_input )
 {
-    return extension_Control( p_mgr, EXTENSION_SET_INPUT, p_ext, p_item );
+    return extension_Control( p_mgr, EXTENSION_SET_INPUT, p_ext, p_input );
 }
 
 static inline int extension_PlayingChanged( extensions_manager_t *p_mgr,
@@ -179,7 +173,7 @@ static inline int extension_MetaChanged( extensions_manager_t *p_mgr,
 /** Can this extension only be triggered but not activated?
     Not compatible with HasMenu */
 #define extension_TriggerOnly( mgr, ext ) \
-        vlc_extension_GetBool( mgr, ext, EXTENSION_TRIGGER_ONLY, false )
+        __extension_GetBool( mgr, ext, EXTENSION_TRIGGER_ONLY, false )
 
 
 /*****************************************************************************

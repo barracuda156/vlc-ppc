@@ -2,6 +2,7 @@
  * vsxu.cpp: visualization module wrapper for Vovoid VSXu
  *****************************************************************************
  * Copyright © 2009-2012 the VideoLAN team, Vovoid Media Technologies
+ * $Id: 86a8db8400ee2afb7f163b638b38559b75495372 $
  *
  * Authors: Rémi Duraffort <ivoire@videolan.org>
  *          Laurent Aimar
@@ -31,7 +32,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
-#include <vlc_window.h>
+#include <vlc_vout_window.h>
 #include <vlc_opengl.h>
 #include <vlc_filter.h>
 
@@ -46,7 +47,7 @@
  * Module descriptor
  *****************************************************************************/
 static int  Open         ( vlc_object_t * );
-static void Close        ( filter_t * );
+static void Close        ( vlc_object_t * );
 
 #define WIDTH_TEXT N_("Video width")
 #define WIDTH_LONGTEXT N_("The width of the video window, in pixels.")
@@ -58,18 +59,20 @@ vlc_module_begin ()
     set_shortname( N_("vsxu"))
     set_description( N_("vsxu") )
     set_capability( "visualization", 0 )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_VISUAL )
-    add_integer( "vsxu-width", 1280, WIDTH_TEXT, WIDTH_LONGTEXT )
-    add_integer( "vsxu-height", 800, HEIGHT_TEXT, HEIGHT_LONGTEXT )
+    add_integer( "vsxu-width", 1280, WIDTH_TEXT, WIDTH_LONGTEXT,
+                 false )
+    add_integer( "vsxu-height", 800, HEIGHT_TEXT, HEIGHT_LONGTEXT,
+                 false )
     add_shortcut( "vsxu" )
-    set_callback( Open )
+    set_callbacks( Open, Close )
 vlc_module_end ()
 
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-namespace {
 
 struct filter_sys_t
 {
@@ -89,19 +92,8 @@ struct filter_sys_t
     bool b_quit;
 };
 
-} // namespace
-
 static block_t *DoWork( filter_t *, block_t * );
 static void *Thread( void * );
-
-static const struct FilterOperationInitializer {
-    struct vlc_filter_operations ops {};
-    FilterOperationInitializer()
-    {
-        ops.filter_audio = DoWork;
-        ops.close = Close;
-    };
-} filter_ops;
 
 /**
  * Open the module
@@ -127,19 +119,19 @@ static int Open( vlc_object_t * p_this )
     p_sys->vsxu_cyclic_buffer = new cyclic_block_queue();
 
     /* Create the openGL provider */
-    vlc_window_cfg_t cfg;
+    vout_window_cfg_t cfg;
 
     memset( &cfg, 0, sizeof(cfg) );
-    cfg.is_decorated = true;
     cfg.width = var_InheritInteger( p_filter, "vsxu-width" );
     cfg.height = var_InheritInteger( p_filter, "vsxu-height" );
 
-    p_sys->gl = vlc_gl_surface_Create( VLC_OBJECT(p_filter), &cfg, NULL, NULL);
+    p_sys->gl = vlc_gl_surface_Create( VLC_OBJECT(p_filter), &cfg, NULL );
     if( p_sys->gl == NULL )
         goto error;
 
     /* Create the thread */
-    if( vlc_clone( &p_sys->thread, Thread, p_filter ) )
+    if( vlc_clone( &p_sys->thread, Thread, p_filter,
+                   VLC_THREAD_PRIORITY_LOW ) )
     {
         vlc_gl_surface_Destroy( p_sys->gl );
         goto error;
@@ -147,11 +139,13 @@ static int Open( vlc_object_t * p_this )
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
-    p_filter->ops = &filter_ops.ops;
+    p_filter->pf_audio_filter = DoWork;
 
     return VLC_SUCCESS;
 
 error:
+    vlc_mutex_destroy( &p_sys->cyclic_block_mutex );
+    vlc_mutex_destroy( &p_sys->lock );
     free( p_sys );
     return VLC_EGENERIC;
 }
@@ -160,8 +154,9 @@ error:
  * Close the module
  * @param p_this: the filter object
  */
-static void Close( filter_t *p_filter )
+static void Close( vlc_object_t *p_this )
 {
+    filter_t  *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     vlc_mutex_lock( &p_sys->lock );
@@ -172,6 +167,8 @@ static void Close( filter_t *p_filter )
 
     /* Free the resources */
     vlc_gl_surface_Destroy( p_sys->gl );
+    vlc_mutex_destroy( &p_sys->cyclic_block_mutex );
+    vlc_mutex_destroy( &p_sys->lock );
     delete p_sys->vsxu_cyclic_buffer;
     free( p_sys );
 }
@@ -234,8 +231,6 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
  */
 static void *Thread( void *p_data )
 {
-    vlc_thread_set_name("vlc-vsxu");
-
     filter_t  *p_filter = (filter_t*)p_data;
     filter_sys_t *p_sys = p_filter->p_sys;
     vlc_gl_t *gl = p_sys->gl;

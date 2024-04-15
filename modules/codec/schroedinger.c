@@ -37,7 +37,6 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_codec.h>
-#include <vlc_timestamp_helper.h>
 
 #include <schroedinger/schro.h>
 
@@ -47,7 +46,7 @@
 static int        OpenDecoder  ( vlc_object_t * );
 static void       CloseDecoder ( vlc_object_t * );
 static int        OpenEncoder  ( vlc_object_t * );
-static void       CloseEncoder ( encoder_t * );
+static void       CloseEncoder ( vlc_object_t * );
 
 #define ENC_CFG_PREFIX "sout-schro-"
 
@@ -100,8 +99,8 @@ static const char *enc_gop_structure_list[] = {
 static const char *enc_gop_structure_list_text[] = {
   N_("No fixed gop structure. A picture can be intra or inter and refer to previous or future pictures."),
   N_("I-frame only sequence"),
-  N_("Inter pictures refer to previous pictures only"),
-  N_("Inter pictures refer to previous pictures only"),
+  N_("Inter pictures refere to previous pictures only"),
+  N_("Inter pictures refere to previous pictures only"),
   N_("Inter pictures can refer to previous or future pictures"),
   N_("Inter pictures can refer to previous or future pictures")
 };
@@ -358,6 +357,7 @@ static const char *const ppsz_enc_options[] = {
 /* Module declaration */
 
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_shortname( "Schroedinger" )
     set_description( N_("Dirac video decoder using libschroedinger") )
@@ -369,153 +369,153 @@ vlc_module_begin ()
     add_submodule()
     set_section( N_("Encoding") , NULL )
     set_description( N_("Dirac video encoder using libschroedinger") )
-    set_capability( "video encoder", 110 )
-    set_callback( OpenEncoder )
+    set_capability( "encoder", 110 )
+    set_callbacks( OpenEncoder, CloseEncoder )
     add_shortcut( "schroedinger", "schro" )
 
     add_string( ENC_CFG_PREFIX ENC_RATE_CONTROL, NULL,
-                 ENC_RATE_CONTROL_TEXT, ENC_RATE_CONTROL_LONGTEXT )
+                 ENC_RATE_CONTROL_TEXT, ENC_RATE_CONTROL_LONGTEXT, false )
     change_string_list( enc_rate_control_list, enc_rate_control_list_text )
 
     add_float( ENC_CFG_PREFIX ENC_QUALITY, -1.,
-               ENC_QUALITY_TEXT, ENC_QUALITY_LONGTEXT )
+               ENC_QUALITY_TEXT, ENC_QUALITY_LONGTEXT, false )
     change_float_range(-1., 10.);
 
     add_float( ENC_CFG_PREFIX ENC_NOISE_THRESHOLD, -1.,
-               ENC_NOISE_THRESHOLD_TEXT, ENC_NOISE_THRESHOLD_LONGTEXT )
+               ENC_NOISE_THRESHOLD_TEXT, ENC_NOISE_THRESHOLD_LONGTEXT, false )
     change_float_range(-1., 100.);
 
     add_integer( ENC_CFG_PREFIX ENC_BITRATE, -1,
-                 ENC_BITRATE_TEXT, ENC_BITRATE_LONGTEXT )
+                 ENC_BITRATE_TEXT, ENC_BITRATE_LONGTEXT, false )
     change_integer_range(-1, INT_MAX);
 
     add_integer( ENC_CFG_PREFIX ENC_MAX_BITRATE, -1,
-                 ENC_MAX_BITRATE_TEXT, ENC_MAX_BITRATE_LONGTEXT )
+                 ENC_MAX_BITRATE_TEXT, ENC_MAX_BITRATE_LONGTEXT, false )
     change_integer_range(-1, INT_MAX);
 
     add_integer( ENC_CFG_PREFIX ENC_MIN_BITRATE, -1,
-                 ENC_MIN_BITRATE_TEXT, ENC_MIN_BITRATE_LONGTEXT )
+                 ENC_MIN_BITRATE_TEXT, ENC_MIN_BITRATE_LONGTEXT, false )
     change_integer_range(-1, INT_MAX);
 
     add_string( ENC_CFG_PREFIX ENC_GOP_STRUCTURE, NULL,
-                 ENC_GOP_STRUCTURE_TEXT, ENC_GOP_STRUCTURE_LONGTEXT )
+                 ENC_GOP_STRUCTURE_TEXT, ENC_GOP_STRUCTURE_LONGTEXT, false )
     change_string_list( enc_gop_structure_list, enc_gop_structure_list_text )
 
     add_integer( ENC_CFG_PREFIX ENC_AU_DISTANCE, -1,
-                 ENC_AU_DISTANCE_TEXT, ENC_AU_DISTANCE_LONGTEXT )
+                 ENC_AU_DISTANCE_TEXT, ENC_AU_DISTANCE_LONGTEXT, false )
     change_integer_range(-1, INT_MAX);
 
     add_string( ENC_CFG_PREFIX ENC_CHROMAFMT, "420",
-                ENC_CHROMAFMT_TEXT, ENC_CHROMAFMT_LONGTEXT )
+                ENC_CHROMAFMT_TEXT, ENC_CHROMAFMT_LONGTEXT, false )
     change_string_list( enc_chromafmt_list, enc_chromafmt_list_text )
 
     add_string( ENC_CFG_PREFIX ENC_CODINGMODE, "auto",
-                ENC_CODINGMODE_TEXT, ENC_CODINGMODE_LONGTEXT )
+                ENC_CODINGMODE_TEXT, ENC_CODINGMODE_LONGTEXT, false )
     change_string_list( enc_codingmode_list, enc_codingmode_list_text )
 
     add_string( ENC_CFG_PREFIX ENC_MVPREC, NULL,
-                ENC_MVPREC_TEXT, ENC_MVPREC_LONGTEXT )
+                ENC_MVPREC_TEXT, ENC_MVPREC_LONGTEXT, false )
     change_string_list( enc_mvprec_list, enc_mvprec_list )
 
     /* advanced option only */
     add_string( ENC_CFG_PREFIX ENC_MCBLK_SIZE, NULL,
-                ENC_MCBLK_SIZE_TEXT, NULL )
+                ENC_MCBLK_SIZE_TEXT, ENC_MCBLK_SIZE_TEXT, true )
     change_string_list( enc_block_size_list, enc_block_size_list_text )
 
 
     /* advanced option only */
     add_string( ENC_CFG_PREFIX ENC_MCBLK_OVERLAP, NULL,
-                ENC_MCBLK_OVERLAP_TEXT, NULL )
+                ENC_MCBLK_OVERLAP_TEXT, ENC_MCBLK_OVERLAP_TEXT, true )
     change_string_list( enc_block_overlap_list, enc_block_overlap_list_text )
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_ME_COMBINED, -1,
-              ENC_ME_COMBINED_TEXT, ENC_ME_COMBINED_LONGTEXT )
+              ENC_ME_COMBINED_TEXT, ENC_ME_COMBINED_LONGTEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_ME_HIERARCHICAL, -1,
-                 ENC_ME_HIERARCHICAL_TEXT, NULL )
+                 ENC_ME_HIERARCHICAL_TEXT, ENC_ME_HIERARCHICAL_TEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_ME_DOWNSAMPLE_LEVELS, -1,
-                 ENC_ME_DOWNSAMPLE_LEVELS_TEXT, ENC_ME_DOWNSAMPLE_LEVELS_LONGTEXT )
+                 ENC_ME_DOWNSAMPLE_LEVELS_TEXT, ENC_ME_DOWNSAMPLE_LEVELS_LONGTEXT, true )
     change_integer_range(-1, 8 );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_ME_GLOBAL_MOTION, -1,
-                 ENC_ME_GLOBAL_MOTION_TEXT, NULL )
+                 ENC_ME_GLOBAL_MOTION_TEXT, ENC_ME_GLOBAL_MOTION_TEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_ME_PHASECORR, -1,
-                 ENC_ME_PHASECORR_TEXT, NULL )
+                 ENC_ME_PHASECORR_TEXT, ENC_ME_PHASECORR_TEXT, true )
     change_integer_range(-1, 1 );
 
     add_string( ENC_CFG_PREFIX ENC_DWTINTRA, NULL,
-                ENC_DWTINTRA_TEXT, NULL )
+                ENC_DWTINTRA_TEXT, ENC_DWTINTRA_TEXT, false )
     change_string_list( enc_wavelet_list, enc_wavelet_list_text )
 
     add_string( ENC_CFG_PREFIX ENC_DWTINTER, NULL,
-                ENC_DWTINTER_TEXT, NULL )
+                ENC_DWTINTER_TEXT, ENC_DWTINTER_TEXT, false )
     change_string_list( enc_wavelet_list, enc_wavelet_list_text )
 
     add_integer( ENC_CFG_PREFIX ENC_DWTDEPTH, -1,
-                 ENC_DWTDEPTH_TEXT, ENC_DWTDEPTH_LONGTEXT )
+                 ENC_DWTDEPTH_TEXT, ENC_DWTDEPTH_LONGTEXT, false )
     change_integer_range(-1, SCHRO_LIMIT_ENCODER_TRANSFORM_DEPTH );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_MULTIQUANT, -1,
-                 ENC_MULTIQUANT_TEXT, ENC_MULTIQUANT_LONGTEXT )
+                 ENC_MULTIQUANT_TEXT, ENC_MULTIQUANT_LONGTEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_string( ENC_CFG_PREFIX ENC_SCBLK_SIZE, NULL,
-                ENC_SCBLK_SIZE_TEXT, NULL )
+                ENC_SCBLK_SIZE_TEXT, ENC_SCBLK_SIZE_TEXT, true )
     change_string_list( enc_codeblock_size_list, enc_codeblock_size_list_text )
 
     add_string( ENC_CFG_PREFIX ENC_PREFILTER, NULL,
-                ENC_PREFILTER_TEXT, ENC_PREFILTER_LONGTEXT )
+                ENC_PREFILTER_TEXT, ENC_PREFILTER_LONGTEXT, false )
     change_string_list( enc_filtering_list, enc_filtering_list_text )
 
     add_float( ENC_CFG_PREFIX ENC_PREFILTER_STRENGTH, -1.,
-                 ENC_PREFILTER_STRENGTH_TEXT, ENC_PREFILTER_STRENGTH_LONGTEXT )
+                 ENC_PREFILTER_STRENGTH_TEXT, ENC_PREFILTER_STRENGTH_LONGTEXT, false )
     change_float_range(-1., 100.0);
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_SCD, -1,
-                 ENC_SCD_TEXT, NULL )
+                 ENC_SCD_TEXT, ENC_SCD_TEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_string( ENC_CFG_PREFIX ENC_PWT, NULL,
-                ENC_PWT_TEXT, NULL )
+                ENC_PWT_TEXT, ENC_PWT_TEXT, true )
     change_string_list( enc_perceptual_weighting_list, enc_perceptual_weighting_list )
 
     /* advanced option only */
     add_float( ENC_CFG_PREFIX ENC_PDIST, -1,
-               ENC_PDIST_TEXT, ENC_PDIST_LONGTEXT )
+               ENC_PDIST_TEXT, ENC_PDIST_LONGTEXT, true )
     change_float_range(-1., 100.);
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_NOAC, -1,
-              ENC_NOAC_TEXT, ENC_NOAC_LONGTEXT )
+              ENC_NOAC_TEXT, ENC_NOAC_LONGTEXT, true )
     change_integer_range(-1, 1 );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_HSLICES, -1,
-                 ENC_HSLICES_TEXT, ENC_HSLICES_LONGTEXT )
+                 ENC_HSLICES_TEXT, ENC_HSLICES_LONGTEXT, true )
     change_integer_range(-1, INT_MAX );
 
     /* advanced option only */
     add_integer( ENC_CFG_PREFIX ENC_VSLICES, -1,
-                 ENC_VSLICES_TEXT, ENC_VSLICES_LONGTEXT )
+                 ENC_VSLICES_TEXT, ENC_VSLICES_LONGTEXT, true )
     change_integer_range(-1, INT_MAX );
 
     /* advanced option only */
     add_string( ENC_CFG_PREFIX ENC_FORCE_PROFILE, NULL,
-                ENC_FORCE_PROFILE_TEXT, NULL )
+                ENC_FORCE_PROFILE_TEXT, ENC_FORCE_PROFILE_TEXT, true )
     change_string_list( enc_profile_list, enc_profile_list_text )
 
 vlc_module_end ()
@@ -536,7 +536,7 @@ struct picture_free_t
 /*****************************************************************************
  * decoder_sys_t : Schroedinger decoder descriptor
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Dirac properties
@@ -545,7 +545,7 @@ typedef struct
     vlc_tick_t i_frame_pts_delta;
     SchroDecoder *p_schro;
     SchroVideoFormat *p_format;
-} decoder_sys_t;
+};
 
 /*****************************************************************************
  * OpenDecoder: probe the decoder and return score
@@ -556,7 +556,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_sys_t *p_sys;
     SchroDecoder *p_schro;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_DIRAC )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_DIRAC )
     {
         return VLC_EGENERIC;
     }
@@ -603,7 +603,7 @@ static void SetVideoFormat( decoder_t *p_dec )
     p_sys->p_format = schro_decoder_get_video_format(p_sys->p_schro);
     if( p_sys->p_format == NULL ) return;
 
-    p_sys->i_frame_pts_delta = VLC_TICK_FROM_SEC(1)
+    p_sys->i_frame_pts_delta = CLOCK_FREQ
                             * p_sys->p_format->frame_rate_denominator
                             / p_sys->p_format->frame_rate_numerator;
 
@@ -782,7 +782,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
         p_schrobuffer = schro_buffer_new_with_data( p_block->p_buffer, p_block->i_buffer );
         p_schrobuffer->free = SchroBufferFree;
         p_schrobuffer->priv = p_block;
-        if( p_block->i_pts != VLC_TICK_INVALID ) {
+        if( p_block->i_pts > VLC_TICK_INVALID ) {
             vlc_tick_t *p_pts = malloc( sizeof(*p_pts) );
             if( p_pts ) {
                 *p_pts = p_block->i_pts;
@@ -841,10 +841,10 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
             if( p_tag )
             {
                 /* free is handled by schro_frame_unref */
-                p_pic->date = *(vlc_tick_t*) p_tag->value;
+                p_pic->date = *(mtime_t*) p_tag->value;
                 schro_tag_free( p_tag );
             }
-            else if( p_sys->i_lastpts != VLC_TICK_INVALID )
+            else if( p_sys->i_lastpts > VLC_TICK_INVALID )
             {
                 /* NB, this shouldn't happen since the packetizer does a
                  * very thorough job of inventing timestamps.  The
@@ -891,7 +891,7 @@ struct picture_pts_t
  * encoder_sys_t : Schroedinger encoder descriptor
  *****************************************************************************/
 #define SCHRO_PTS_TLB_SIZE 256
-typedef struct
+struct encoder_sys_t
 {
     /*
      * Schro properties
@@ -902,17 +902,17 @@ typedef struct
     bool b_auto_field_coding;
 
     uint32_t i_input_picnum;
-    timestamp_fifo_t *p_dts_fifo;
+    block_fifo_t *p_dts_fifo;
 
     block_t *p_chain;
 
     struct picture_pts_t pts_tlb[SCHRO_PTS_TLB_SIZE];
     vlc_tick_t i_pts_offset;
-    vlc_tick_t i_field_duration;
+    vlc_tick_t i_field_time;
 
     bool b_eos_signalled;
     bool b_eos_pulled;
-} encoder_sys_t;
+};
 
 static struct
 {
@@ -994,10 +994,10 @@ static vlc_tick_t GetPicturePTS( encoder_t *p_enc, uint32_t u_pnum )
     }
 
     msg_Err( p_enc, "Could not retrieve PTS for picture %u", u_pnum );
-    return VLC_TICK_INVALID;
+    return 0;
 }
 
-static inline bool SchroSetEnum( encoder_t *p_enc, int i_list_size, const char *list[],
+static inline bool SchroSetEnum( const encoder_t *p_enc, int i_list_size, const char *list[],
                   const char *psz_name,  const char *psz_name_text,  const char *psz_value)
 {
     encoder_sys_t *p_sys = p_enc->p_sys;
@@ -1092,12 +1092,13 @@ static int OpenEncoder( vlc_object_t *p_this )
         return VLC_ENOMEM;
 
     p_enc->p_sys = p_sys;
+    p_enc->pf_encode_video = Encode;
     p_enc->fmt_out.i_codec = VLC_CODEC_DIRAC;
     p_enc->fmt_out.i_cat = VIDEO_ES;
 
-    if( ( p_sys->p_dts_fifo = timestamp_FifoNew(32) ) == NULL )
+    if( ( p_sys->p_dts_fifo = block_FifoNew() ) == NULL )
     {
-        CloseEncoder( p_enc );
+        CloseEncoder( p_this );
         return VLC_ENOMEM;
     }
 
@@ -1299,16 +1300,9 @@ static int OpenEncoder( vlc_object_t *p_this )
 
     p_sys->started = 0;
 
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = CloseEncoder,
-        .encode_video = Encode,
-    };
-    p_enc->ops = &ops;
-
     return VLC_SUCCESS;
 error:
-    CloseEncoder( p_enc );
+    CloseEncoder( p_this );
     return VLC_EGENERIC;
 }
 
@@ -1461,17 +1455,16 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
             }
         }
 
-        date_Init( &date, p_enc->fmt_in.video.i_frame_rate * 2, p_enc->fmt_in.video.i_frame_rate_base );
-        date_Set( &date, VLC_TICK_0 );
+        date_Init( &date, p_enc->fmt_in.video.i_frame_rate, p_enc->fmt_in.video.i_frame_rate_base );
         /* FIXME - Unlike dirac-research codec Schro doesn't have a function that returns the delay in pics yet.
          *   Use a default of 1
          */
-        date_Increment( &date, 2 /* 2 fields, 1 frame */ );
-        p_sys->i_pts_offset = date_Get( &date ) - VLC_TICK_0;
+        date_Increment( &date, 1 );
+        p_sys->i_pts_offset = date_Get( &date );
         if( schro_encoder_setting_get_double( p_sys->p_schro, "interlaced_coding" ) > 0.0 ) {
-            date_Set( &date, VLC_TICK_0 );
-            date_Increment( &date, 1 /* field */ );
-            p_sys->i_field_duration = date_Get( &date ) - VLC_TICK_0;
+            date_Set( &date, 0 );
+            date_Increment( &date, 1);
+            p_sys->i_field_time = date_Get( &date ) / 2;
         }
 
         schro_video_format_set_std_signal_range( p_sys->p_format, SCHRO_SIGNAL_RANGE_8BIT_VIDEO );
@@ -1499,16 +1492,26 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
 
         /* store dts in a queue, so that they appear in order in
          * coded order */
-        timestamp_FifoPut( p_sys->p_dts_fifo, p_pic->date - p_sys->i_pts_offset );
+        p_block = block_Alloc( 1 );
+        if( !p_block )
+            return NULL;
+        p_block->i_dts = p_pic->date - p_sys->i_pts_offset;
+        block_FifoPut( p_sys->p_dts_fifo, p_block );
+        p_block = NULL;
 
         /* for field coding mode, insert an extra value into both the
          * pts lookaside buffer and dts queue, offset to correspond
          * to a one field delay. */
         if( schro_encoder_setting_get_double( p_sys->p_schro, "interlaced_coding" ) > 0.0 ) {
-            StorePicturePTS( p_enc, p_sys->i_input_picnum, p_pic->date + p_sys->i_field_duration );
+            StorePicturePTS( p_enc, p_sys->i_input_picnum, p_pic->date + p_sys->i_field_time );
             p_sys->i_input_picnum++;
 
-            timestamp_FifoPut( p_sys->p_dts_fifo, p_pic->date - p_sys->i_pts_offset + p_sys->i_field_duration );
+            p_block = block_Alloc( 1 );
+            if( !p_block )
+                return NULL;
+            p_block->i_dts = p_pic->date - p_sys->i_pts_offset + p_sys->i_field_time;
+            block_FifoPut( p_sys->p_dts_fifo, p_block );
+            p_block = NULL;
         }
     }
 
@@ -1569,8 +1572,10 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
             }
 
             if( ReadDiracPictureNumber( &u_pic_num, p_block ) ) {
-                p_block->i_dts = timestamp_FifoGet( p_sys->p_dts_fifo );
-                p_block->i_pts = GetPicturePTS( p_enc, u_pic_num );
+                block_t *p_dts_block = block_FifoGet( p_sys->p_dts_fifo );
+                p_block->i_dts = p_dts_block->i_dts;
+                   p_block->i_pts = GetPicturePTS( p_enc, u_pic_num );
+                block_Release( p_dts_block );
                 block_ChainAppend( &p_output_chain, p_block );
             } else {
                 /* End of sequence */
@@ -1589,8 +1594,9 @@ static block_t *Encode( encoder_t *p_enc, picture_t *p_pic )
 /*****************************************************************************
  * CloseEncoder: Schro encoder destruction
  *****************************************************************************/
-static void CloseEncoder( encoder_t *p_enc )
+static void CloseEncoder( vlc_object_t *p_this )
 {
+    encoder_t *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys = p_enc->p_sys;
 
     /* Free the encoder resources */
@@ -1600,11 +1606,9 @@ static void CloseEncoder( encoder_t *p_enc )
     free( p_sys->p_format );
 
     if( p_sys->p_dts_fifo )
-        timestamp_FifoRelease( p_sys->p_dts_fifo );
+        block_FifoRelease( p_sys->p_dts_fifo );
 
     block_ChainRelease( p_sys->p_chain );
 
     free( p_sys );
-    /* We need to reset p_sys since CloseEncoder is also called during error. */
-    p_enc->p_sys = NULL;
 }

@@ -97,7 +97,7 @@ stream_t * AbstractChunksSourceStream::makeStream()
         p_stream->pf_read = read_Callback;
         p_stream->pf_readdir = nullptr;
         p_stream->pf_seek = seek_Callback;
-        p_stream->p_sys = this;
+        p_stream->p_sys = reinterpret_cast<stream_sys_t*>(this);
     }
     return p_stream;
 }
@@ -229,6 +229,7 @@ ssize_t BufferedChunksSourceStream::Read(uint8_t *buf, size_t i_toread)
         return i_read;
 
     i_bytestream_offset += i_read;
+    i_toread -= i_read;
 
     if(i_bytestream_offset > MAX_BACKEND)
     {

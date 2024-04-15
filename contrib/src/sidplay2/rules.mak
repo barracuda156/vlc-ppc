@@ -23,9 +23,6 @@ sidplay-libs: sidplay-libs-$(SID_VERSION).tar.gz .sum-sidplay2
 	$(APPLY) $(SRC)/sidplay2/sidplay2-smartprt.patch
 	$(APPLY) $(SRC)/sidplay2/sidplay2-noutils.patch
 	$(APPLY) $(SRC)/sidplay2/sidplay2-string.patch
-	$(APPLY) $(SRC)/sidplay2/sidplay-fix-ln-s.patch
-	$(APPLY) $(SRC)/sidplay2/sidplay2-resid-dependency.patch
-	$(APPLY) $(SRC)/sidplay2/sidplay2-char-cast.patch
 	$(APPLY) $(SRC)/sidplay2/sidplay2-fix-overflow.patch
 	$(MOVE)
 
@@ -42,7 +39,6 @@ sidplay-libs: sidplay-libs-$(SID_VERSION).tar.gz .sum-sidplay2
 		(cd $</$$d && $(AUTORECONF) -fiv -I unix $(ACLOCAL_AMFLAGS)) || exit $$? ; \
 	done
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
-	$(MAKE) -C $<
-	$(MAKE) -C $< install
+	cd $< && $(MAKE) install
 	cp -- $(PREFIX)/lib/sidplay/builders/* "$(PREFIX)/lib/"
 	touch $@

@@ -2,6 +2,7 @@
  * adpcm.c : adpcm variant audio decoder
  *****************************************************************************
  * Copyright (C) 2001, 2002 VLC authors and VideoLAN
+ * $Id: d79d8d708115cea64687f600eb013109ed7a5d54 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Rémi Denis-Courmont
@@ -46,6 +47,7 @@ static void Flush( decoder_t * );
 vlc_module_begin ()
     set_description( N_("ADPCM audio decoder") )
     set_capability( "audio decoder", 50 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
     set_callbacks( OpenDecoder, CloseDecoder )
 vlc_module_end ()
@@ -63,7 +65,7 @@ enum adpcm_codec_e
     ADPCM_EA
 };
 
-typedef struct
+struct decoder_sys_t
 {
     enum adpcm_codec_e codec;
 
@@ -72,7 +74,7 @@ typedef struct
 
     date_t              end_date;
     int16_t            *prev;
-} decoder_sys_t;
+};
 
 static void DecodeAdpcmMs    ( decoder_t *, int16_t *, uint8_t * );
 static void DecodeAdpcmImaWav( decoder_t *, int16_t *, uint8_t * );
@@ -80,6 +82,17 @@ static void DecodeAdpcmImaQT ( decoder_t *, int16_t *, uint8_t * );
 static void DecodeAdpcmDk4   ( decoder_t *, int16_t *, uint8_t * );
 static void DecodeAdpcmDk3   ( decoder_t *, int16_t *, uint8_t * );
 static void DecodeAdpcmEA    ( decoder_t *, int16_t *, uint8_t * );
+
+static const int pi_channels_maps[6] =
+{
+    0,
+    AOUT_CHAN_CENTER,
+    AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT,
+    AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER,
+    AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARLEFT,
+    AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER
+     | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARLEFT
+};
 
 /* Various table from http://www.pcisys.net/~melanson/codecs/adpcm.txt */
 static const int i_index_table[16] =
@@ -125,7 +138,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    switch( p_dec->fmt_in->i_codec )
+    switch( p_dec->fmt_in.i_codec )
     {
         case VLC_CODEC_ADPCM_IMA_QT:
         case VLC_CODEC_ADPCM_IMA_WAV:
@@ -138,7 +151,7 @@ static int OpenDecoder( vlc_object_t *p_this )
             return VLC_EGENERIC;
     }
 
-    if( p_dec->fmt_in->audio.i_rate <= 0 )
+    if( p_dec->fmt_in.audio.i_rate <= 0 )
     {
         msg_Err( p_dec, "bad samplerate" );
         return VLC_EGENERIC;
@@ -152,9 +165,9 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_sys->prev = NULL;
     p_sys->i_samplesperblock = 0;
 
-    unsigned i_channels = p_dec->fmt_in->audio.i_channels;
+    unsigned i_channels = p_dec->fmt_in.audio.i_channels;
     uint8_t i_max_channels = 5;
-    switch( p_dec->fmt_in->i_codec )
+    switch( p_dec->fmt_in.i_codec )
     {
         case VLC_CODEC_ADPCM_IMA_QT: /* IMA ADPCM */
             p_sys->codec = ADPCM_IMA_QT;
@@ -178,7 +191,7 @@ static int OpenDecoder( vlc_object_t *p_this )
             break;
         case VLC_CODEC_ADPCM_XA_EA: /* EA ADPCM */
             p_sys->codec = ADPCM_EA;
-            p_sys->prev = calloc( 2 * p_dec->fmt_in->audio.i_channels,
+            p_sys->prev = calloc( 2 * p_dec->fmt_in.audio.i_channels,
                                   sizeof( int16_t ) );
             if( unlikely(p_sys->prev == NULL) )
             {
@@ -192,19 +205,19 @@ static int OpenDecoder( vlc_object_t *p_this )
     {
         free(p_sys->prev);
         free(p_sys);
-        msg_Err( p_dec, "Invalid number of channels %i", p_dec->fmt_in->audio.i_channels );
+        msg_Err( p_dec, "Invalid number of channels %i", p_dec->fmt_in.audio.i_channels );
         return VLC_EGENERIC;
     }
 
-    if( p_dec->fmt_in->audio.i_blockalign <= 0 )
+    if( p_dec->fmt_in.audio.i_blockalign <= 0 )
     {
         p_sys->i_block = (p_sys->codec == ADPCM_IMA_QT) ?
-            34 * p_dec->fmt_in->audio.i_channels : 1024;
+            34 * p_dec->fmt_in.audio.i_channels : 1024;
         msg_Warn( p_dec, "block size undefined, using %zu", p_sys->i_block );
     }
     else
     {
-        p_sys->i_block = p_dec->fmt_in->audio.i_blockalign;
+        p_sys->i_block = p_dec->fmt_in.audio.i_blockalign;
     }
 
     /* calculate samples per block */
@@ -249,8 +262,8 @@ static int OpenDecoder( vlc_object_t *p_this )
 
     msg_Dbg( p_dec, "format: samplerate:%d Hz channels:%d bits/sample:%d "
              "blockalign:%zu samplesperblock:%zu",
-             p_dec->fmt_in->audio.i_rate, i_channels,
-             p_dec->fmt_in->audio.i_bitspersample, p_sys->i_block,
+             p_dec->fmt_in.audio.i_rate, i_channels,
+             p_dec->fmt_in.audio.i_bitspersample, p_sys->i_block,
              p_sys->i_samplesperblock );
 
     if (p_sys->i_samplesperblock == 0)
@@ -263,11 +276,12 @@ static int OpenDecoder( vlc_object_t *p_this )
 
     p_dec->p_sys = p_sys;
     p_dec->fmt_out.i_codec = VLC_CODEC_S16N;
-    p_dec->fmt_out.audio.i_rate = p_dec->fmt_in->audio.i_rate;
+    p_dec->fmt_out.audio.i_rate = p_dec->fmt_in.audio.i_rate;
     p_dec->fmt_out.audio.i_channels = i_channels;
-    p_dec->fmt_out.audio.i_physical_channels = vlc_chan_maps[i_channels];
+    p_dec->fmt_out.audio.i_physical_channels = pi_channels_maps[i_channels];
 
     date_Init( &p_sys->end_date, p_dec->fmt_out.audio.i_rate, 1 );
+    date_Set( &p_sys->end_date, 0 );
 
     p_dec->pf_decode = DecodeAudio;
     p_dec->pf_flush  = Flush;
@@ -282,7 +296,7 @@ static void Flush( decoder_t *p_dec )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    date_Set( &p_sys->end_date, VLC_TICK_INVALID );
+    date_Set( &p_sys->end_date, 0 );
 }
 
 /*****************************************************************************
@@ -304,12 +318,12 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             goto drop;
     }
 
-    if( p_block->i_pts != VLC_TICK_INVALID &&
+    if( p_block->i_pts > VLC_TICK_INVALID &&
         p_block->i_pts != date_Get( &p_sys->end_date ) )
     {
         date_Set( &p_sys->end_date, p_block->i_pts );
     }
-    else if( date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
+    else if( !date_Get( &p_sys->end_date ) )
         /* We've just started the stream, wait for the first PTS. */
         goto drop;
 

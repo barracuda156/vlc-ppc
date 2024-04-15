@@ -116,7 +116,7 @@ namespace adaptive
                 T value;
         };
 
-        using AvailabilityTimeOffsetAttr   = AttrWrapper<AbstractAttr::Type::AvailabilityTimeOffset, vlc_tick_t>;
+        using AvailabilityTimeOffsetAttr   = AttrWrapper<AbstractAttr::Type::AvailabilityTimeOffset, mtime_t>;
         using AvailabilityTimeCompleteAttr = AttrWrapper<AbstractAttr::Type::AvailabilityTimeComplete, bool>;
         using StartnumberAttr              = AttrWrapper<AbstractAttr::Type::StartNumber, uint64_t>;
 

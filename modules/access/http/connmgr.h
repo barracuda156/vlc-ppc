@@ -20,7 +20,6 @@
 
 /**
  * \defgroup http HTTP
- * \ingroup net
  * Hyper-Text Transfer Protocol
  * \defgroup http_connmgr Connection manager
  * HTTP connection management
@@ -37,7 +36,7 @@ struct vlc_http_cookie_jar_t;
  * Sends an HTTP request
  *
  * Sends an HTTP request, by either reusing an existing HTTP connection or
- * establishing a new one. If successful, the initial HTTP response header is
+ * establishing a new one. If succesful, the initial HTTP response header is
  * returned.
  *
  * @param mgr HTTP connection manager
@@ -45,15 +44,12 @@ struct vlc_http_cookie_jar_t;
  * @param host name of authoritative HTTP server to send the request to
  * @param port TCP server port number, or 0 for the default port number
  * @param req HTTP request header to send
- * @param idempotent whether the request is idempotent
- * @param payload whether the request will carry a payload
  *
  * @return The initial HTTP response header, or NULL in case of failure.
  */
 struct vlc_http_msg *vlc_http_mgr_request(struct vlc_http_mgr *mgr, bool https,
                                           const char *host, unsigned port,
-                                          const struct vlc_http_msg *req,
-                                          bool idempotent, bool payload);
+                                          const struct vlc_http_msg *req);
 
 struct vlc_http_cookie_jar_t *vlc_http_mgr_get_jar(struct vlc_http_mgr *);
 

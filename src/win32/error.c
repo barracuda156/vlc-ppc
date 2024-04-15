@@ -25,7 +25,6 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <winerror.h>
-#include <winsock2.h>
 
 #include <vlc_common.h>
 
@@ -84,7 +83,6 @@ static const wsaerrmsg_t wsaerrmsg[] =
     { WSAEDQUOT, "Disk quota exceeded" },
     { WSAESTALE, "Stale file handle reference" },
     { WSAEREMOTE, "Item is remote", },
-    { WSA_INVALID_PARAMETER, "Invalid parameter", },
     { WSASYSNOTREADY, "Network subsystem is unavailable (network stack not ready)" },
     { WSAVERNOTSUPPORTED, "Winsock.dll version out of range (network stack version not supported" },
     { WSANOTINITIALISED, "Network not initialized" },

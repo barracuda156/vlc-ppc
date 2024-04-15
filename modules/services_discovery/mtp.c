@@ -26,89 +26,211 @@
 
 #define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
-#include <vlc_list.h>
 #include <vlc_plugin.h>
 #include <vlc_services_discovery.h>
-#include <vlc_vector.h>
 
 #include <libmtp.h>
 
-typedef struct VLC_VECTOR(input_item_t *) vec_items_t;
+/*****************************************************************************
+ * Module descriptor
+ *****************************************************************************/
+static int Open( vlc_object_t * );
+static void Close( vlc_object_t * );
 
-typedef struct
+VLC_SD_PROBE_HELPER("mtp", N_("MTP devices"), SD_CAT_DEVICES)
+
+vlc_module_begin()
+    set_shortname( "MTP" )
+    set_description( N_( "MTP devices" ) )
+    set_category( CAT_PLAYLIST )
+    set_subcategory( SUBCAT_PLAYLIST_SD )
+    set_capability( "services_discovery", 0 )
+    set_callbacks( Open, Close )
+    cannot_unload_broken_library()
+
+    VLC_SD_PROBE_SUBMODULE
+vlc_module_end()
+
+
+/*****************************************************************************
+ * Local prototypes
+ *****************************************************************************/
+
+static void *Run( void * );
+
+static int AddDevice( services_discovery_t *, LIBMTP_raw_device_t * );
+static void AddTrack( services_discovery_t *, LIBMTP_track_t *);
+static void CloseDevice( services_discovery_t * );
+static int CountTracks( uint64_t const, uint64_t const, void const * const );
+
+/*****************************************************************************
+ * Local structures
+ *****************************************************************************/
+
+struct services_discovery_sys_t
 {
-    struct vlc_list node;
-    input_item_t *root;
-    vec_items_t items;
+    int i_tracks_num;
+    input_item_t **pp_items;
+    int i_count;
     char *psz_name;
     uint32_t i_bus;
     uint8_t i_dev;
     uint16_t i_product_id;
-} mtp_device_t;
-
-typedef struct
-{
-    struct vlc_list devices; /**< list of mtp_device_t */
     vlc_thread_t thread;
-} services_discovery_sys_t;
+};
 
-static void vlc_libmtp_init(void *data)
+static vlc_mutex_t mtp_lock = VLC_STATIC_MUTEX;
+static bool b_mtp_initialized = false;
+
+/*****************************************************************************
+ * Open: initialize and create stuff
+ *****************************************************************************/
+static int Open( vlc_object_t *p_this )
 {
-    (void) data;
-    LIBMTP_Init();
-}
+    services_discovery_t *p_sd = ( services_discovery_t * )p_this;
+    services_discovery_sys_t *p_sys;
 
-/* Takes ownership of the name */
-static mtp_device_t *
-DeviceNew( char *name )
-{
-    mtp_device_t *device = malloc( sizeof( *device ) );
-    if ( !device )
-        return NULL;
+    if( !( p_sys = malloc( sizeof( services_discovery_sys_t ) ) ) )
+        return VLC_ENOMEM;
+    p_sd->p_sys = p_sys;
+    p_sd->description = _("MTP devices");
+    p_sys->psz_name = NULL;
 
-    device->root = input_item_NewExt( "vlc://nop", name,
-                                      INPUT_DURATION_INDEFINITE,
-                                      ITEM_TYPE_NODE, ITEM_LOCAL );
-    if ( !device->root )
+    vlc_mutex_lock( &mtp_lock );
+    if( !b_mtp_initialized )
     {
-        free( device );
-        return NULL;
+        LIBMTP_Init();
+        b_mtp_initialized = true;
     }
+    vlc_mutex_unlock( &mtp_lock );
 
-    device->psz_name = name;
-
-    vlc_vector_init( &device->items );
-
-    return device;
+    if (vlc_clone (&p_sys->thread, Run, p_sd, VLC_THREAD_PRIORITY_LOW))
+    {
+        free (p_sys);
+        return VLC_EGENERIC;
+    }
+    return VLC_SUCCESS;
 }
 
-static void
-DeviceDelete( mtp_device_t *device )
+/*****************************************************************************
+ * Close: cleanup
+ *****************************************************************************/
+static void Close( vlc_object_t *p_this )
 {
-    for (size_t i = 0; i < device->items.size; ++i )
-        input_item_Release( device->items.data[i] );
-    vlc_vector_destroy( &device->items );
+    services_discovery_t *p_sd = ( services_discovery_t * )p_this;
 
-    input_item_Release( device->root );
-    free( device->psz_name );
-    free( device );
+    free( p_sd->p_sys->psz_name );
+    vlc_cancel( p_sd->p_sys->thread );
+    vlc_join( p_sd->p_sys->thread, NULL );
+    free( p_sd->p_sys );
 }
 
-static char *GetDeviceName( LIBMTP_mtpdevice_t *p_device )
+/*****************************************************************************
+ * Run: main thread
+ *****************************************************************************/
+static void *Run( void *data )
 {
-    char *name = LIBMTP_Get_Friendlyname( p_device );
-    if ( !EMPTY_STR( name ) )
-        return name;
+    LIBMTP_raw_device_t *p_rawdevices;
+    int i_numrawdevices;
+    int i_ret;
+    int i_status = 0;
+    services_discovery_t *p_sd = data;
 
-    name = LIBMTP_Get_Modelname( p_device );
-    if ( !EMPTY_STR( name ) )
-        return name;
-
-    return strdup( "MTP Device" );
+    for(;;)
+    {
+        int canc = vlc_savecancel();
+        i_ret = LIBMTP_Detect_Raw_Devices( &p_rawdevices, &i_numrawdevices );
+        if ( i_ret == 0 && i_numrawdevices > 0 && p_rawdevices != NULL &&
+             i_status == 0 )
+        {
+            /* Found a new device, add it */
+            msg_Dbg( p_sd, "New device found" );
+            if( AddDevice( p_sd, &p_rawdevices[0] ) == VLC_SUCCESS )
+                i_status = 1;
+            else
+                i_status = 2;
+        }
+        else
+        {
+            if ( ( i_ret != 0 || i_numrawdevices == 0 || p_rawdevices == NULL )
+                 && i_status == 1)
+            {
+                /* The device is not connected anymore, delete it */
+                msg_Info( p_sd, "Device disconnected" );
+                CloseDevice( p_sd );
+                i_status = 0;
+            }
+        }
+        free( p_rawdevices );
+        vlc_restorecancel(canc);
+        if( i_status == 2 )
+        {
+            msleep( 5000000 );
+            i_status = 0;
+        }
+        else
+            msleep( 500000 );
+    }
+    return NULL;
 }
 
-static void AddTrack( services_discovery_t *p_sd, mtp_device_t *device,
-                      LIBMTP_track_t *p_track )
+/*****************************************************************************
+ * Everything else
+ *****************************************************************************/
+static int AddDevice( services_discovery_t *p_sd,
+                      LIBMTP_raw_device_t *p_raw_device )
+{
+    char *psz_name = NULL;
+    LIBMTP_mtpdevice_t *p_device;
+    LIBMTP_track_t *p_track, *p_tmp;
+
+    if( ( p_device = LIBMTP_Open_Raw_Device( p_raw_device ) ) != NULL )
+    {
+        if( !( psz_name = LIBMTP_Get_Friendlyname( p_device ) ) )
+            if( !( psz_name = LIBMTP_Get_Modelname( p_device ) ) )
+                if( !( psz_name = strdup( N_( "MTP Device" ) ) ) )
+                    return VLC_ENOMEM;
+        msg_Info( p_sd, "Found device: %s", psz_name );
+        p_sd->p_sys->i_bus = p_raw_device->bus_location;
+        p_sd->p_sys->i_dev = p_raw_device->devnum;
+        p_sd->p_sys->i_product_id = p_raw_device->device_entry.product_id;
+        if( ( p_track = LIBMTP_Get_Tracklisting_With_Callback( p_device,
+                            CountTracks, p_sd ) ) == NULL )
+        {
+            msg_Warn( p_sd, "No tracks on the device" );
+            p_sd->p_sys->pp_items = NULL;
+        }
+        else
+        {
+            if( !( p_sd->p_sys->pp_items = calloc( p_sd->p_sys->i_tracks_num,
+                                                   sizeof( input_item_t * ) ) ) )
+            {
+                free( psz_name );
+                return VLC_ENOMEM;
+            }
+            p_sd->p_sys->i_count = 0;
+            while( p_track != NULL )
+            {
+                msg_Dbg( p_sd, "Track found: %s - %s", p_track->artist,
+                         p_track->title );
+                AddTrack( p_sd, p_track );
+                p_tmp = p_track;
+                p_track = p_track->next;
+                LIBMTP_destroy_track_t( p_tmp );
+            }
+        }
+        p_sd->p_sys->psz_name = psz_name;
+        LIBMTP_Release_Device( p_device );
+        return VLC_SUCCESS;
+    }
+    else
+    {
+        msg_Info( p_sd, "The device seems to be mounted, unmount it first" );
+        return VLC_EGENERIC;
+    }
+}
+
+static void AddTrack( services_discovery_t *p_sd, LIBMTP_track_t *p_track )
 {
     input_item_t *p_input;
     char *psz_string;
@@ -116,8 +238,8 @@ static void AddTrack( services_discovery_t *p_sd, mtp_device_t *device,
 
     extension = rindex( p_track->filename, '.' );
     if( asprintf( &psz_string, "mtp://%"PRIu32":%"PRIu8":%"PRIu16":%d%s",
-                  device->i_bus, device->i_dev,
-                  device->i_product_id, p_track->item_id,
+                  p_sd->p_sys->i_bus, p_sd->p_sys->i_dev,
+                  p_sd->p_sys->i_product_id, p_track->item_id,
                   extension ) == -1 )
     {
         msg_Err( p_sd, "Error adding %s, skipping it", p_track->filename );
@@ -145,223 +267,34 @@ static void AddTrack( services_discovery_t *p_sd, mtp_device_t *device,
         free( psz_string );
     }
     input_item_SetDate( p_input, p_track->date );
-    p_input->i_duration = VLC_TICK_FROM_MS(p_track->duration);
-
-    if ( !vlc_vector_push( &device->items, p_input ) )
-    {
-        msg_Err( p_sd, "Error adding %s, skipping it", p_track->filename );
-        input_item_Release( p_input );
-        return;
-    }
-
-    services_discovery_AddSubItem( p_sd, device->root, p_input );
+    p_input->i_duration = p_track->duration * INT64_C(1000);
+    services_discovery_AddItem( p_sd, p_input );
+    p_sd->p_sys->pp_items[p_sd->p_sys->i_count++] = p_input;
 }
 
-static int AddDevice( services_discovery_t *p_sd,
-                      LIBMTP_raw_device_t *p_raw_device )
+static void CloseDevice( services_discovery_t *p_sd )
 {
-    services_discovery_sys_t *p_sys = p_sd->p_sys;
-    char *psz_name = NULL;
-    LIBMTP_mtpdevice_t *p_device;
-    LIBMTP_track_t *p_track, *p_tmp;
+    input_item_t **pp_items = p_sd->p_sys->pp_items;
 
-    if( ( p_device = LIBMTP_Open_Raw_Device( p_raw_device ) ) != NULL )
+    if( pp_items != NULL )
     {
-        psz_name = GetDeviceName( p_device );
-        if ( !psz_name )
-            return VLC_ENOMEM;
-        msg_Info( p_sd, "Found device: %s", psz_name );
-
-        /* The device takes ownership of the name */
-        mtp_device_t *mtp_device = DeviceNew( psz_name );
-        if ( !mtp_device )
+        for( int i_i = 0; i_i < p_sd->p_sys->i_count; i_i++ )
         {
-            free( psz_name );
-            return VLC_ENOMEM;
-        }
-
-        mtp_device->i_bus = p_raw_device->bus_location;
-        mtp_device->i_dev = p_raw_device->devnum;
-        mtp_device->i_product_id = p_raw_device->device_entry.product_id;
-
-        vlc_list_append( &mtp_device->node, &p_sys->devices );
-
-        services_discovery_AddItem( p_sd, mtp_device->root );
-
-        if( ( p_track = LIBMTP_Get_Tracklisting_With_Callback( p_device,
-                            NULL, NULL ) ) == NULL )
-        {
-            msg_Warn( p_sd, "No tracks on the device" );
-        }
-        else
-        {
-            while( p_track != NULL )
+            if( pp_items[i_i] != NULL )
             {
-                msg_Dbg( p_sd, "Track found: %s - %s", p_track->artist,
-                         p_track->title );
-                AddTrack( p_sd, mtp_device, p_track );
-                p_tmp = p_track;
-                p_track = p_track->next;
-                LIBMTP_destroy_track_t( p_tmp );
+                services_discovery_RemoveItem( p_sd, pp_items[i_i] );
+                input_item_Release( pp_items[i_i] );
             }
         }
-        LIBMTP_Release_Device( p_device );
-
-        return VLC_SUCCESS;
-    }
-    else
-    {
-        msg_Info( p_sd, "The device seems to be mounted, unmount it first" );
-        return VLC_EGENERIC;
+        free( pp_items );
     }
 }
 
-static void CloseDevice( services_discovery_t *p_sd, mtp_device_t *device )
+static int CountTracks( uint64_t const sent, uint64_t const total,
+                        void const * const data )
 {
-    /* Notify the removal of the whole node and its children */
-    services_discovery_RemoveItem( p_sd, device->root );
-
-    vlc_list_remove( &device->node );
-    DeviceDelete( device );
+    VLC_UNUSED( sent );
+    services_discovery_t *p_sd = (services_discovery_t *)data;
+    p_sd->p_sys->i_tracks_num = total;
+    return 0;
 }
-
-static int
-FindRawDevice( const LIBMTP_raw_device_t *raw_devices, int count,
-               uint32_t bus_location, uint8_t devnum )
-{
-    for ( int i = 0; i < count; ++i )
-        if ( raw_devices[i].bus_location == bus_location &&
-             raw_devices[i].devnum == devnum )
-            return i;
-    return -1;
-}
-
-static mtp_device_t *
-FindDevice( struct vlc_list *devices, uint32_t bus_location, uint8_t devnum )
-{
-    mtp_device_t *device;
-    vlc_list_foreach( device, devices, node )
-        if ( device->i_bus == bus_location &&
-             device->i_dev == devnum )
-            return device;
-    return NULL;
-}
-
-static void
-UpdateDevices( services_discovery_t *p_sd,
-               LIBMTP_raw_device_t *raw_devices, int count )
-{
-    services_discovery_sys_t *p_sys = p_sd->p_sys;
-
-    /* Remove devices which have disappeared */
-
-    mtp_device_t *device;
-    vlc_list_foreach( device, &p_sys->devices, node )
-    {
-        int idx = FindRawDevice( raw_devices, count, device->i_bus,
-                                 device->i_dev );
-        if ( idx == -1 )
-        {
-            /* Not found */
-            msg_Info( p_sd, "Device disconnected" );
-            CloseDevice( p_sd, device );
-        }
-    }
-
-    /* Add new detected devices */
-
-    for ( int i = 0; i < count; ++i )
-    {
-        LIBMTP_raw_device_t *raw_device = &raw_devices[i];
-        device = FindDevice( &p_sys->devices, raw_device->bus_location,
-                             raw_device->devnum );
-        if ( !device )
-        {
-            /* Device not found in the list, it's a new one */
-            msg_Dbg( p_sd, "New device detected" );
-            if ( AddDevice( p_sd, raw_device ) != VLC_SUCCESS )
-                msg_Err( p_sd, "Could not add MTP device" );
-        }
-    }
-}
-
-/*****************************************************************************
- * Run: main thread
- *****************************************************************************/
-static void *Run( void *data )
-{
-    vlc_thread_set_name("vlc-mtp");
-
-    LIBMTP_raw_device_t *p_rawdevices;
-    int i_numrawdevices;
-    services_discovery_t *p_sd = data;
-
-    for(;;)
-    {
-        int canc = vlc_savecancel();
-        int ret = LIBMTP_Detect_Raw_Devices( &p_rawdevices, &i_numrawdevices );
-        if ( ret == LIBMTP_ERROR_NONE ||
-             ret == LIBMTP_ERROR_NO_DEVICE_ATTACHED )
-        {
-            UpdateDevices( p_sd, p_rawdevices, i_numrawdevices );
-            if ( ret == LIBMTP_ERROR_NONE )
-                free( p_rawdevices );
-        }
-        vlc_restorecancel(canc);
-
-        vlc_tick_sleep( VLC_TICK_FROM_MS(500) );
-    }
-    return NULL;
-}
-
-static int Open( vlc_object_t *p_this )
-{
-    services_discovery_t *p_sd = ( services_discovery_t * )p_this;
-    services_discovery_sys_t *p_sys;
-
-    if( !( p_sys = malloc( sizeof( services_discovery_sys_t ) ) ) )
-        return VLC_ENOMEM;
-    p_sd->p_sys = p_sys;
-    p_sd->description = _("MTP devices");
-
-    vlc_list_init( &p_sys->devices );
-
-    static vlc_once_t mtp_init_once = VLC_STATIC_ONCE;
-
-    vlc_once(&mtp_init_once, vlc_libmtp_init, NULL);
-
-    if (vlc_clone (&p_sys->thread, Run, p_sd))
-    {
-        free (p_sys);
-        return VLC_EGENERIC;
-    }
-    return VLC_SUCCESS;
-}
-
-static void Close( vlc_object_t *p_this )
-{
-    services_discovery_t *p_sd = ( services_discovery_t * )p_this;
-    services_discovery_sys_t *p_sys = p_sd->p_sys;
-
-    vlc_cancel( p_sys->thread );
-    vlc_join( p_sys->thread, NULL );
-
-    mtp_device_t *device;
-    vlc_list_foreach( device, &p_sys->devices, node )
-        DeviceDelete( device );
-
-    free( p_sys );
-}
-
-VLC_SD_PROBE_HELPER("mtp", N_("MTP devices"), SD_CAT_DEVICES)
-
-vlc_module_begin()
-    set_shortname( "MTP" )
-    set_description( N_( "MTP devices" ) )
-    set_subcategory( SUBCAT_PLAYLIST_SD )
-    set_capability( "services_discovery", 0 )
-    set_callbacks( Open, Close )
-    cannot_unload_broken_library()
-
-    VLC_SD_PROBE_SUBMODULE
-vlc_module_end()

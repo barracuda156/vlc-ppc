@@ -2,6 +2,7 @@
  * blendbench.c : blending benchmark plugin for vlc
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: f223b9133c9de69789a3d5eda6c74774667b6731 $
  *
  * Author: Søren Bøg <avacore@videolan.org>
  *
@@ -40,8 +41,8 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Create( filter_t * );
-static void Destroy( filter_t * );
+static int Create( vlc_object_t * );
+static void Destroy( vlc_object_t * );
 
 static picture_t *Filter( filter_t *, picture_t * );
 
@@ -73,27 +74,29 @@ static picture_t *Filter( filter_t *, picture_t * );
 vlc_module_begin ()
     set_description( N_("Blending benchmark filter") )
     set_shortname( N_("Blendbench" ))
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
 
     set_section( N_("Benchmarking"), NULL )
     add_integer( CFG_PREFIX "loops", 1000, LOOPS_TEXT,
-              LOOPS_LONGTEXT )
+              LOOPS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "alpha", 128, 0, 255, ALPHA_TEXT,
-              ALPHA_LONGTEXT )
+              ALPHA_LONGTEXT, false )
 
     set_section( N_("Base image"), NULL )
-    add_loadfile(CFG_PREFIX "base-image", NULL,
-                 BASE_IMAGE_TEXT, BASE_IMAGE_LONGTEXT)
+    add_loadfile( CFG_PREFIX "base-image", NULL, BASE_IMAGE_TEXT,
+                  BASE_IMAGE_LONGTEXT, false )
     add_string( CFG_PREFIX "base-chroma", "I420", BASE_CHROMA_TEXT,
-              BASE_CHROMA_LONGTEXT )
+              BASE_CHROMA_LONGTEXT, false )
 
     set_section( N_("Blend image"), NULL )
-    add_loadfile(CFG_PREFIX "blend-image", NULL,
-                 BLEND_IMAGE_TEXT, BLEND_IMAGE_LONGTEXT)
+    add_loadfile( CFG_PREFIX "blend-image", NULL, BLEND_IMAGE_TEXT,
+                  BLEND_IMAGE_LONGTEXT, false )
     add_string( CFG_PREFIX "blend-chroma", "YUVA", BLEND_CHROMA_TEXT,
-              BLEND_CHROMA_LONGTEXT )
+              BLEND_CHROMA_LONGTEXT, false )
 
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -104,7 +107,7 @@ static const char *const ppsz_filter_options[] = {
 /*****************************************************************************
  * filter_sys_t: filter method descriptor
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     bool b_done;
     int i_loops, i_alpha;
@@ -114,19 +117,20 @@ typedef struct
 
     vlc_fourcc_t i_base_chroma;
     vlc_fourcc_t i_blend_chroma;
-} filter_sys_t;
+};
 
 static int blendbench_LoadImage( vlc_object_t *p_this, picture_t **pp_pic,
                                  vlc_fourcc_t i_chroma, char *psz_file, const char *psz_name )
 {
     image_handler_t *p_image;
-    video_format_t fmt_out;
+    video_format_t fmt_in, fmt_out;
 
-    video_format_Init( &fmt_out, i_chroma );
+    memset( &fmt_in, 0, sizeof(video_format_t) );
+    memset( &fmt_out, 0, sizeof(video_format_t) );
 
+    fmt_out.i_chroma = i_chroma;
     p_image = image_HandlerCreate( p_this );
-    *pp_pic = image_ReadUrl( p_image, psz_file, &fmt_out );
-    video_format_Clean( &fmt_out );
+    *pp_pic = image_ReadUrl( p_image, psz_file, &fmt_in, &fmt_out );
     image_HandlerDelete( p_image );
 
     if( *pp_pic == NULL )
@@ -142,16 +146,12 @@ static int blendbench_LoadImage( vlc_object_t *p_this, picture_t **pp_pic,
     return VLC_SUCCESS;
 }
 
-static const struct vlc_filter_operations filter_ops =
-{
-    .filter_video = Filter, .close = Destroy,
-};
-
 /*****************************************************************************
  * Create: allocates video thread output method
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
     char *psz_temp, *psz_cmd;
     int i_ret;
@@ -164,7 +164,7 @@ static int Create( filter_t *p_filter )
     p_sys = p_filter->p_sys;
     p_sys->b_done = false;
 
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     /* needed to get options passed in transcode using the
      * adjust{name=value} syntax */
@@ -180,7 +180,7 @@ static int Create( filter_t *p_filter )
     p_sys->i_base_chroma = !psz_temp || strlen( psz_temp ) != 4 ? 0 :
         VLC_FOURCC( psz_temp[0], psz_temp[1], psz_temp[2], psz_temp[3] );
     psz_cmd = var_CreateGetStringCommand( p_filter, CFG_PREFIX "base-image" );
-    i_ret = blendbench_LoadImage( VLC_OBJECT(p_filter), &p_sys->p_base_image,
+    i_ret = blendbench_LoadImage( p_this, &p_sys->p_base_image,
                                   p_sys->i_base_chroma, psz_cmd, "Base" );
     free( psz_temp );
     free( psz_cmd );
@@ -195,7 +195,7 @@ static int Create( filter_t *p_filter )
     p_sys->i_blend_chroma = !psz_temp || strlen( psz_temp ) != 4
         ? 0 : VLC_FOURCC( psz_temp[0], psz_temp[1], psz_temp[2], psz_temp[3] );
     psz_cmd = var_CreateGetStringCommand( p_filter, CFG_PREFIX "blend-image" );
-    i_ret = blendbench_LoadImage( VLC_OBJECT(p_filter), &p_sys->p_blend_image, p_sys->i_blend_chroma,
+    i_ret = blendbench_LoadImage( p_this, &p_sys->p_blend_image, p_sys->i_blend_chroma,
                                   psz_cmd, "Blend" );
 
     free( psz_temp );
@@ -215,8 +215,9 @@ static int Create( filter_t *p_filter )
 /*****************************************************************************
  * Destroy: destroy video thread output method
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     picture_Release( p_sys->p_base_image );
@@ -246,31 +247,30 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     if( !p_blend->p_module )
     {
         picture_Release( p_pic );
-        vlc_object_delete(p_blend);
+        vlc_object_release( p_blend );
         return NULL;
     }
-    assert( p_blend->ops != NULL );
 
-    vlc_tick_t time = vlc_tick_now();
+    vlc_tick_t time = mdate();
     for( int i_iter = 0; i_iter < p_sys->i_loops; ++i_iter )
     {
-        filter_Blend( p_blend, p_sys->p_base_image,
-                      0, 0, p_sys->p_blend_image, p_sys->i_alpha );
+        p_blend->pf_video_blend( p_blend,
+                                 p_sys->p_base_image, p_sys->p_blend_image,
+                                 0, 0, p_sys->i_alpha );
     }
-    time = vlc_tick_now() - time;
+    time = mdate() - time;
 
     msg_Info( p_filter, "Blended %d images in %f sec", p_sys->i_loops,
-              secf_from_vlc_tick(time) );
+              time / 1000000.0f );
     msg_Info( p_filter, "Speed is: %f images/second, %f pixels/second",
-              (float) p_sys->i_loops / time * CLOCK_FREQ,
-              (float) p_sys->i_loops / time * CLOCK_FREQ *
+              (float) p_sys->i_loops / time * 1000000,
+              (float) p_sys->i_loops / time * 1000000 *
                   p_sys->p_blend_image->p[Y_PLANE].i_visible_pitch *
                   p_sys->p_blend_image->p[Y_PLANE].i_visible_lines );
 
-    filter_Close( p_blend );
     module_unneed( p_blend, p_blend->p_module );
 
-    vlc_object_delete(p_blend);
+    vlc_object_release( p_blend );
 
     p_sys->b_done = true;
     return p_pic;

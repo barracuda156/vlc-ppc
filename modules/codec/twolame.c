@@ -3,6 +3,7 @@
  *            (using libtwolame from http://www.twolame.org/)
  *****************************************************************************
  * Copyright (C) 2004-2005 VLC authors and VideoLAN
+ * $Id: f24839c7bb4374c77851170496048a1d6e085d07 $
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Gildas Bazin
@@ -42,7 +43,7 @@
  * Local prototypes
  ****************************************************************************/
 static int OpenEncoder   ( vlc_object_t * );
-static void CloseEncoder ( encoder_t * );
+static void CloseEncoder ( vlc_object_t * );
 static block_t *Encode   ( encoder_t *, block_t * );
 
 /*****************************************************************************
@@ -72,19 +73,20 @@ static const char *const ppsz_stereo_descriptions[] =
 vlc_module_begin ()
     set_shortname( "Twolame")
     set_description( N_("Libtwolame audio encoder") )
-    set_capability( "audio encoder", 120 )
-    set_callback( OpenEncoder )
+    set_capability( "encoder", 120 )
+    set_callbacks( OpenEncoder, CloseEncoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
 
     add_float( ENC_CFG_PREFIX "quality", 0.0, ENC_QUALITY_TEXT,
-               ENC_QUALITY_LONGTEXT )
+               ENC_QUALITY_LONGTEXT, false )
     add_integer( ENC_CFG_PREFIX "mode", 0, ENC_MODE_TEXT,
-                 ENC_MODE_LONGTEXT )
+                 ENC_MODE_LONGTEXT, false )
         change_integer_list( pi_stereo_values, ppsz_stereo_descriptions );
     add_bool( ENC_CFG_PREFIX "vbr", false, ENC_VBR_TEXT,
-              ENC_VBR_LONGTEXT )
+              ENC_VBR_LONGTEXT, false )
     add_integer( ENC_CFG_PREFIX "psy", 3, ENC_PSY_TEXT,
-                 ENC_PSY_LONGTEXT )
+                 ENC_PSY_LONGTEXT, false )
 vlc_module_end ()
 
 static const char *const ppsz_enc_options[] = {
@@ -94,7 +96,7 @@ static const char *const ppsz_enc_options[] = {
 /*****************************************************************************
  * encoder_sys_t : twolame encoder descriptor
  *****************************************************************************/
-typedef struct
+struct encoder_sys_t
 {
     /*
      * Input properties
@@ -108,7 +110,7 @@ typedef struct
      */
     twolame_options *p_twolame;
     unsigned char p_out_buffer[MAX_CODED_FRAME_SIZE];
-} encoder_sys_t;
+};
 
 /*****************************************************************************
  * OpenEncoder: probe the encoder and return score
@@ -157,8 +159,11 @@ static int OpenEncoder( vlc_object_t *p_this )
     /* Allocate the memory needed to store the decoder's structure */
     if( ( p_sys = (encoder_sys_t *)malloc(sizeof(encoder_sys_t)) ) == NULL )
         return VLC_ENOMEM;
+    p_enc->p_sys = p_sys;
 
     p_enc->fmt_in.i_codec = VLC_CODEC_S16N;
+
+    p_enc->fmt_out.i_cat = AUDIO_ES;
     p_enc->fmt_out.i_codec = VLC_CODEC_MPGA;
 
     config_ChainParse( p_enc, ENC_CFG_PREFIX, ppsz_enc_options, p_enc->p_cfg );
@@ -229,24 +234,14 @@ static int OpenEncoder( vlc_object_t *p_this )
     if ( twolame_init_params( p_sys->p_twolame ) )
     {
         msg_Err( p_enc, "twolame initialization failed" );
-        goto error;
+        return -VLC_EGENERIC;
     }
 
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = CloseEncoder,
-        .encode_audio = Encode,
-    };
-    p_enc->ops = &ops;
-    p_enc->p_sys = p_sys;
+    p_enc->pf_encode_audio = Encode;
 
     p_sys->i_nb_samples = 0;
 
     return VLC_SUCCESS;
-error:
-    twolame_close( &p_sys->p_twolame );
-    free(p_sys);
-    return VLC_EGENERIC;
 }
 
 /****************************************************************************
@@ -294,8 +289,8 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
         if( !p_block )
             return NULL;
         memcpy( p_block->p_buffer, p_sys->p_out_buffer, i_used );
-        p_block->i_length = vlc_tick_from_samples( MPEG_FRAME_SIZE,
-                                                   p_enc->fmt_out.audio.i_rate );
+        p_block->i_length = CLOCK_FREQ *
+                (vlc_tick_t)MPEG_FRAME_SIZE / (vlc_tick_t)p_enc->fmt_out.audio.i_rate;
         p_block->i_dts = p_block->i_pts = p_sys->i_pts;
         p_sys->i_pts += p_block->i_length;
 
@@ -306,8 +301,8 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
     int i_nb_samples = p_aout_buf->i_nb_samples;
 
     p_sys->i_pts = p_aout_buf->i_pts -
-                vlc_tick_from_samples( p_sys->i_nb_samples,
-                                       p_enc->fmt_out.audio.i_rate );
+                (vlc_tick_t)1000000 * (vlc_tick_t)p_sys->i_nb_samples /
+                (vlc_tick_t)p_enc->fmt_out.audio.i_rate;
 
     while ( p_sys->i_nb_samples + i_nb_samples >= MPEG_FRAME_SIZE )
     {
@@ -337,8 +332,8 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
             return NULL;
         }
         memcpy( p_block->p_buffer, p_sys->p_out_buffer, i_used );
-        p_block->i_length = vlc_tick_from_samples( MPEG_FRAME_SIZE,
-                                                   p_enc->fmt_out.audio.i_rate );
+        p_block->i_length = CLOCK_FREQ *
+                (vlc_tick_t)MPEG_FRAME_SIZE / (vlc_tick_t)p_enc->fmt_out.audio.i_rate;
         p_block->i_dts = p_block->i_pts = p_sys->i_pts;
         p_sys->i_pts += p_block->i_length;
         block_ChainAppend( &p_chain, p_block );
@@ -356,8 +351,9 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
 /*****************************************************************************
  * CloseEncoder: twolame encoder destruction
  *****************************************************************************/
-static void CloseEncoder( encoder_t *p_enc )
+static void CloseEncoder( vlc_object_t *p_this )
 {
+    encoder_t *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys = p_enc->p_sys;
 
     twolame_close( &p_sys->p_twolame );

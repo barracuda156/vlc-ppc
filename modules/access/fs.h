@@ -18,11 +18,13 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#include <vlc_fs.h>
+#include <dirent.h>
 
 int FileOpen (vlc_object_t *);
 void FileClose (vlc_object_t *);
 
 int DirOpen (vlc_object_t *);
-int DirInit (stream_t *p_access, vlc_DIR *handle);
+int DirInit (stream_t *p_access, DIR *handle);
+int DirRead (stream_t *, input_item_node_t *);
+int DirControl (stream_t *, int, va_list);
 void DirClose (vlc_object_t *);

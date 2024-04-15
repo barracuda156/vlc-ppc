@@ -61,8 +61,8 @@
 #define SDIAUDIO_SAMPLESIZE_FILE "/sys/class/sdiaudio/sdiaudiorx%u/sample_size"
 #define SDIAUDIO_CHANNELS_FILE  "/sys/class/sdiaudio/sdiaudiorx%u/channels"
 #define NB_VBUFFERS             2
-#define CLOCK_GAP               VLC_TICK_FROM_MS(500)
-#define START_DATE              INT64_C(0x100000000)
+#define CLOCK_GAP               INT64_C(500000)
+#define START_DATE              INT64_C(4294967296)
 
 #define MAX_AUDIOS              4
 
@@ -88,19 +88,20 @@ static void Close( vlc_object_t * );
 vlc_module_begin()
     set_description( N_("HD-SDI Input") )
     set_shortname( N_("HD-SDI") )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
 
     add_integer( "linsys-hdsdi-link", 0,
-        LINK_TEXT, LINK_LONGTEXT )
+        LINK_TEXT, LINK_LONGTEXT, true )
 
     add_integer( "linsys-hdsdi-id-video", 0,
-        VIDEO_TEXT, VIDEO_LONGTEXT )
+        VIDEO_TEXT, VIDEO_LONGTEXT, true )
     add_string( "linsys-hdsdi-aspect-ratio", "",
-        VIDEO_ASPECT_TEXT, VIDEO_ASPECT_LONGTEXT )
+        VIDEO_ASPECT_TEXT, VIDEO_ASPECT_LONGTEXT, true )
     add_string( "linsys-hdsdi-audio", "0=1,1",
-        AUDIO_TEXT, AUDIO_LONGTEXT )
+        AUDIO_TEXT, AUDIO_LONGTEXT, true )
 
-    set_capability( "access", 0 )
+    set_capability( "access_demux", 0 )
     add_shortcut( "linsys-hdsdi" )
     set_callbacks( Open, Close )
 vlc_module_end()
@@ -120,7 +121,7 @@ typedef struct hdsdi_audio_t
     es_out_id_t *p_es;
 } hdsdi_audio_t;
 
-typedef struct
+struct demux_sys_t
 {
     /* video device reader */
     int          i_vfd;
@@ -147,7 +148,7 @@ typedef struct
     unsigned int i_width, i_height, i_aspect, i_forced_aspect;
     unsigned int i_vblock_size, i_ablock_size;
     vlc_tick_t   i_next_vdate, i_next_adate;
-    vlc_tick_t   i_incr, i_aincr;
+    int          i_incr, i_aincr;
 
     /* ES stuff */
     int          i_id_video;
@@ -156,7 +157,7 @@ typedef struct
 
     pthread_t thread;
     int evfd;
-} demux_sys_t;
+};
 
 static int Control( demux_t *, int, va_list );
 static void *Demux( void * );
@@ -173,9 +174,6 @@ static int Open( vlc_object_t *p_this )
     demux_t     *p_demux = (demux_t *)p_this;
     demux_sys_t *p_sys;
     char        *psz_parser;
-
-    if (p_demux->out == NULL)
-        return VLC_EGENERIC;
 
     /* Fill p_demux field */
     p_demux->p_sys = p_sys = calloc( 1, sizeof( demux_sys_t ) );
@@ -295,6 +293,7 @@ static void *Demux( void *opaque )
 static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     bool *pb;
+    int64_t *pi64;
 
     switch( i_query )
     {
@@ -307,8 +306,9 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) =
-                VLC_TICK_FROM_MS(var_InheritInteger( p_demux, "live-caching" ));
+            pi64 = va_arg( args, int64_t * );
+            *pi64 = INT64_C(1000)
+                  * var_InheritInteger( p_demux, "live-caching" );
             return VLC_SUCCESS;
 
         /* TODO implement others */
@@ -493,7 +493,7 @@ static int InitVideo( demux_t *p_demux )
     }
 
     p_sys->i_next_vdate = START_DATE;
-    p_sys->i_incr = vlc_tick_from_samples(p_sys->i_frame_rate_base, p_sys->i_frame_rate);
+    p_sys->i_incr = 1000000 * p_sys->i_frame_rate_base / p_sys->i_frame_rate;
     p_sys->i_vblock_size = p_sys->i_width * p_sys->i_height * 3 / 2
                             + sizeof(struct block_extension_t);
 
@@ -542,7 +542,7 @@ static int InitAudio( demux_t *p_demux )
 
     p_sys->i_next_adate = START_DATE;
     p_sys->i_ablock_size = p_sys->i_sample_rate * 4 * p_sys->i_frame_rate_base / p_sys->i_frame_rate;
-    p_sys->i_aincr = vlc_tick_from_samples(p_sys->i_ablock_size, p_sys->i_sample_rate * 4);
+    p_sys->i_aincr = 1000000. * p_sys->i_ablock_size / p_sys->i_sample_rate / 4;
 
     return VLC_SUCCESS;
 }
@@ -628,8 +628,8 @@ static int HandleAudio( demux_t *p_demux, const uint8_t *p_buffer )
                         p_audio->i_channel * 2, p_sys->i_max_channel + 1 );
 
             p_block->i_dts = p_block->i_pts
-                = p_sys->i_next_adate + vlc_tick_from_samples(p_audio->i_delay,
-                                                              p_sys->i_sample_rate);
+                = p_sys->i_next_adate + (vlc_tick_t)p_audio->i_delay
+                   * INT64_C(1000000) / p_sys->i_sample_rate;
             p_block->i_length = p_sys->i_aincr;
             es_out_Send( p_demux->out, p_audio->p_es, p_block );
         }

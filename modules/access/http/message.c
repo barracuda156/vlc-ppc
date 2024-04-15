@@ -33,7 +33,6 @@
 
 #include <vlc_common.h>
 #include <vlc_http.h>
-#include <vlc_block.h>
 #include <vlc_strings.h>
 #include <vlc_memstream.h>
 #include "message.h"
@@ -296,40 +295,10 @@ block_t *vlc_http_msg_read(struct vlc_http_msg *m)
     return vlc_http_stream_read(m->payload);
 }
 
-int vlc_http_msg_write(struct vlc_http_msg *m, block_t *block, bool eos)
-{
-    if (m->payload == NULL)
-        return -1;
-
-    /* Ideally, we'd send the end-of-stream with the last block of data.
-     * But if there are zero blocks, then we have to send it separately.
-     */
-    if (block == NULL && eos)
-        return vlc_http_stream_write(m->payload, NULL, 0, true);
-
-    while (block != NULL)
-    {
-        block_t *next = block->p_next;
-        bool end = eos && next == NULL;
-
-        if (vlc_http_stream_write(m->payload, block->p_buffer, block->i_buffer,
-                                  end) < (ssize_t)block->i_buffer)
-            goto error;
-
-        block_Release(block);
-        block = next;
-    }
-
-    return 0;
-error:
-    block_ChainRelease(block);
-    return -1;
-}
-
 /* Serialization and deserialization */
 
 char *vlc_http_msg_format(const struct vlc_http_msg *m, size_t *restrict lenp,
-                          bool proxied, bool chunked)
+                          bool proxied)
 {
     struct vlc_memstream stream;
 
@@ -349,9 +318,6 @@ char *vlc_http_msg_format(const struct vlc_http_msg *m, size_t *restrict lenp,
     for (unsigned i = 0; i < m->count; i++)
         vlc_memstream_printf(&stream, "%s: %s\r\n",
                              m->headers[i][0], m->headers[i][1]);
-
-    if (chunked)
-        vlc_memstream_puts(&stream, "Transfer-Encoding: chunked\r\n");
 
     vlc_memstream_puts(&stream, "\r\n");
 
@@ -569,18 +535,6 @@ error:
 }
 
 /* Header helpers */
-
-char *vlc_http_authority(const char *host, unsigned port)
-{
-    static const char *const formats[4] = { "%s", "[%s]", "%s:%u", "[%s]:%u" };
-    const bool brackets = strchr(host, ':') != NULL;
-    const char *fmt = formats[brackets + 2 * (port != 0)];
-    char *authority;
-
-    if (unlikely(asprintf(&authority, fmt, host, port) == -1))
-        return NULL;
-    return authority;
-}
 
 static int vlc_http_istoken(int c)
 {   /* IETF RFC7230 §3.2.6 */
@@ -924,7 +878,7 @@ uintmax_t vlc_http_msg_get_size(const struct vlc_http_msg *m)
 
     uintmax_t length;
 
-    if (sscanf(str, "%" SCNuMAX, &length) == 1)
+    if (sscanf(str, "%ju", &length) == 1)
         return length;
 
     errno = EINVAL;

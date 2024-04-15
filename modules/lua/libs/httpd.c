@@ -2,6 +2,7 @@
  * httpd.c: HTTPd wrapper
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
+ * $Id: d394c85e11b06e989a0d84457b33b65ba9be3eac $
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -71,10 +72,9 @@ static const char no_password_fmt[] = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML
 "<!-- VLC_PASSWORD_NOT_SET --></body></html>";
 
 static const char no_password_body[] = N_(
-"<p>A password for the Web interface has not been set.</p>"
-"<p>Please either use the --http-password CLI option, or set a password in preferences.</p>"
-"<p>For the latter, the option can be found in the advanced view (&quot;all&quot;) under "
-"Interface → Main interfaces → Lua → Lua HTTP → Password.</p>"
+"<p>Password for Web interface has not been set.</p>"
+"<p>Please use --http-password, or set a password in </p>"
+"<p>Preferences &gt; All &gt; Main interfaces &gt; Lua &gt; Lua HTTP &gt; Password.</p>"
 );
 
 static const char no_password_title[] = N_("VLC media player");
@@ -82,10 +82,7 @@ static const char no_password_title[] = N_("VLC media player");
 static int vlclua_httpd_tls_host_new( lua_State *L )
 {
     vlc_object_t *p_this = vlclua_get_this( L );
-    char *psz_cert = var_InheritString( p_this, "http-cert" );
-    httpd_host_t *p_host = psz_cert == NULL ? vlc_http_HostNew( p_this )
-                                            : vlc_https_HostNew( p_this );
-    free( psz_cert );
+    httpd_host_t *p_host = vlc_http_HostNew( p_this );
     if( !p_host )
         return luaL_error( L, "Failed to create HTTP host" );
 
@@ -155,15 +152,6 @@ static int vlclua_httpd_handler_callback(
         const char *psz_err = lua_tostring( L, -1 );
         msg_Err( p_this, "Error while running the lua HTTPd handler "
                  "callback: %s", psz_err );
-        char* psz_new;
-        if (asprintf(&psz_new, "Status: 500\n"
-                    "Content-Length: %zu\n\n%s", strlen(psz_err), psz_err) < 0)
-            *pi_data = 0;
-        else
-        {
-            *pp_data = (uint8_t*)psz_new;
-            *pi_data = strlen(psz_new);
-        }
         lua_settop( L, 2 );
         /* function data */
         return VLC_EGENERIC;

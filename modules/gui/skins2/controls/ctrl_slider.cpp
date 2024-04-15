@@ -2,6 +2,7 @@
  * ctrl_slider.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 9f259b3a78722bf9bd1751e55af26d4c24999c9f $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -486,8 +487,8 @@ void CtrlSliderBg::notifyLayout( int width, int height,
         float factorX, factorY;
         getResizeFactors( factorX, factorY );
         // real background size
-        width = m_bgWidth - (int)(m_padHoriz * factorX);
-        height = m_bgHeight - (int)(m_padVert * factorY);
+        int width = m_bgWidth - (int)(m_padHoriz * factorX);
+        int height = m_bgHeight - (int)(m_padVert * factorY);
         CtrlGeneric::notifyLayout( width, height );
     }
 }

@@ -2,6 +2,7 @@
  * mux.c: muxer using libavformat
  *****************************************************************************
  * Copyright (C) 2006 VLC authors and VideoLAN
+ * $Id: c708276954ce930d5c8e4858efa4d13c80193f0a $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -31,7 +32,6 @@
 #include <vlc_common.h>
 #include <vlc_block.h>
 #include <vlc_sout.h>
-#include <vlc_es.h>
 
 #include <libavformat/avformat.h>
 
@@ -50,7 +50,7 @@ static const char *const ppsz_mux_options[] = {
 /*****************************************************************************
  * mux_sys_t: mux descriptor
  *****************************************************************************/
-typedef struct
+struct sout_mux_sys_t
 {
     AVIOContext     *io;
     int             io_buffer_size;
@@ -61,10 +61,10 @@ typedef struct
     bool     b_write_header;
     bool     b_write_keyframe;
     bool     b_error;
-#if LIBAVFORMAT_VERSION_CHECK( 57, 40, 100 )
+#if LIBAVFORMAT_VERSION_CHECK( 57, 7, 0, 40, 100 )
     bool     b_header_done;
 #endif
-} sout_mux_sys_t;
+};
 
 /*****************************************************************************
  * Local prototypes
@@ -76,7 +76,7 @@ static int Mux      ( sout_mux_t * );
 
 static int IOWrite( void *opaque, uint8_t *buf, int buf_size );
 static int64_t IOSeek( void *opaque, int64_t offset, int whence );
-#if LIBAVFORMAT_VERSION_CHECK( 57, 40, 100 )
+#if LIBAVFORMAT_VERSION_CHECK( 57, 7, 0, 40, 100 )
 static int IOWriteTyped(void *opaque, uint8_t *buf, int buf_size,
                               enum AVIODataMarkerType type, int64_t time);
 #endif
@@ -86,7 +86,8 @@ static int IOWriteTyped(void *opaque, uint8_t *buf, int buf_size,
  *****************************************************************************/
 int avformat_OpenMux( vlc_object_t *p_this )
 {
-#if LIBAVFORMAT_VERSION_CHECK(59, 0, 100)
+#if LIBAVFORMAT_VERSION_MICRO >= 100 && \
+    LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
     const AVOutputFormat *file_oformat;
 #else
     AVOutputFormat *file_oformat;
@@ -94,7 +95,8 @@ int avformat_OpenMux( vlc_object_t *p_this )
     sout_mux_t *p_mux = (sout_mux_t*)p_this;
     bool dummy = !strcmp( p_mux->p_access->psz_access, "dummy");
 
-#if (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58, 7, 100))
+#if ( (LIBAVFORMAT_VERSION_MICRO >= 100) \
+      && (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58, 7, 100)) )
     if( dummy && strlen(p_mux->p_access->psz_path)
                               >= sizeof (((AVFormatContext *)NULL)->filename) )
         return VLC_EGENERIC;
@@ -133,7 +135,8 @@ int avformat_OpenMux( vlc_object_t *p_this )
     p_sys->oc->oformat = file_oformat;
     /* If we use dummy access, let avformat write output */
     if( dummy )
-#if (LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 7, 100))
+#if ( (LIBAVFORMAT_VERSION_MICRO >= 100) \
+      && (LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 7, 100)) )
         p_sys->oc->url = av_strdup(p_mux->p_access->psz_path);
 #else
         strcpy( p_sys->oc->filename, p_mux->p_access->psz_path );
@@ -156,7 +159,7 @@ int avformat_OpenMux( vlc_object_t *p_this )
     p_sys->b_write_header = true;
     p_sys->b_write_keyframe = false;
     p_sys->b_error = false;
-#if LIBAVFORMAT_VERSION_CHECK( 57, 40, 100 )
+#if LIBAVFORMAT_VERSION_CHECK( 57, 7, 0, 40, 100 )
     p_sys->io->write_data_type = IOWriteTyped;
     p_sys->b_header_done = false;
 #endif
@@ -199,7 +202,7 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
 {
     sout_mux_sys_t *p_sys = p_mux->p_sys;
     const es_format_t *fmt = p_input->p_fmt;
-    enum AVCodecID i_codec_id;
+    unsigned i_codec_id;
 
     msg_Dbg( p_mux, "adding input" );
 
@@ -230,16 +233,10 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
         i_codec_id = AV_CODEC_ID_MP3;
     }
 
-    /* Whitelist allowed ES categories */
-    switch( fmt->i_cat )
+    if( fmt->i_cat != VIDEO_ES && fmt->i_cat != AUDIO_ES)
     {
-        case VIDEO_ES:
-        case AUDIO_ES:
-        case SPU_ES:
-            break;
-        default:
-            msg_Warn( p_mux, "Unhandled ES category" );
-            return VLC_EGENERIC;
+        msg_Warn( p_mux, "Unhandled ES category" );
+        return VLC_EGENERIC;
     }
 
     /* */
@@ -279,18 +276,6 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
         }
         break;
 
-    case SPU_ES:
-        codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
-        /* psz_description and psz_language are expected to be compliant with
-         * the muxing format. It should be the case when muxing a compliant
-         * source to the same muxing format, but we have no general guarantee
-         * at this point in the code. */
-        if (fmt->psz_description != NULL && *fmt->psz_description != '\0')
-            av_dict_set( &stream->metadata, "title", fmt->psz_description, 0 );
-        if (fmt->psz_language != NULL && *fmt->psz_language != '\0')
-            av_dict_set( &stream->metadata, "language", fmt->psz_language, 0 );
-        break;
-
     case VIDEO_ES:
         if( !fmt->video.i_frame_rate || !fmt->video.i_frame_rate_base ) {
             msg_Warn( p_mux, "Missing frame rate, assuming 25fps" );
@@ -315,16 +300,6 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
         stream->sample_aspect_ratio.num = codecpar->sample_aspect_ratio.num;
         stream->time_base.den = i_frame_rate;
         stream->time_base.num = i_frame_rate_base;
-        if(i_codec_id == AV_CODEC_ID_RAWVIDEO)
-        {
-            video_format_t vfmt;
-            video_format_Copy(&vfmt, &fmt->video);
-            video_format_FixRgb(&vfmt);
-            if(GetFfmpegChroma(&codecpar->format, &vfmt))
-                msg_Warn(p_mux, "can't match format RAW video %4.4s",
-                         (const char *)&vfmt.i_chroma);
-            video_format_Clean(&vfmt);
-        }
         if (fmt->i_bitrate == 0) {
             msg_Warn( p_mux, "Missing video bitrate, assuming 512k" );
             i_bitrate = 512000;
@@ -402,12 +377,18 @@ static int MuxBlock( sout_mux_t *p_mux, sout_input_t *p_input )
         pkt->flags |= AV_PKT_FLAG_KEY;
     }
 
-    if( p_data->i_pts >= VLC_TICK_0 )
-        pkt->pts = av_rescale_q( p_data->i_pts - VLC_TICK_0,
-                                VLC_TIME_BASE_Q, p_stream->time_base );
-    if( p_data->i_dts >= VLC_TICK_0 )
-        pkt->dts = av_rescale_q( p_data->i_dts - VLC_TICK_0,
-                                VLC_TIME_BASE_Q, p_stream->time_base );
+    if( p_data->i_pts > 0 )
+        pkt->pts = p_data->i_pts * p_stream->time_base.den /
+            CLOCK_FREQ / p_stream->time_base.num;
+    if( p_data->i_dts > 0 )
+        pkt->dts = p_data->i_dts * p_stream->time_base.den /
+            CLOCK_FREQ / p_stream->time_base.num;
+
+#if LIBAVFORMAT_VERSION_MICRO >= 100 && LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 2, 103)
+    /* this is another hack to prevent libavformat from triggering the "non monotone timestamps" check in avformat/utils.c */
+    p_stream->cur_dts = ( p_data->i_dts * p_stream->time_base.den /
+            CLOCK_FREQ / p_stream->time_base.num ) - 1;
+#endif
 
     if( av_write_frame( p_sys->oc, pkt ) < 0 )
     {
@@ -425,7 +406,7 @@ static int MuxBlock( sout_mux_t *p_mux, sout_input_t *p_input )
     return VLC_SUCCESS;
 }
 
-#if LIBAVFORMAT_VERSION_CHECK( 57, 40, 100 )
+#if LIBAVFORMAT_VERSION_CHECK( 57, 7, 0, 40, 100 )
 int IOWriteTyped(void *opaque, uint8_t *buf, int buf_size,
                               enum AVIODataMarkerType type, int64_t time)
 {
@@ -507,11 +488,15 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
         *pb_bool = false;
         return VLC_SUCCESS;
 
+    case MUX_GET_ADD_STREAM_WAIT:
+        pb_bool = va_arg( args, bool * );
+        *pb_bool = true;
+        return VLC_SUCCESS;
+
     case MUX_GET_MIME:
     {
         char **ppsz = va_arg( args, char ** );
-        sout_mux_sys_t *p_sys = p_mux->p_sys;
-        *ppsz = strdup( p_sys->oc->oformat->mime_type );
+        *ppsz = strdup( p_mux->p_sys->oc->oformat->mime_type );
         return VLC_SUCCESS;
     }
 
@@ -538,7 +523,7 @@ static int IOWrite( void *opaque, uint8_t *buf, int buf_size )
 
     if( p_sys->b_write_header )
         p_buf->i_flags |= BLOCK_FLAG_HEADER;
-#if LIBAVFORMAT_VERSION_CHECK( 57, 40, 100 )
+#if LIBAVFORMAT_VERSION_CHECK( 57, 7, 0, 40, 100 )
     if( !p_sys->b_header_done )
         p_buf->i_flags |= BLOCK_FLAG_HEADER;
 #endif

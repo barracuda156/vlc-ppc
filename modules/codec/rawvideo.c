@@ -2,6 +2,7 @@
  * rawvideo.c: Pseudo video decoder/packetizer for raw video data
  *****************************************************************************
  * Copyright (C) 2001, 2002 VLC authors and VideoLAN
+ * $Id: 0c00e3355188f27a11a8242dab87eae50bfd07ed $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -34,7 +35,7 @@
 /*****************************************************************************
  * decoder_sys_t : raw video decoder descriptor
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Input properties
@@ -47,13 +48,14 @@ typedef struct
      * Common properties
      */
     date_t pts;
-} decoder_sys_t;
+};
 
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
 static int  OpenDecoder   ( vlc_object_t * );
 static int  OpenPacketizer( vlc_object_t * );
+static void CloseCommon   ( vlc_object_t * );
 
 /*****************************************************************************
  * Module descriptor
@@ -61,13 +63,14 @@ static int  OpenPacketizer( vlc_object_t * );
 vlc_module_begin ()
     set_description( N_("Pseudo raw video decoder") )
     set_capability( "video decoder", 50 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
-    set_callback( OpenDecoder )
+    set_callbacks( OpenDecoder, CloseCommon )
 
     add_submodule ()
     set_description( N_("Pseudo raw video packetizer") )
     set_capability( "packetizer", 100 )
-    set_callback( OpenPacketizer )
+    set_callbacks( OpenPacketizer, CloseCommon )
 vlc_module_end ()
 
 /**
@@ -76,34 +79,28 @@ vlc_module_end ()
 static int OpenCommon( decoder_t *p_dec )
 {
     const vlc_chroma_description_t *dsc =
-        vlc_fourcc_GetChromaDescription( p_dec->fmt_in->i_codec );
+        vlc_fourcc_GetChromaDescription( p_dec->fmt_in.i_codec );
     if( dsc == NULL || dsc->plane_count == 0 )
         return VLC_EGENERIC;
 
-    if( p_dec->fmt_in->video.i_width <= 0 || p_dec->fmt_in->video.i_height == 0 )
+    if( p_dec->fmt_in.video.i_width <= 0 || p_dec->fmt_in.video.i_height == 0 )
     {
         msg_Err( p_dec, "invalid display size %dx%d",
-                 p_dec->fmt_in->video.i_width, p_dec->fmt_in->video.i_height );
+                 p_dec->fmt_in.video.i_width, p_dec->fmt_in.video.i_height );
         return VLC_EGENERIC;
     }
 
     /* Allocate the memory needed to store the decoder's structure */
-    decoder_sys_t *p_sys = vlc_obj_calloc(VLC_OBJECT(p_dec), 1, sizeof(*p_sys));
+    decoder_sys_t *p_sys = calloc(1, sizeof(*p_sys));
     if( unlikely(p_sys == NULL) )
         return VLC_ENOMEM;
 
-    es_format_Copy( &p_dec->fmt_out, p_dec->fmt_in );
+    if( !p_dec->fmt_in.video.i_visible_width )
+        p_dec->fmt_in.video.i_visible_width = p_dec->fmt_in.video.i_width;
+    if( !p_dec->fmt_in.video.i_visible_height )
+        p_dec->fmt_in.video.i_visible_height = p_dec->fmt_in.video.i_height;
 
-    if( !p_dec->fmt_out.video.i_visible_width )
-        p_dec->fmt_out.video.i_visible_width = p_dec->fmt_out.video.i_width;
-    if( !p_dec->fmt_out.video.i_visible_height )
-        p_dec->fmt_out.video.i_visible_height = p_dec->fmt_out.video.i_height;
-
-    if( p_dec->fmt_in->i_codec == VLC_CODEC_YUV2 )
-    {
-        p_dec->fmt_out.video.i_chroma =
-        p_dec->fmt_out.i_codec = VLC_CODEC_YUYV;
-    }
+    es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );
 
     if( p_dec->fmt_out.video.i_frame_rate == 0 ||
         p_dec->fmt_out.video.i_frame_rate_base == 0)
@@ -119,9 +116,9 @@ static int OpenCommon( decoder_t *p_dec )
 
     for( unsigned i = 0; i < dsc->plane_count; i++ )
     {
-        unsigned pitch = ((p_dec->fmt_in->video.i_width + (dsc->p[i].w.den - 1)) / dsc->p[i].w.den)
+        unsigned pitch = ((p_dec->fmt_in.video.i_width + (dsc->p[i].w.den - 1)) / dsc->p[i].w.den)
                          * dsc->p[i].w.num * dsc->pixel_size;
-        unsigned lines = ((p_dec->fmt_in->video.i_height + (dsc->p[i].h.den - 1)) / dsc->p[i].h.den)
+        unsigned lines = ((p_dec->fmt_in.video.i_height + (dsc->p[i].h.den - 1)) / dsc->p[i].h.den)
                          * dsc->p[i].h.num;
 
         p_sys->pitches[i] = pitch;
@@ -162,8 +159,8 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t *p_block )
         }
     }
 
-    if( p_block->i_pts == VLC_TICK_INVALID && p_block->i_dts == VLC_TICK_INVALID &&
-        date_Get( &p_sys->pts ) == VLC_TICK_INVALID )
+    if( p_block->i_pts <= VLC_TICK_INVALID && p_block->i_dts <= VLC_TICK_INVALID &&
+        !date_Get( &p_sys->pts ) )
     {
         /* We've just started the stream, wait for the first PTS. */
         block_Release( p_block );
@@ -171,20 +168,17 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t *p_block )
     }
 
     /* Date management: If there is a pts available, use that. */
-    if( p_block->i_pts != VLC_TICK_INVALID )
+    if( p_block->i_pts > VLC_TICK_INVALID )
     {
         date_Set( &p_sys->pts, p_block->i_pts );
     }
-    else
+    else if( p_block->i_dts > VLC_TICK_INVALID )
     {
-        if( p_block->i_dts != VLC_TICK_INVALID )
-            /* NB, davidf doesn't quite agree with this in general, it is ok
-             * for rawvideo since it is in order (ie pts=dts), however, it
-             * may not be ok for an out-of-order codec, so don't copy this
-             * without thinking */
-            date_Set( &p_sys->pts, p_block->i_dts );
-
-        p_block->i_pts = date_Get( &p_sys->pts );
+        /* NB, davidf doesn't quite agree with this in general, it is ok
+         * for rawvideo since it is in order (ie pts=dts), however, it
+         * may not be ok for an out-of-order codec, so don't copy this
+         * without thinking */
+        date_Set( &p_sys->pts, p_block->i_dts );
     }
 
     if( p_block->i_buffer < p_sys->size )
@@ -195,9 +189,6 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t *p_block )
         block_Release( p_block );
         return NULL;
     }
-
-    /* Date management: 1 frame per packet */
-    date_Increment( &p_sys->pts, 1 );
 
     return p_block;
 }
@@ -217,12 +208,6 @@ static void FillPicture( decoder_t *p_dec, block_t *p_block, picture_t *p_pic )
         for( int x = 0; x < p_pic->p[i].i_visible_lines; x++ )
         {
             memcpy( p_dst, p_src, p_pic->p[i].i_visible_pitch );
-            /*Fix chroma sign.*/
-            if( p_dec->fmt_in->i_codec == VLC_CODEC_YUV2 ) {
-                for( int y = 0; y < p_pic->p[i].i_visible_pitch; y++ ) {
-                    p_dst[2*y + 1] ^= 0x80;
-                }
-            }
             p_src += p_sys->pitches[i];
             p_dst += p_pic->p[i].i_pitch;
         }
@@ -244,6 +229,8 @@ static int DecodeFrame( decoder_t *p_dec, block_t *p_block )
     if( p_block == NULL )
         return VLCDEC_SUCCESS;
 
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
     /* Get a new picture */
     picture_t *p_pic = NULL;
     if( !decoder_UpdateVideoFormat( p_dec ) )
@@ -254,13 +241,11 @@ static int DecodeFrame( decoder_t *p_dec, block_t *p_block )
         return VLCDEC_SUCCESS;
     }
 
-    struct vlc_ancillary *ancillary;
-    ancillary = vlc_frame_GetAncillary( p_block, VLC_ANCILLARY_ID_ICC );
-    if( ancillary )
-        picture_AttachAncillary( p_pic, ancillary );
-
     FillPicture( p_dec, p_block, p_pic );
-    p_pic->date = p_block->i_pts;
+
+    /* Date management: 1 frame per packet */
+    p_pic->date = date_Get( &p_dec->p_sys->pts );
+    date_Increment( &p_sys->pts, 1 );
 
     if( p_block->i_flags & BLOCK_FLAG_INTERLACED_MASK )
     {
@@ -306,8 +291,14 @@ static block_t *SendFrame( decoder_t *p_dec, block_t **pp_block )
     *pp_block = NULL;
 
     p_block = DecodeBlock( p_dec, p_block );
-    if( p_block != NULL )
-        p_block->i_dts = p_block->i_pts;
+    if( p_block == NULL )
+        return NULL;
+
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    /* Date management: 1 frame per packet */
+    p_block->i_dts = p_block->i_pts = date_Get( &p_sys->pts );
+    date_Increment( &p_sys->pts, 1 );
     return p_block;
 }
 
@@ -317,9 +308,15 @@ static int OpenPacketizer( vlc_object_t *p_this )
 
     int ret = OpenCommon( p_dec );
     if( ret == VLC_SUCCESS )
-    {
         p_dec->pf_packetize = SendFrame;
-        p_dec->pf_flush = Flush;
-    }
     return ret;
+}
+
+/**
+ * Common deinitialization
+ */
+static void CloseCommon( vlc_object_t *p_this )
+{
+    decoder_t *p_dec = (decoder_t*)p_this;
+    free( p_dec->p_sys );
 }

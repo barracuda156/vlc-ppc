@@ -34,7 +34,7 @@
  * \ingroup mrl
  *
  * Helper functions related to parsing, as well as generating, data
- * related to the \link mrl MRL-specification\endlink.
+ * related to the \link MRL-specification\endlink.
  *
  * @{
  * \file
@@ -156,9 +156,11 @@ error:
     for( size_t i = 0; i < vlc_array_count( out_items ); ++i )
         free( vlc_array_item_at_index( out_items, i ) );
     vlc_array_clear( out_items );
-    return VLC_EGENERIC;
+    return VLC_EGENERIC;;
 }
 
-/** @} */
+/*
+ * @}
+ **/
 
 #endif /* include-guard */

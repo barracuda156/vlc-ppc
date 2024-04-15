@@ -34,7 +34,6 @@ libhqdn3d_plugin_la_SOURCES = video_filter/hqdn3d.c video_filter/hqdn3d.h
 libhqdn3d_plugin_la_LIBADD = $(LIBM)
 libinvert_plugin_la_SOURCES = video_filter/invert.c
 libmagnify_plugin_la_SOURCES = video_filter/magnify.c
-libformatcrop_plugin_la_SOURCES = video_filter/formatcrop.c
 libmirror_plugin_la_SOURCES = video_filter/mirror.c
 libmotionblur_plugin_la_SOURCES = video_filter/motionblur.c
 libmotiondetect_plugin_la_SOURCES = video_filter/motiondetect.c
@@ -44,11 +43,11 @@ libposterize_plugin_la_SOURCES = video_filter/posterize.c
 libpsychedelic_plugin_la_SOURCES = video_filter/psychedelic.c
 libpsychedelic_plugin_la_LIBADD = $(LIBM)
 libpuzzle_plugin_la_SOURCES = \
-	video_filter/puzzle/puzzle.c video_filter/puzzle/puzzle.h \
-	video_filter/puzzle/puzzle_bezier.c video_filter/puzzle/puzzle_bezier.h \
-	video_filter/puzzle/puzzle_lib.c video_filter/puzzle/puzzle_lib.h \
-	video_filter/puzzle/puzzle_mgt.c video_filter/puzzle/puzzle_mgt.h \
-	video_filter/puzzle/puzzle_pce.c video_filter/puzzle/puzzle_pce.h
+	video_filter/puzzle.c video_filter/puzzle.h \
+	video_filter/puzzle_bezier.c video_filter/puzzle_bezier.h \
+	video_filter/puzzle_lib.c video_filter/puzzle_lib.h \
+	video_filter/puzzle_mgt.c video_filter/puzzle_mgt.h \
+	video_filter/puzzle_pce.c video_filter/puzzle_pce.h
 libpuzzle_plugin_la_LIBADD = $(LIBM)
 libripple_plugin_la_SOURCES = video_filter/ripple.c
 libripple_plugin_la_LIBADD = $(LIBM)
@@ -56,9 +55,7 @@ librotate_plugin_la_SOURCES = video_filter/rotate.c
 librotate_plugin_la_LIBADD = libvlc_motion.la $(LIBM)
 librotate_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(video_filterdir)'
 if HAVE_DARWIN
-if !HAVE_TVOS
 librotate_plugin_la_LDFLAGS += -Wl,-framework,IOKit,-framework,CoreFoundation
-endif
 endif
 libscale_plugin_la_SOURCES = video_filter/scale.c
 libscene_plugin_la_SOURCES = video_filter/scene.c
@@ -87,7 +84,6 @@ video_filter_LTLIBRARIES = \
 	libgaussianblur_plugin.la \
 	libinvert_plugin.la \
 	libmagnify_plugin.la \
-	libformatcrop_plugin.la \
 	libmirror_plugin.la \
 	libmotionblur_plugin.la \
 	libmotiondetect_plugin.la \
@@ -117,45 +113,11 @@ libci_filters_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(video_filterdir)' \
 	-Wl,-framework,Foundation -Wl,-framework,CoreGraphics -Wl,-framework,CoreImage \
 	-Wl,-framework,CoreVideo
 if HAVE_OSX
-libci_filters_plugin_la_LDFLAGS += -Wl,-framework,OpenGL
 video_filter_LTLIBRARIES += libci_filters_plugin.la
 endif
 
 if HAVE_IOS
-libci_filters_plugin_la_LDFLAGS += -Wl,-framework,OpenGLES
 video_filter_LTLIBRARIES += libci_filters_plugin.la
-endif
-
-libopengl_filter_plugin_la_SOURCES = video_filter/opengl.c
-
-if HAVE_LINUX
-if HAVE_ANDROID
-libopengl_filter_plugin_la_LIBADD = libvlc_opengles.la
-libopengl_filter_plugin_la_CFLAGS = -DUSE_OPENGL_ES2=1
-video_filter_LTLIBRARIES += libopengl_filter_plugin.la
-else
-libopengl_filter_plugin_la_LIBADD = libvlc_opengl.la
-if HAVE_GL
-video_filter_LTLIBRARIES += libopengl_filter_plugin.la
-endif
-endif
-endif
-
-if HAVE_IOS
-libopengl_filter_plugin_la_LIBADD = libvlc_opengles.la
-libopengl_filter_plugin_la_CFLAGS = -DUSE_OPENGL_ES2=1
-video_filter_LTLIBRARIES += libopengl_filter_plugin.la
-endif
-
-if HAVE_TVOS
-libopengl_filter_plugin_la_LIBADD = libvlc_opengles.la
-libopengl_filter_plugin_la_CFLAGS = -DUSE_OPENGL_ES2=1
-video_filter_LTLIBRARIES += libopengl_filter_plugin.la
-endif
-
-if HAVE_OSX
-libopengl_filter_plugin_la_LIBADD = libvlc_opengl.la
-video_filter_LTLIBRARIES += libopengl_filter_plugin.la
 endif
 
 libdeinterlace_common_la_SOURCES = video_filter/deinterlace/common.c video_filter/deinterlace/common.h
@@ -164,49 +126,30 @@ noinst_LTLIBRARIES += libdeinterlace_common.la
 
 libdeinterlace_plugin_la_SOURCES = \
 	video_filter/deinterlace/deinterlace.c video_filter/deinterlace/deinterlace.h \
+        video_filter/deinterlace/mmx.h \
 	video_filter/deinterlace/merge.c video_filter/deinterlace/merge.h \
 	video_filter/deinterlace/helpers.c video_filter/deinterlace/helpers.h \
 	video_filter/deinterlace/algo_basic.c video_filter/deinterlace/algo_basic.h \
 	video_filter/deinterlace/algo_x.c video_filter/deinterlace/algo_x.h \
 	video_filter/deinterlace/algo_yadif.c video_filter/deinterlace/algo_yadif.h \
-	video_filter/deinterlace/yadif.h \
+	video_filter/deinterlace/yadif.h video_filter/deinterlace/yadif_template.h \
 	video_filter/deinterlace/algo_phosphor.c video_filter/deinterlace/algo_phosphor.h \
 	video_filter/deinterlace/algo_ivtc.c video_filter/deinterlace/algo_ivtc.h
-libdeinterlace_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
-libdeinterlace_plugin_la_CFLAGS = $(AM_CFLAGS)
-if HAVE_X86ASM
-libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/yadif_x86.asm
 # inline ASM doesn't build with -O0
-libdeinterlace_plugin_la_CFLAGS += -O2
+libdeinterlace_plugin_la_CFLAGS = $(AM_CFLAGS) -O2
+if HAVE_NEON
+libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm.S
+libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM
+endif
+if HAVE_ARM64
+libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm64.S
+libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM64
 endif
 if HAVE_ALTIVEC
-libdeinterlace_plugin_la_CPPFLAGS += -DCAN_COMPILE_C_ALTIVEC
+libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_C_ALTIVEC
 endif
 libdeinterlace_plugin_la_LIBADD = libdeinterlace_common.la
 video_filter_LTLIBRARIES += libdeinterlace_plugin.la
-
-libglblend_plugin_la_SOURCES = video_filter/deinterlace/glblend.c
-libglblend_plugin_la_CFLAGS = $(AM_CFLAGS)
-if HAVE_GL
-libglblend_plugin_la_LIBADD = libvlc_opengl.la
-video_filter_LTLIBRARIES += libglblend_plugin.la
-endif
-
-if HAVE_DARWIN
-video_filter_LTLIBRARIES += libglblend_plugin.la
-if HAVE_OSX
-libglblend_plugin_la_LIBADD = libvlc_opengl.la
-else
-libglblend_plugin_la_LIBADD = libvlc_opengles.la
-libglblend_plugin_la_CFLAGS += -DUSE_OPENGL_ES2=1
-endif
-endif
-
-if HAVE_ANDROID
-libglblend_plugin_la_LIBADD = libvlc_opengles.la
-libglblend_plugin_la_CFLAGS += -DUSE_OPENGL_ES2=1
-video_filter_LTLIBRARIES += libglblend_plugin.la
-endif
 
 libopencv_wrapper_plugin_la_SOURCES = video_filter/opencv_wrapper.c
 libopencv_wrapper_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(OPENCV_CFLAGS)

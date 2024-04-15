@@ -33,7 +33,7 @@
 #include <vlc_aout.h>
 #include <vlc_charset.h> // ToWide
 #include <vlc_modules.h>
-#include "mmdevice.h"
+#include "audio_output/mmdevice.h"
 
 #include <audioclient.h>
 #include <mmdeviceapi.h>
@@ -53,9 +53,9 @@ static void LeaveMTA(void)
     CoUninitialize();
 }
 
-typedef struct
+struct aout_sys_t
 {
-    struct aout_stream_owner *stream; /**< Underlying audio output stream */
+    aout_stream_t *stream; /**< Underlying audio output stream */
     module_t *module;
     IAudioClient *client;
     wchar_t* acquired_device;
@@ -68,12 +68,9 @@ typedef struct
     IActivateAudioInterfaceCompletionHandler client_locator;
     vlc_sem_t async_completed;
     LONG refs;
-    vlc_mutex_t lock;
-    vlc_thread_t thread;
-    bool stopping;
+    CRITICAL_SECTION lock;
+};
 
-    HANDLE work_event;
-} aout_sys_t;
 
 /* MMDeviceLocator IUnknown methods */
 static STDMETHODIMP_(ULONG) MMDeviceLocator_AddRef(IActivateAudioInterfaceCompletionHandler *This)
@@ -107,7 +104,7 @@ static STDMETHODIMP MMDeviceLocator_QueryInterface(IActivateAudioInterfaceComple
 }
 
 /* MMDeviceLocator IActivateAudioInterfaceCompletionHandler methods */
-static STDMETHODIMP MMDeviceLocator_ActivateCompleted(IActivateAudioInterfaceCompletionHandler *This,
+static HRESULT MMDeviceLocator_ActivateCompleted(IActivateAudioInterfaceCompletionHandler *This,
                                                  IActivateAudioInterfaceAsyncOperation *operation)
 {
     (void)operation;
@@ -136,6 +133,7 @@ static void WaitForAudioClient(audio_output_t *aout)
     assert(sys->refs == 0);
     sys->refs = 0;
     assert(sys->client == NULL);
+    sys->client = NULL;
     free(sys->acquired_device);
     sys->acquired_device = NULL;
     ActivateAudioInterfaceAsync(devId, &IID_IAudioClient, NULL, &sys->client_locator, &asyncOp);
@@ -158,14 +156,12 @@ static void WaitForAudioClient(audio_output_t *aout)
             msg_Dbg(aout, "Failed to get the device instance.");
         else
         {
-            void *pv;
-            hr = IUnknown_QueryInterface(audioInterface, &IID_IAudioClient, &pv);
+            hr = IUnknown_QueryInterface(audioInterface, &IID_IAudioClient, (void**)&sys->client);
             IUnknown_Release(audioInterface);
             if (unlikely(FAILED(hr)))
                 msg_Warn(aout, "The received interface is not a IAudioClient. (hr=0x%lX)", hr);
             else
             {
-                sys->client = pv;
                 sys->acquired_device = wcsdup(devId);
 
                 char *report = FromWide(devId);
@@ -175,9 +171,10 @@ static void WaitForAudioClient(audio_output_t *aout)
                     free(report);
                 }
 
-                if (SUCCEEDED(IAudioClient_QueryInterface(sys->client, &IID_IAudioClient2, &pv)))
+                IAudioClient2 *audioClient2;
+                if (SUCCEEDED(IAudioClient_QueryInterface(sys->client, &IID_IAudioClient2, (void**)&audioClient2))
+                    && audioClient2)
                 {
-                    IAudioClient2 *audioClient2 = pv;
                     // "BackgroundCapableMedia" does not work in UWP
                     AudioClientProperties props = (AudioClientProperties) {
                         .cbSize = sizeof(props),
@@ -260,9 +257,9 @@ static int DeviceSelectLocked(audio_output_t *aout, const char* id)
 static int DeviceSelect(audio_output_t *aout, const char* id)
 {
     aout_sys_t *sys = aout->sys;
-    vlc_mutex_lock(&sys->lock);
+    EnterCriticalSection(&sys->lock);
     int ret = DeviceSelectLocked(aout, id);
-    vlc_mutex_unlock(&sys->lock);
+    LeaveCriticalSection(&sys->lock);
     return ret;
 }
 
@@ -283,7 +280,6 @@ static int VolumeSet(audio_output_t *aout, float vol)
     if( unlikely( sys->client == NULL ) )
         return VLC_EGENERIC;
     HRESULT hr;
-    void *pv = NULL;
     ISimpleAudioVolume *pc_AudioVolume = NULL;
 
     float linear_vol = vol * vol * vol; /* ISimpleAudioVolume is tapered linearly. */
@@ -298,18 +294,17 @@ static int VolumeSet(audio_output_t *aout, float vol)
 
     aout_GainRequest(aout, sys->gain);
 
-    hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pv);
+    hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pc_AudioVolume);
     if (FAILED(hr))
     {
-        msg_Err(aout, "cannot get volume service (error 0x%lX)", hr);
+        msg_Err(aout, "cannot get volume service (error 0x%lx)", hr);
         goto done;
     }
-    pc_AudioVolume = pv;
 
     hr = ISimpleAudioVolume_SetMasterVolume(pc_AudioVolume, linear_vol, NULL);
     if (FAILED(hr))
     {
-        msg_Err(aout, "cannot set volume (error 0x%lX)", hr);
+        msg_Err(aout, "cannot set volume (error 0x%lx)", hr);
         goto done;
     }
 
@@ -328,21 +323,19 @@ static int MuteSet(audio_output_t *aout, bool mute)
     if( unlikely( sys->client == NULL ) )
         return VLC_EGENERIC;
     HRESULT hr;
-    void *pv = NULL;
     ISimpleAudioVolume *pc_AudioVolume = NULL;
 
-    hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pv);
+    hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pc_AudioVolume);
     if (FAILED(hr))
     {
-        msg_Err(aout, "cannot get volume service (error 0x%lX)", hr);
+        msg_Err(aout, "cannot get volume service (error 0x%lx)", hr);
         goto done;
     }
-    pc_AudioVolume = pv;
 
     hr = ISimpleAudioVolume_SetMute(pc_AudioVolume, mute, NULL);
     if (FAILED(hr))
     {
-        msg_Err(aout, "cannot set mute (error 0x%lX)", hr);
+        msg_Err(aout, "cannot set mute (error 0x%lx)", hr);
         goto done;
     }
 
@@ -355,129 +348,61 @@ done:
     return SUCCEEDED(hr) ? 0 : -1;
 }
 
-static void Play(audio_output_t *aout, block_t *block, vlc_tick_t date)
+static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
 {
     aout_sys_t *sys = aout->sys;
+    if( unlikely( sys->client == NULL ) )
+        return VLC_EGENERIC;
+    HRESULT hr;
 
-    vlc_mutex_lock(&sys->lock);
-    if (unlikely(sys->client == NULL))
+    EnterMTA();
+    hr = aout_stream_TimeGet(sys->stream, delay);
+    LeaveMTA();
+
+    return SUCCEEDED(hr) ? 0 : -1;
+}
+
+static void Play(audio_output_t *aout, block_t *block)
+{
+    aout_sys_t *sys = aout->sys;
+    if( unlikely( sys->client == NULL ) )
     {
         block_Release(block);
-        vlc_mutex_unlock(&sys->lock);
         return;
     }
 
-    aout_stream_owner_AppendBlock(sys->stream, block, date);
+    EnterMTA();
+    HRESULT hr = aout_stream_Play(sys->stream, block);
+    LeaveMTA();
 
-    vlc_mutex_unlock(&sys->lock);
-    SetEvent(sys->work_event);
+    ResetInvalidatedClient(aout, hr);
 }
 
 static void Pause(audio_output_t *aout, bool paused, vlc_tick_t date)
 {
     aout_sys_t *sys = aout->sys;
+    if( unlikely( sys->client == NULL ) )
+        return;
 
     EnterMTA();
-    vlc_mutex_lock(&sys->lock);
-    if (unlikely(sys->client == NULL))
-    {
-        vlc_mutex_unlock(&sys->lock);
-        LeaveMTA();
-        return;
-    }
-
-    HRESULT hr = aout_stream_owner_Pause(sys->stream, paused);
-
-    vlc_mutex_unlock(&sys->lock);
+    HRESULT hr = aout_stream_Pause(sys->stream, paused);
     LeaveMTA();
 
     (void) date;
     ResetInvalidatedClient(aout, hr);
 }
 
-static void Flush(audio_output_t *aout)
+static void Flush(audio_output_t *aout, bool wait)
 {
     aout_sys_t *sys = aout->sys;
+    if( unlikely( sys->client == NULL ) )
+        return;
 
     EnterMTA();
-    vlc_mutex_lock(&sys->lock);
-    if (unlikely(sys->client == NULL))
-    {
-        vlc_mutex_unlock(&sys->lock);
-        LeaveMTA();
-        return;
-    }
-
-    HRESULT hr = aout_stream_owner_Flush(sys->stream);
-
-    vlc_mutex_unlock(&sys->lock);
+    HRESULT hr = aout_stream_Flush(sys->stream, wait);
     LeaveMTA();
 
     ResetInvalidatedClient(aout, hr);
-}
-
-static void *PlaybackThread(void *data)
-{
-    audio_output_t *aout = data;
-    aout_sys_t *sys = aout->sys;
-    struct aout_stream_owner *owner = sys->stream;
-
-    vlc_thread_set_name("vlc-winstore");
-
-    EnterMTA();
-    vlc_mutex_lock(&sys->lock);
-
-    while (true)
-    {
-        DWORD wait_ms = INFINITE;
-        DWORD ev_count = 1;
-        HANDLE events[2] = {
-            sys->work_event,
-            NULL
-        };
-
-        if (sys->stream != NULL)
-        {
-            wait_ms = aout_stream_owner_ProcessTimer(sys->stream);
-
-            /* Don't listen to the stream event if the block fifo is empty */
-            if (sys->stream->chain != NULL)
-                events[ev_count++] = sys->stream->buffer_ready_event;
-        }
-
-        vlc_mutex_unlock(&sys->lock);
-        WaitForMultipleObjects(ev_count, events, FALSE, wait_ms);
-        vlc_mutex_lock(&sys->lock);
-
-        if (sys->stopping)
-            break;
-
-        if (likely(sys->client != NULL))
-        {
-            HRESULT hr = aout_stream_owner_PlayAll(sys->stream);
-
-            /* Don't call ResetInvalidatedClient here since this function lock
-             * the current mutex */
-
-            if (unlikely(hr == AUDCLNT_E_DEVICE_INVALIDATED ||
-                         hr == AUDCLNT_E_RESOURCES_INVALIDATED))
-            {
-                DeviceSelectLocked(aout, NULL);
-                if (sys->client == NULL)
-                {
-                    /* Impossible to recover */
-                    block_ChainRelease(owner->chain);
-                    owner->chain = NULL;
-                    owner->last = &owner->chain;
-                }
-            }
-        }
-    }
-
-    vlc_mutex_unlock(&sys->lock);
-    LeaveMTA();
-
-    return NULL;
 }
 
 static HRESULT ActivateDevice(void *opaque, REFIID iid, PROPVARIANT *actparms,
@@ -496,16 +421,23 @@ static HRESULT ActivateDevice(void *opaque, REFIID iid, PROPVARIANT *actparms,
     return S_OK;
 }
 
-static int aout_stream_Start(void *func, bool forced, va_list ap)
+static int aout_stream_Start(void *func, va_list ap)
 {
     aout_stream_start_t start = func;
     aout_stream_t *s = va_arg(ap, aout_stream_t *);
     audio_sample_format_t *fmt = va_arg(ap, audio_sample_format_t *);
     HRESULT *hr = va_arg(ap, HRESULT *);
 
-    (void) forced;
     *hr = start(s, fmt, &GUID_VLC_AUD_OUT);
     return SUCCEEDED(*hr) ? VLC_SUCCESS : VLC_EGENERIC;
+}
+
+static void aout_stream_Stop(void *func, va_list ap)
+{
+    aout_stream_stop_t stop = func;
+    aout_stream_t *s = va_arg(ap, aout_stream_t *);
+
+    stop(s);
 }
 
 static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
@@ -513,15 +445,13 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     aout_sys_t *sys = aout->sys;
     HRESULT hr;
 
-    struct aout_stream_owner *owner =
-        aout_stream_owner_New(aout, sizeof (*owner), ActivateDevice);
-    if (unlikely(owner == NULL))
+    aout_stream_t *s = vlc_object_create(aout, sizeof (*s));
+    if (unlikely(s == NULL))
         return -1;
-    aout_stream_t *s = &owner->s;
 
     // Load the "out stream" for the requested device
     EnterMTA();
-    vlc_mutex_lock(&sys->lock);
+    EnterCriticalSection(&sys->lock);
 
     if (sys->requested_device != NULL)
     {
@@ -531,26 +461,18 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
             DeviceRestartLocked(aout);
             if (sys->client == NULL)
             {
-                vlc_mutex_unlock(&sys->lock);
+                LeaveCriticalSection(&sys->lock);
                 LeaveMTA();
-                aout_stream_owner_Delete(owner);
+                vlc_object_release(s);
                 return -1;
             }
         }
     }
 
-    sys->work_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (unlikely(sys->work_event == NULL))
-    {
-        vlc_mutex_unlock(&sys->lock);
-        LeaveMTA();
-        aout_stream_owner_Delete(owner);
-        return -1;
-    }
-
+    s->owner.activate = ActivateDevice;
     for (;;)
     {
-        owner->device = sys->client;
+        s->owner.device = sys->client;
         sys->module = vlc_module_load(s, "aout stream", NULL, false,
                                       aout_stream_Start, s, fmt, &hr);
 
@@ -583,16 +505,14 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     // Report the initial volume and mute status to the core
     if (sys->client != NULL)
     {
-        ISimpleAudioVolume *pc_AudioVolume = NULL;
-        void *pv;
+        ISimpleAudioVolume* pc_AudioVolume = NULL;
 
-        hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pv);
+        hr = IAudioClient_GetService(sys->client, &IID_ISimpleAudioVolume, &pc_AudioVolume);
         if (FAILED(hr))
         {
             msg_Err(aout, "cannot get volume service (error 0x%lx)", hr);
             goto done;
         }
-        pc_AudioVolume = pv;
 
         float vol;
         hr = ISimpleAudioVolume_GetMasterVolume(pc_AudioVolume, &vol);
@@ -618,22 +538,14 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
             ISimpleAudioVolume_Release(pc_AudioVolume);
     }
 
-    if (sys->module == NULL)
-        goto error;
-
-    assert (sys->stream == NULL);
-    sys->stream = owner;
-    sys->stopping = false;
-
-    if (vlc_clone(&sys->thread, PlaybackThread, aout))
-    {
-        aout_stream_owner_Stop(sys->stream);
-        sys->stream = NULL;
-        goto error;
-    }
-
-    vlc_mutex_unlock(&sys->lock);
+    LeaveCriticalSection(&sys->lock);
     LeaveMTA();
+
+    if (sys->module == NULL)
+    {
+        vlc_object_release(s);
+        return -1;
+    }
 
     if (sys->client)
     {
@@ -642,14 +554,9 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
         SetRequestedDevice(aout, NULL);
     }
 
+    assert (sys->stream == NULL);
+    sys->stream = s;
     return 0;
-
-error:
-    CloseHandle(sys->work_event);
-    aout_stream_owner_Delete(owner);
-    vlc_mutex_unlock(&sys->lock);
-    LeaveMTA();
-    return -1;
 }
 
 static void Stop(audio_output_t *aout)
@@ -658,18 +565,11 @@ static void Stop(audio_output_t *aout)
 
     assert (sys->stream != NULL);
 
-    vlc_mutex_lock(&sys->lock);
-    sys->stopping = true;
-    vlc_mutex_unlock(&sys->lock);
-    SetEvent(sys->work_event);
-    vlc_join(sys->thread, NULL);
-
     EnterMTA();
-    aout_stream_owner_Stop(sys->stream);
+    vlc_module_unload(sys->stream, sys->module, aout_stream_Stop, sys->stream);
     LeaveMTA();
 
-    CloseHandle(sys->work_event);
-    aout_stream_owner_Delete(sys->stream);
+    vlc_object_release(sys->stream);
     sys->stream = NULL;
 }
 
@@ -695,7 +595,7 @@ static int Open(vlc_object_t *obj)
         free(psz_default);
     }
 
-    vlc_mutex_init(&sys->lock);
+    InitializeCriticalSection(&sys->lock);
 
     vlc_sem_init(&sys->async_completed, 0);
     sys->refs = 0;
@@ -709,6 +609,7 @@ static int Open(vlc_object_t *obj)
     sys->client = NULL;
     aout->start = Start;
     aout->stop = Stop;
+    aout->time_get = TimeGet;
     aout->volume_set = VolumeSet;
     aout->mute_set = MuteSet;
     aout->play = Play;
@@ -732,6 +633,7 @@ static void Close(vlc_object_t *obj)
     if (sys->requested_device != sys->default_device)
         free(sys->requested_device);
     CoTaskMemFree(sys->default_device);
+    DeleteCriticalSection(&sys->lock);
 
     free(sys);
 }
@@ -739,7 +641,8 @@ static void Close(vlc_object_t *obj)
 vlc_module_begin()
     set_shortname("winstore")
     set_description("Windows Store audio output")
-    set_capability("audio output", 50)
+    set_capability("audio output", 0)
+    set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_AOUT)
     add_shortcut("wasapi")
     set_callbacks(Open, Close)

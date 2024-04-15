@@ -25,7 +25,9 @@
 #endif
 
 #include <errno.h>
+#ifdef HAVE_SEARCH_H
 #include <search.h>
+#endif
 #include <poll.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -55,6 +57,7 @@ static int vlc_sd_probe_Open (vlc_object_t *);
 vlc_module_begin ()
     set_shortname (N_("Video capture"))
     set_description (N_("Video capture (Video4Linux)"))
+    set_category (CAT_PLAYLIST)
     set_subcategory (SUBCAT_PLAYLIST_SD)
     set_capability ("services_discovery", 0)
     set_callbacks (OpenV4L, Close)
@@ -63,6 +66,7 @@ vlc_module_begin ()
     add_submodule ()
     set_shortname (N_("Audio capture"))
     set_description (N_("Audio capture (ALSA)"))
+    set_category (CAT_PLAYLIST)
     set_subcategory (SUBCAT_PLAYLIST_SD)
     set_capability ("services_discovery", 0)
     set_callbacks (OpenALSA, Close)
@@ -71,6 +75,7 @@ vlc_module_begin ()
     add_submodule ()
     set_shortname (N_("Discs"))
     set_description (N_("Discs"))
+    set_category (CAT_PLAYLIST)
     set_subcategory (SUBCAT_PLAYLIST_SD)
     set_capability ("services_discovery", 0)
     set_callbacks (OpenDisc, Close)
@@ -120,13 +125,13 @@ struct subsys
     int item_type;
 };
 
-typedef struct
+struct services_discovery_sys_t
 {
     const struct subsys *subsys;
     struct udev_monitor *monitor;
     vlc_thread_t         thread;
     void                *root;
-} services_discovery_sys_t;
+};
 
 /**
  * Compares two devices (to support binary search).
@@ -165,8 +170,7 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     if (mrl == NULL)
         return 0; /* don't know if it was an error... */
     char *name = p_sys->subsys->get_name (dev);
-    input_item_t *item = input_item_NewExt (mrl, name ? name : mrl,
-                                            INPUT_DURATION_INDEFINITE,
+    input_item_t *item = input_item_NewExt (mrl, name ? name : mrl, -1,
                                             p_sys->subsys->item_type, ITEM_LOCAL);
     msg_Dbg (sd, "adding %s (%s)", mrl, name);
     free (name);
@@ -184,7 +188,7 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     d->item = item;
     d->sd = NULL;
 
-    void **dp = tsearch (d, &p_sys->root, cmpdev);
+    struct device **dp = tsearch (d, &p_sys->root, cmpdev);
     if (dp == NULL) /* Out-of-memory */
     {
         DestroyDevice (d);
@@ -209,7 +213,7 @@ static void RemoveDevice (services_discovery_t *sd, struct udev_device *dev)
     services_discovery_sys_t *p_sys = sd->p_sys;
 
     dev_t num = udev_device_get_devnum (dev);
-    void **dp = tfind (&(dev_t){ num }, &p_sys->root, cmpdev);
+    struct device **dp = tfind (&(dev_t){ num }, &p_sys->root, cmpdev);
     if (dp == NULL)
         return;
 
@@ -274,7 +278,7 @@ static int Open (vlc_object_t *obj, const struct subsys *subsys)
     }
     udev_enumerate_unref (devenum);
 
-    if (vlc_clone (&p_sys->thread, Run, sd))
+    if (vlc_clone (&p_sys->thread, Run, sd, VLC_THREAD_PRIORITY_LOW))
     {   /* Fallback without thread */
         udev_monitor_unref (mon);
         udev_unref (udev);
@@ -315,8 +319,6 @@ static void Close (vlc_object_t *obj)
 
 static void *Run (void *data)
 {
-    vlc_thread_set_name("vlc-udev");
-
     services_discovery_t *sd = data;
     services_discovery_sys_t *p_sys = sd->p_sys;
     struct udev_monitor *mon = p_sys->monitor;

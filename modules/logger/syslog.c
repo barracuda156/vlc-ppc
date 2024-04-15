@@ -101,19 +101,7 @@ static int var_InheritFacility(vlc_object_t *obj, const char *varname)
 
 static const char default_ident[] = PACKAGE;
 
-static void Close(void *opaque)
-{
-    char *ident = opaque;
-
-    closelog();
-    if (ident != default_ident)
-        free(ident);
-}
-
-static const struct vlc_logger_operations ops = { Log, Close };
-
-static const struct vlc_logger_operations *Open(vlc_object_t *obj,
-                                                void **restrict sysp)
+static vlc_log_cb Open(vlc_object_t *obj, void **sysp)
 {
     if (!var_InheritBool(obj, "syslog"))
         return NULL;
@@ -135,7 +123,16 @@ static const struct vlc_logger_operations *Open(vlc_object_t *obj,
 
     setlogmask(mask);
 
-    return &ops;
+    return Log;
+}
+
+static void Close(void *opaque)
+{
+    char *ident = opaque;
+
+    closelog();
+    if (ident != default_ident)
+        free(ident);
 }
 
 #define SYSLOG_TEXT N_("System log (syslog)")
@@ -153,15 +150,18 @@ static const struct vlc_logger_operations *Open(vlc_object_t *obj,
 vlc_module_begin()
     set_shortname(N_( "syslog" ))
     set_description(N_("System logger (syslog)"))
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_capability("logger", 20)
-    set_callback(Open)
+    set_callbacks(Open, Close)
 
-    add_bool("syslog", false, SYSLOG_TEXT, SYSLOG_LONGTEXT)
-    add_bool("syslog-debug", false, SYSLOG_DEBUG_TEXT, SYSLOG_DEBUG_LONGTEXT)
+    add_bool("syslog", false, SYSLOG_TEXT, SYSLOG_LONGTEXT,
+             false)
+    add_bool("syslog-debug", false, SYSLOG_DEBUG_TEXT, SYSLOG_DEBUG_LONGTEXT,
+             false)
     add_string("syslog-ident", default_ident, SYSLOG_IDENT_TEXT,
-               SYSLOG_IDENT_LONGTEXT)
+               SYSLOG_IDENT_LONGTEXT, true)
     add_string("syslog-facility", fac_names[0], SYSLOG_FACILITY_TEXT,
-               SYSLOG_FACILITY_LONGTEXT)
+               SYSLOG_FACILITY_LONGTEXT, true)
         change_string_list(fac_names, fac_names)
 vlc_module_end()

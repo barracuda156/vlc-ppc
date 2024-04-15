@@ -4,6 +4,7 @@
  * Copyright © 2006-2008 Rafaël Carré
  * Copyright © 2007-2010 Mirsal Ennaime
  * Copyright © 2009-2010 The VideoLAN team
+ * $Id: 894018bba3c94cd7c2cba0872f7a470101036fd5 $
  *
  * Authors:    Mirsal Ennaime <mirsal at mirsal fr>
  *             Rafaël Carré <funman at videolanorg>
@@ -28,6 +29,7 @@
 
 #include <vlc_common.h>
 #include <vlc_interface.h>
+#include <vlc_playlist.h>
 #include "dbus_common.h"
 
 #define DBUS_MPRIS_TRACKLIST_INTERFACE    "org.mpris.MediaPlayer2.TrackList"
@@ -44,7 +46,7 @@ struct tracklist_change_event {
 
 struct tracklist_append_event {
     struct tracklist_change_event change_ev;
-    vlc_playlist_item_t *items[];
+    playlist_item_t items[];
 };
 
 struct tracklist_remove_event {
@@ -59,7 +61,7 @@ typedef struct tracklist_remove_event tracklist_remove_event_t;
  */
 tracklist_append_event_t *
 tracklist_append_event_create( size_t index,
-                               vlc_playlist_item_t *const items[],
+                               playlist_item_t *const items[],
                                size_t count );
 
 /* Creates an event holding what items have been removed from a tracklist.
@@ -73,7 +75,7 @@ void tracklist_append_event_destroy( tracklist_append_event_t *event );
 void tracklist_remove_event_destroy( tracklist_remove_event_t *event );
 
 /* Gets next event in the list */
-static tracklist_append_event_t *
+static inline tracklist_append_event_t *
 tracklist_append_event_next( tracklist_append_event_t *event ) {
     if( !event )
         return NULL;
@@ -82,7 +84,7 @@ tracklist_append_event_next( tracklist_append_event_t *event ) {
         (p - offsetof(struct tracklist_append_event, change_ev));
 }
 
-static tracklist_remove_event_t *
+static inline tracklist_remove_event_t *
 tracklist_remove_event_next( tracklist_remove_event_t *event ) {
     if( !event )
         return NULL;

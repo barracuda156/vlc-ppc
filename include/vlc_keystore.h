@@ -37,7 +37,6 @@ libvlc_InternalKeystoreClean(libvlc_int_t *p_libvlc);
 
 /**
  * @defgroup keystore Keystore and credential API
- * @ingroup os
  * @{
  * @file
  * This file declares vlc keystore API
@@ -231,11 +230,11 @@ vlc_credential_clean(vlc_credential *p_credential);
  * keystore or the dialog
  * @param psz_dialog_fmt dialog text using format
  *
- * @return 0 if vlc_credential.psz_username and vlc_credential.psz_password
- * are valid, or a negative errno code.
+ * @return true if vlc_credential.psz_username and vlc_credential.psz_password
+ * are valid, otherwise this function should not be called again.
  */
 
-VLC_API int
+VLC_API bool
 vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
                    const char *psz_option_username,
                    const char *psz_option_password,
@@ -294,7 +293,7 @@ vlc_keystore_release_entry(vlc_keystore_entry *p_entry)
 typedef struct vlc_keystore_sys vlc_keystore_sys;
 struct vlc_keystore
 {
-    struct vlc_object_t obj;
+    VLC_COMMON_MEMBERS
     module_t            *p_module;
     vlc_keystore_sys    *p_sys;
 
@@ -313,7 +312,6 @@ struct vlc_keystore
                                      const char *const ppsz_values[KEY_MAX]);
 };
 
-/** @} */
-/** @} */
+/** @} @} */
 
 #endif

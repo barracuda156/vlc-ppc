@@ -2,6 +2,7 @@
  * avcodec.h: decoder and encoder using libavcodec
  *****************************************************************************
  * Copyright (C) 2001-2008 VLC authors and VideoLAN
+ * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -25,16 +26,17 @@
 
 /* VLC <-> avcodec tables */
 bool GetFfmpegCodec( enum es_format_category_e cat, vlc_fourcc_t i_fourcc,
-                     enum AVCodecID *pi_ffmpeg_codec, const char **ppsz_name );
-vlc_fourcc_t GetVlcFourcc( enum AVCodecID i_ffmpeg_codec );
+                     unsigned *pi_ffmpeg_codec, const char **ppsz_name );
+vlc_fourcc_t GetVlcFourcc( unsigned i_ffmpeg_codec );
 vlc_fourcc_t GetVlcAudioFormat( int i_sample_fmt );
 
 /* Video encoder module */
 int  InitVideoEnc ( vlc_object_t * );
-void EndVideoEnc( encoder_t * );
+void EndVideoEnc( vlc_object_t * );
 
 /* Video Decoder */
 int InitVideoDec( vlc_object_t * );
+int InitVideoHwDec( vlc_object_t * );
 void EndVideoDec( vlc_object_t * );
 
 /* Audio Decoder */
@@ -84,6 +86,10 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
     "when there is not enough time. It's useful with low CPU power " \
     "but it can produce distorted pictures.")
 
+#define FAST_TEXT N_("Allow speed tricks")
+#define FAST_LONGTEXT N_( \
+    "Allow non specification compliant speedup tricks. Faster but error-prone.")
+
 #define SKIP_FRAME_TEXT N_("Skip frame (default=0)")
 #define SKIP_FRAME_LONGTEXT N_( \
     "Force skipping of frames to speed up decoding " \
@@ -91,10 +97,11 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
 
 #define SKIP_IDCT_TEXT N_("Skip idct (default=0)")
 #define SKIP_IDCT_LONGTEXT N_( \
-    "Force skipping of idct to speed up decoding for frame types." )
+    "Force skipping of idct to speed up decoding for frame types " \
+    "(-1=None, 0=Default, 1=B-frames, 2=P-frames, 3=B+P frames, 4=all frames)." )
 
 #define DEBUG_TEXT N_( "Debug mask" )
-#define DEBUG_LONGTEXT NULL
+#define DEBUG_LONGTEXT N_( "Set FFmpeg debug mask" )
 
 #define CODEC_TEXT N_( "Codec name" )
 #define CODEC_LONGTEXT N_( "Internal libavcodec codec name" )
@@ -103,6 +110,9 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
 #define SKIPLOOPF_LONGTEXT N_( "Skipping the loop filter (aka deblocking) " \
     "usually has a detrimental effect on quality. However it provides a big " \
     "speedup for high definition streams." )
+
+#define HW_TEXT N_("Hardware decoding")
+#define HW_LONGTEXT N_("This allows hardware decoding when available.")
 
 #define THREADS_TEXT N_( "Threads" )
 #define THREADS_LONGTEXT N_( "Number of threads used for decoding, 0 meaning auto" )
@@ -132,7 +142,8 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
   "motion estimation algorithms. This requires more CPU." )
 
 #define ENC_PRE_ME_TEXT N_( "Pre-motion estimation" )
-#define ENC_PRE_ME_LONGTEXT NULL
+#define ENC_PRE_ME_LONGTEXT N_( "Enable the pre-motion " \
+  "estimation algorithm.")
 
 #define ENC_RC_BUF_TEXT N_( "Rate control buffer size" )
 #define ENC_RC_BUF_LONGTEXT N_( "Rate control " \
@@ -140,6 +151,8 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
   "control, but will cause a delay in the stream." )
 
 #define ENC_RC_BUF_AGGR_TEXT N_( "Rate control buffer aggressiveness" )
+#define ENC_RC_BUF_AGGR_LONGTEXT N_( "Rate control "\
+  "buffer aggressiveness." )
 
 #define ENC_IQUANT_FACTOR_TEXT N_( "I quantization factor" )
 #define ENC_IQUANT_FACTOR_LONGTEXT N_(  \
@@ -170,8 +183,12 @@ int ffmpeg_OpenCodec( decoder_t *p_dec, AVCodecContext *, const AVCodec * );
   "threshold to ease the encoder's task." )
 
 #define ENC_QMIN_TEXT N_( "Minimum video quantizer scale" )
+#define ENC_QMIN_LONGTEXT N_( "Minimum video " \
+  "quantizer scale." )
 
 #define ENC_QMAX_TEXT N_( "Maximum video quantizer scale" )
+#define ENC_QMAX_LONGTEXT N_( "Maximum video " \
+  "quantizer scale." )
 
 #define ENC_TRELLIS_TEXT N_( "Trellis quantization" )
 #define ENC_TRELLIS_LONGTEXT N_( "Enable trellis " \

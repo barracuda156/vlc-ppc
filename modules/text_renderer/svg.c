@@ -2,6 +2,7 @@
  * svg.c : Put SVG on the video
  *****************************************************************************
  * Copyright (C) 2002, 2003 VLC authors and VideoLAN
+ * $Id: b1247af0ca26090f1e067065bf0adf3ca1086b05 $
  *
  * Authors: Olivier Aubert <oaubert@lisi.univ-lyon1.fr>
  *
@@ -47,17 +48,17 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
-static void Destroy   ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 static int  RenderText( filter_t *p_filter, subpicture_region_t *p_region_out,
                         subpicture_region_t *p_region_in,
                         const vlc_fourcc_t * );
 
-typedef struct
+struct filter_sys_t
 {
     char *psz_file_template;
     const char *psz_token;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Module descriptor
@@ -71,10 +72,12 @@ typedef struct
         "for automatic string conversion" )
 
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
+    set_capability( "text renderer", 99 )
     add_shortcut( "svg" )
-    add_string( "svg-template-file", "", TEMPLATE_TEXT, TEMPLATE_LONGTEXT )
-    set_callback_text_renderer( Create, 99 )
+    add_string( "svg-template-file", "", TEMPLATE_TEXT, TEMPLATE_LONGTEXT, true )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static void svg_RescaletoFit  ( filter_t *, int *width, int *height, float * );
@@ -167,24 +170,21 @@ static char *svg_GetDocument( filter_t *p_filter, int i_width, int i_height, con
     return psz_result;
 }
 
-static const struct vlc_filter_operations filter_ops = {
-    .render = RenderText, .close = Destroy,
-};
-
 /*****************************************************************************
  * Create: allocates svg video thread output method
  *****************************************************************************
  * This function allocates and initializes a  vout method.
  *****************************************************************************/
 
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
-    filter_sys_t *p_sys = calloc( 1, sizeof(*p_sys) );
-    if( !p_sys )
-        return VLC_ENOMEM;
-    p_filter->p_sys = p_sys;
+    filter_t *p_filter = ( filter_t * )p_this;
 
-    p_filter->ops = &filter_ops;
+    p_filter->p_sys = calloc( 1, sizeof(*p_filter->p_sys) );
+    if( !p_filter->p_sys )
+        return VLC_ENOMEM;
+
+    p_filter->pf_render = RenderText;
     svg_LoadTemplate( p_filter );
 
 #if (GLIB_MAJOR_VERSION < 2 || GLIB_MINOR_VERSION < 36)
@@ -199,14 +199,14 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Clean up all data and library connections
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_t *p_filter = ( filter_t * )p_this;
 #if (GLIB_MAJOR_VERSION < 2 || GLIB_MINOR_VERSION < 36)
     rsvg_term();
 #endif
-    free( p_sys->psz_file_template );
-    free( p_sys );
+    free( p_filter->p_sys->psz_file_template );
+    free( p_filter->p_sys );
 }
 
 static void svg_RescaletoFit( filter_t *p_filter, int *width, int *height, float *scale )

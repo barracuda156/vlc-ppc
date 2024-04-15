@@ -2,6 +2,7 @@
  * chorus_flanger: Basic chorus/flanger/delay audio filter
  *****************************************************************************
  * Copyright (C) 2009-12 VLC authors and VideoLAN
+ * $Id: 776f9361359b626b512582b67e762b343d2c2aa6 $
  *
  * Authors: Srikanth Raju < srikiraju at gmail dot com >
  *          Sukrit Sangwan < sukritsangwan at gmail dot com >
@@ -37,10 +38,8 @@
  * Local prototypes
  *****************************************************************************/
 
-typedef struct filter_sys_t filter_sys_t;
-
 static int  Open     ( vlc_object_t * );
-static void Close    ( filter_t * );
+static void Close    ( vlc_object_t * );
 static block_t *DoWork( filter_t *, block_t * );
 static int paramCallback( vlc_object_t *, char const *, vlc_value_t ,
                           vlc_value_t , void * );
@@ -75,24 +74,25 @@ vlc_module_begin ()
     set_description( N_("Sound Delay") )
     set_shortname( N_("Delay") )
     set_help( N_("Add a delay effect to the sound") )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_AFILTER )
     add_shortcut( "delay" )
     add_float( "delay-time", 20, N_("Delay time"),
-        N_("Time in milliseconds of the average delay. Note average") )
+        N_("Time in milliseconds of the average delay. Note average"), true )
     add_float( "sweep-depth", 6, N_("Sweep Depth"),
         N_("Time in milliseconds of the maximum sweep depth. Thus, the sweep "
-            "range will be delay-time +/- sweep-depth.") )
+            "range will be delay-time +/- sweep-depth."), true )
     add_float( "sweep-rate", 6, N_("Sweep Rate"),
         N_("Rate of change of sweep depth in milliseconds shift per second "
-           "of play") )
+           "of play"), true )
     add_float_with_range( "feedback-gain", 0.5, -0.9, 0.9,
-        N_("Feedback gain"), N_("Gain on Feedback loop") )
+        N_("Feedback gain"), N_("Gain on Feedback loop"), true )
     add_float_with_range( "wet-mix", 0.4, -0.999, 0.999,
-        N_("Wet mix"), N_("Level of delayed signal") )
+        N_("Wet mix"), N_("Level of delayed signal"), true )
     add_float_with_range( "dry-mix", 0.4, -0.999, 0.999,
-        N_("Dry Mix"), N_("Level of input signal") )
+        N_("Dry Mix"), N_("Level of input signal"), true )
     set_capability( "audio filter", 0 )
-    set_callback( Open )
+    set_callbacks( Open, Close )
 vlc_module_end ()
 
 /**
@@ -195,12 +195,7 @@ static int Open( vlc_object_t *p_this )
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
     aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
-
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_audio = DoWork, .close = Close,
-    };
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = DoWork;
 
     return VLC_SUCCESS;
 }
@@ -307,22 +302,23 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
  * Close: Destructor
  * @param p_this pointer to this filter object
  */
-static void Close( filter_t *p_filter )
+static void Close( vlc_object_t *p_this )
 {
+    filter_t *p_filter = ( filter_t* )p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
-    var_DelCallback( p_filter, "delay-time", paramCallback, p_sys );
-    var_DelCallback( p_filter, "sweep-depth", paramCallback, p_sys );
-    var_DelCallback( p_filter, "sweep-rate", paramCallback, p_sys );
-    var_DelCallback( p_filter, "feedback-gain", paramCallback, p_sys );
-    var_DelCallback( p_filter, "wet-mix", paramCallback, p_sys );
-    var_DelCallback( p_filter, "dry-mix", paramCallback, p_sys );
-    var_Destroy( p_filter, "delay-time" );
-    var_Destroy( p_filter, "sweep-depth" );
-    var_Destroy( p_filter, "sweep-rate" );
-    var_Destroy( p_filter, "feedback-gain" );
-    var_Destroy( p_filter, "wet-mix" );
-    var_Destroy( p_filter, "dry-mix" );
+    var_DelCallback( p_this, "delay-time", paramCallback, p_sys );
+    var_DelCallback( p_this, "sweep-depth", paramCallback, p_sys );
+    var_DelCallback( p_this, "sweep-rate", paramCallback, p_sys );
+    var_DelCallback( p_this, "feedback-gain", paramCallback, p_sys );
+    var_DelCallback( p_this, "wet-mix", paramCallback, p_sys );
+    var_DelCallback( p_this, "dry-mix", paramCallback, p_sys );
+    var_Destroy( p_this, "delay-time" );
+    var_Destroy( p_this, "sweep-depth" );
+    var_Destroy( p_this, "sweep-rate" );
+    var_Destroy( p_this, "feedback-gain" );
+    var_Destroy( p_this, "wet-mix" );
+    var_Destroy( p_this, "dry-mix" );
 
     free( p_sys->p_delayLineStart );
     free( p_sys );
@@ -335,7 +331,7 @@ static int paramCallback( vlc_object_t *p_this, char const *psz_var,
                           vlc_value_t oldval, vlc_value_t newval, void *p_data )
 {
     filter_t *p_filter = (filter_t *)p_this;
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *) p_data;
 
     if( !strncmp( psz_var, "delay-time", 10 ) )
     {
@@ -347,7 +343,7 @@ static int paramCallback( vlc_object_t *p_this, char const *psz_var,
         {
             p_sys->f_delayTime = oldval.f_float;
             p_sys->i_bufferLength = p_sys->i_channels * ( (int)
-                            ( ( p_sys->f_delayTime + p_sys->f_sweepDepth ) *
+                            ( ( p_sys->f_delayTime + p_sys->f_sweepDepth ) * 
                               p_filter->fmt_in.audio.i_rate/1000 ) + 1 );
         }
     }
@@ -360,7 +356,7 @@ static int paramCallback( vlc_object_t *p_this, char const *psz_var,
         {
             p_sys->f_sweepDepth = oldval.f_float;
             p_sys->i_bufferLength = p_sys->i_channels * ( (int)
-                            ( ( p_sys->f_delayTime + p_sys->f_sweepDepth ) *
+                            ( ( p_sys->f_delayTime + p_sys->f_sweepDepth ) * 
                               p_filter->fmt_in.audio.i_rate/1000 ) + 1 );
         }
     }

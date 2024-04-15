@@ -29,7 +29,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#ifdef HAVE_POLL_H
+#ifdef HAVE_POLL
 # include <poll.h>
 #endif
 
@@ -94,25 +94,23 @@ netbios_ns_interrupt_unregister(void)
 #endif
 
 #include "smb_common.h"
-#include "cache.h"
 
 static int Open(vlc_object_t *);
 static void Close(vlc_object_t *);
 
 vlc_module_begin()
     set_shortname("smb2")
-    set_description(N_("SMB2 / SMB3 input"))
-    set_help(N_("Samba (Windows network shares) input via libsmb2"))
+    set_description("SMB2 / SMB3 input")
+    set_help("Samba (Windows network shares) input via libsmb2")
     set_capability("access", 21)
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACCESS)
-    add_string("smb-user", NULL, SMB_USER_TEXT, SMB_USER_LONGTEXT)
-    add_password("smb-pwd", NULL, SMB_PASS_TEXT, SMB_PASS_LONGTEXT)
-    add_string("smb-domain", NULL, SMB_DOMAIN_TEXT, SMB_DOMAIN_LONGTEXT)
+    add_string("smb-user", NULL, SMB_USER_TEXT, SMB_USER_LONGTEXT, false)
+    add_password("smb-pwd", NULL, SMB_PASS_TEXT, SMB_PASS_LONGTEXT, false)
+    add_string("smb-domain", NULL, SMB_DOMAIN_TEXT, SMB_DOMAIN_LONGTEXT, false)
     add_shortcut("smb", "smb2")
     set_callbacks(Open, Close)
 vlc_module_end()
-
-VLC_ACCESS_CACHE_REGISTER(smb2_cache);
 
 struct access_sys
 {
@@ -124,13 +122,11 @@ struct access_sys
     vlc_url_t               encoded_url;
     bool                    eof;
     bool                    smb2_connected;
-
-    struct vlc_access_cache_entry *cache_entry;
 };
 
 struct vlc_smb2_op
 {
-    struct vlc_logger *log;
+    vlc_object_t *log;
 
     struct smb2_context *smb2;
     struct smb2_context **smb2p;
@@ -148,7 +144,7 @@ struct vlc_smb2_op
 };
 
 #define VLC_SMB2_OP(access, smb2p_) { \
-    .log = access ? vlc_object_logger(access) : NULL, \
+    .log = access ? VLC_OBJECT(access) : NULL, \
     .smb2p = smb2p_, \
     .smb2 = (assert(*smb2p_ != NULL), *smb2p_), \
     .error_status = 0, \
@@ -171,7 +167,7 @@ smb2_check_status(struct vlc_smb2_op *op, const char *psz_func, int status)
     {
         const char *psz_error = smb2_get_error(op->smb2);
         if (op->log)
-            vlc_warning(op->log, "%s failed: %d, '%s'", psz_func, status, psz_error);
+            msg_Warn(op->log, "%s failed: %d, '%s'", psz_func, status, psz_error);
         op->error_status = status;
         return -1;
     }
@@ -186,7 +182,7 @@ static void
 smb2_set_error(struct vlc_smb2_op *op, const char *psz_func, int err)
 {
     if (op->log && err != -EINTR)
-        vlc_error(op->log, "%s failed: %d, %s", psz_func, err, smb2_get_error(op->smb2));
+        msg_Err(op->log, "%s failed: %d, %s", psz_func, err, smb2_get_error(op->smb2));
 
     /* Don't override if set via smb2_check_status */
     if (op->error_status == 0)
@@ -204,6 +200,34 @@ smb2_set_error(struct vlc_smb2_op *op, const char *psz_func, int err)
     smb2_set_error(op, func, err)
 
 #define VLC_SMB2_STATUS_DENIED(x) (x == -ECONNREFUSED || x == -EACCES)
+
+#if defined (__ELF__) || defined (__MACH__) /* weak support */
+/* There is no way to know if libsmb2 has these new symbols and we don't want
+ * to increase the version requirement on VLC 3.0, therefore implement a weak
+ * compat version. */
+const t_socket *
+smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout);
+int
+smb2_service_fd(struct smb2_context *smb2, int fd, int revents);
+
+__attribute__((weak)) const t_socket *
+smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
+{
+    (void) timeout;
+    static thread_local t_socket fd;
+
+    *fd_count = 1;
+    fd = smb2_get_fd(smb2);
+    return &fd;
+}
+
+__attribute__((weak)) int
+smb2_service_fd(struct smb2_context *smb2, int fd, int revents)
+{
+    (void) fd;
+    return smb2_service(smb2, revents);
+}
+#endif
 
 static int
 vlc_smb2_mainloop(struct vlc_smb2_op *op)
@@ -225,7 +249,7 @@ vlc_smb2_mainloop(struct vlc_smb2_op *op)
         if (fds == NULL || (ret = vlc_poll_i11e(p_fds, fd_count, smb2_timeout)) < 0)
         {
             if (op->log && errno == EINTR)
-                vlc_warning(op->log, "vlc_poll_i11e interrupted");
+                msg_Warn(op->log, "vlc_poll_i11e interrupted");
             VLC_SMB2_SET_ERROR(op, "poll", -errno);
         }
         else if (ret == 0)
@@ -370,8 +394,8 @@ FileControl(stream_t *access, int i_query, va_list args)
         }
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t * ) = VLC_TICK_FROM_MS(
-                var_InheritInteger(access, "network-caching"));
+            *va_arg( args, int64_t * ) = INT64_C(1000)
+                * var_InheritInteger( access, "network-caching" );
             break;
 
         case STREAM_SET_PAUSE_STATE:
@@ -389,10 +413,7 @@ vlc_smb2_get_url(vlc_url_t *url, const char *file)
     /* smb2://<psz_host><i_port><psz_path><file>?<psz_option> */
     struct vlc_memstream buf;
     vlc_memstream_open(&buf);
-    if (strchr(url->psz_host, ':') != NULL)
-        vlc_memstream_printf(&buf, "smb://[%s]", url->psz_host);
-    else
-        vlc_memstream_printf(&buf, "smb://%s", url->psz_host);
+    vlc_memstream_printf(&buf, "smb://%s", url->psz_host);
 
     if (url->i_port != 0)
         vlc_memstream_printf(&buf, ":%d", url->i_port);
@@ -417,7 +438,7 @@ vlc_smb2_get_url(vlc_url_t *url, const char *file)
 }
 
 static int AddItem(stream_t *access, struct vlc_readdir_helper *rdh,
-                   const char* name, int i_type, struct smb2_stat_64 *stats)
+                   const char *name, int i_type)
 {
     struct access_sys *sys = access->p_sys;
     char *name_encoded = vlc_uri_encode(name);
@@ -429,15 +450,8 @@ static int AddItem(stream_t *access, struct vlc_readdir_helper *rdh,
     if (url == NULL)
         return VLC_ENOMEM;
 
-    input_item_t *p_item; 
     int ret = vlc_readdir_helper_additem(rdh, url, NULL, name, i_type,
-                                         ITEM_NET, &p_item);
-
-    if (ret == VLC_SUCCESS && p_item && stats)
-    {
-        input_item_AddStat( p_item, "mtime", stats->smb2_mtime);
-        input_item_AddStat( p_item, "size", stats->smb2_size);
-    }
+                                         ITEM_NET);
     free(url);
     return ret;
 }
@@ -469,7 +483,7 @@ DirRead(stream_t *access, input_item_node_t *p_node)
             i_type = ITEM_TYPE_UNKNOWN;
             break;
         }
-        ret = AddItem(access, &rdh, smb2dirent->name, i_type, &smb2dirent->st);
+        ret = AddItem(access, &rdh, smb2dirent->name, i_type);
     }
 
     vlc_readdir_helper_finish(&rdh, ret == VLC_SUCCESS);
@@ -497,7 +511,7 @@ ShareEnum(stream_t *access, input_item_node_t *p_node)
        switch (info->type & 0x3)
        {
            case SHARE_TYPE_DISKTREE:
-               ret = AddItem(access, &rdh, info->name, ITEM_TYPE_DIRECTORY, NULL);
+               ret = AddItem(access, &rdh, info->name, ITEM_TYPE_DIRECTORY);
                break;
        }
     }
@@ -647,19 +661,10 @@ error:
     return op.error_status;
 }
 
-static void
-vlc_smb2_FreeContext(void *context)
-{
-    struct smb2_context *smb2 = context;
-
-    vlc_smb2_disconnect_share(NULL, &smb2);
-    if (smb2 != NULL)
-        smb2_destroy_context(smb2);
-}
-
 static int
 vlc_smb2_connect_open_share(stream_t *access, const char *url,
-                            const vlc_credential *credential)
+                            const vlc_credential *credential,
+                            bool guest_with_valid_passwd)
 {
     struct access_sys *sys = access->p_sys;
 
@@ -669,7 +674,7 @@ vlc_smb2_connect_open_share(stream_t *access, const char *url,
     if (sys->smb2 == NULL)
     {
         msg_Err(access, "smb2_init_context failed");
-        return -1;
+        return -ENOMEM;
     }
     smb2_url = smb2_parse_url(sys->smb2, url);
 
@@ -688,31 +693,7 @@ vlc_smb2_connect_open_share(stream_t *access, const char *url,
     {
         username = "Guest";
         /* A NULL password enable ntlmssp anonymous login */
-        password = NULL;
-    }
-
-    struct vlc_access_cache_entry *cache_entry =
-        vlc_access_cache_GetSmbEntry(&smb2_cache, smb2_url->server, share,
-                                     credential->psz_username);
-    if (cache_entry != NULL)
-    {
-        struct smb2_context *smb2 = cache_entry->context;
-        int err = vlc_smb2_open_share(access, &smb2, smb2_url, do_enum);
-        if (err == 0)
-        {
-            assert(smb2 != NULL);
-
-            smb2_destroy_context(sys->smb2);
-            sys->smb2 = cache_entry->context;
-            sys->smb2_connected = true;
-            sys->cache_entry = cache_entry;
-
-            smb2_destroy_url(smb2_url);
-            msg_Dbg(access, "re-using old smb2 session");
-            return 0;
-        }
-        else
-            vlc_access_cache_entry_Delete(cache_entry);
+        password = guest_with_valid_passwd ? "" : NULL;
     }
 
     smb2_set_security_mode(sys->smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
@@ -738,15 +719,6 @@ vlc_smb2_connect_open_share(stream_t *access, const char *url,
     if (err < 0)
     {
         op.error_status = err;
-        goto error;
-    }
-
-    sys->cache_entry = vlc_access_cache_entry_NewSmb(sys->smb2, smb2_url->server, share,
-                                                     credential->psz_username,
-                                                     vlc_smb2_FreeContext);
-    if (sys->cache_entry == NULL)
-    {
-        op.error_status = -ENOMEM;
         goto error;
     }
 
@@ -881,22 +853,29 @@ Open(vlc_object_t *p_obj)
 
     /* First, try Guest login or using "smb-" options (without
      * keystore/user interaction) */
-    if (vlc_credential_get(&credential, access, "smb-user", "smb-pwd", NULL,
-                           NULL) == -EINTR)
+    vlc_credential_get(&credential, access, "smb-user", "smb-pwd", NULL,
+                       NULL);
+    ret = vlc_smb2_connect_open_share(access, url, &credential, false);
+    if (ret == -EINVAL && credential.psz_username == NULL)
     {
-        vlc_credential_clean(&credential);
-        free(resolved_host);
-        ret = -EINTR;
-        goto error;
+        /* Since last Windows 11 update (KB5026436), Windows SMB servers need a
+         * valid Auth (user + password) even for a guest/anonymous login. The
+         * server will return 'STATUS_INVALID_PARAMETER' (so, libsmb2 will
+         * return '-EINVAL') if the password is invalid. Therefore, try to
+         * connect again with a valid password in that case.
+         *
+         * We don't try to connect with a valid password on the first try since
+         * it seems to break anonymous login with other samba servers (but
+         * samba.c doesn't have this problem so this might be libsmb2 issue).
+         * */
+        ret = vlc_smb2_connect_open_share(access, url, &credential, true);
     }
-
-    ret = vlc_smb2_connect_open_share(access, url, &credential);
 
     while (VLC_SMB2_STATUS_DENIED(ret)
         && vlc_credential_get(&credential, access, "smb-user", "smb-pwd",
                               SMB_LOGIN_DIALOG_TITLE, SMB_LOGIN_DIALOG_TEXT,
-                              sys->encoded_url.psz_host) == 0)
-        ret = vlc_smb2_connect_open_share(access, url, &credential);
+                              sys->encoded_url.psz_host))
+        ret = vlc_smb2_connect_open_share(access, url, &credential, false);
     free(resolved_host);
     free(url);
     if (ret == 0)
@@ -908,7 +887,7 @@ Open(vlc_object_t *p_obj)
         const char *error = smb2_get_error(sys->smb2);
         if (error && *error)
             vlc_dialog_display_error(access,
-                                     _("SMB2 operation failed"), "%s", error);
+                                     "SMB2 operation failed", "%s", error);
         if (credential.i_get_order == GET_FROM_DIALOG)
         {
             /* Tell other smb modules (likely dsm) that we already requested
@@ -976,9 +955,11 @@ Close(vlc_object_t *p_obj)
     assert(sys->smb2_connected);
 
     if (sys->smb2 != NULL)
-        vlc_access_cache_AddEntry(&smb2_cache, sys->cache_entry);
-    else
-        vlc_access_cache_entry_Delete(sys->cache_entry);
+    {
+        vlc_smb2_disconnect_share(access, &sys->smb2);
+        if (sys->smb2 != NULL)
+            smb2_destroy_context(sys->smb2);
+    }
 
     vlc_UrlClean(&sys->encoded_url);
 }

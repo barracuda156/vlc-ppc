@@ -45,6 +45,9 @@ using namespace adaptive;
 using namespace adaptive::playlist;
 using namespace hls::playlist;
 
+#define vlc_tick_from_sec(a) (CLOCK_FREQ * (a))
+#define SEC_FROM_VLC_TICK(a) ((a)/CLOCK_FREQ)
+
 static M3U8 * ParseM3U8(vlc_object_t *obj, const char *psz, size_t isz)
 {
     M3U8Parser parser(nullptr);
@@ -493,11 +496,11 @@ int M3U8Playlist_test()
     {
         Expect(m3u);
         Expect(m3u->isLive() == false);
-        Expect(m3u->presentationStartOffset.Get() == vlc_tick_from_sec(50 - 11.5));
+        Expect(m3u->presentationStartOffset.Get() == ((50 - 11.5) * CLOCK_FREQ));
         BaseRepresentation *rep = m3u->getFirstPeriod()->getAdaptationSets().front()->
                                   getRepresentations().front();
         Expect(bufferingLogic.getStartSegmentNumber(rep) == 13);
-        m3u->presentationStartOffset.Set(vlc_tick_from_sec(11.5));
+        m3u->presentationStartOffset.Set(11.5 * CLOCK_FREQ);
         Expect(bufferingLogic.getStartSegmentNumber(rep) == 11);
 
         delete m3u;

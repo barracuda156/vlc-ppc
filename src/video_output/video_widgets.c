@@ -2,6 +2,7 @@
  * video_widgets.c : OSD widgets manipulation functions
  *****************************************************************************
  * Copyright (C) 2004-2010 VLC authors and VideoLAN
+ * $Id: 7d52f751ef4c179819ef39fd8a800f8845fcf106 $
  *
  * Author: Yoann Peronneau <yoann@videolan.org>
  *         Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
@@ -205,8 +206,8 @@ static subpicture_region_t *OSDSlider(int type, int position,
  */
 static subpicture_region_t *OSDIcon(int type, const video_format_t *fmt)
 {
-    const float size_ratio   = 0.05f;
-    const float margin_ratio = 0.07f;
+    const float size_ratio   = 0.05;
+    const float margin_ratio = 0.07;
 
     const int size   = __MAX(fmt->i_visible_width, fmt->i_visible_height);
     const int width  = size * size_ratio;
@@ -248,10 +249,10 @@ static subpicture_region_t *OSDIcon(int type, const video_format_t *fmt)
     return r;
 }
 
-typedef struct {
+struct subpicture_updater_sys_t {
     int type;
     int position;
-} osdwidget_spu_updater_sys_t;
+};
 
 static int OSDWidgetValidate(subpicture_t *subpic,
                            bool has_src_changed, const video_format_t *fmt_src,
@@ -272,7 +273,7 @@ static void OSDWidgetUpdate(subpicture_t *subpic,
                           const video_format_t *fmt_dst,
                           vlc_tick_t ts)
 {
-    osdwidget_spu_updater_sys_t *sys = subpic->updater.p_sys;
+    subpicture_updater_sys_t *sys = subpic->updater.p_sys;
     VLC_UNUSED(fmt_src); VLC_UNUSED(ts);
 
     video_format_t fmt = *fmt_dst;
@@ -302,7 +303,7 @@ static void OSDWidget(vout_thread_t *vout, int channel, int type, int position)
     if (type == OSD_HOR_SLIDER || type == OSD_VERT_SLIDER)
         position = VLC_CLIP(position, 0, 100);
 
-    osdwidget_spu_updater_sys_t *sys = malloc(sizeof(*sys));
+    subpicture_updater_sys_t *sys = malloc(sizeof(*sys));
     if (!sys)
         return;
     sys->type     = type;
@@ -321,8 +322,8 @@ static void OSDWidget(vout_thread_t *vout, int channel, int type, int position)
     }
 
     subpic->i_channel  = channel;
-    subpic->i_start    = vlc_tick_now();
-    subpic->i_stop     = subpic->i_start + VLC_TICK_FROM_MS(1200);
+    subpic->i_start    = mdate();
+    subpic->i_stop     = subpic->i_start + 1200000;
     subpic->b_ephemer  = true;
     subpic->b_absolute = true;
     subpic->b_fade     = true;

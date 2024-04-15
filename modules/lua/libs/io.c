@@ -139,7 +139,7 @@ static int vlclua_io_file_seek( lua_State *L )
     const char* psz_mode = luaL_optstring( L, 2, NULL );
     if ( psz_mode != NULL )
     {
-        long i_offset = luaL_optinteger( L, 3, 0 );
+        long i_offset = luaL_optlong( L, 3, 0 );
         int i_mode;
         if ( !strcmp( psz_mode, "set" ) )
             i_mode = SEEK_SET;
@@ -213,7 +213,7 @@ static int vlclua_io_readdir( lua_State *L )
     if( lua_gettop( L ) < 1 )
         return luaL_error( L, "Usage: vlc.io.readdir(name)" );
     const char* psz_path = luaL_checkstring( L, 1 );
-    vlc_DIR* p_dir =  vlc_opendir( psz_path );
+    DIR* p_dir =  vlc_opendir( psz_path );
     if ( p_dir == NULL )
         return 0;
 
@@ -226,7 +226,7 @@ static int vlclua_io_readdir( lua_State *L )
         lua_rawseti( L, -2, idx );
         idx++;
     }
-    vlc_closedir( p_dir );
+    closedir( p_dir );
     return 1;
 }
 

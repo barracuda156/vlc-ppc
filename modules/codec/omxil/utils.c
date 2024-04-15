@@ -2,6 +2,7 @@
  * utils.c: helper functions
  *****************************************************************************
  * Copyright (C) 2010 VLC authors and VideoLAN
+ * $Id: 0b877f323ee26f490fbd9e16ac572d51cdb47cfe $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -50,7 +51,8 @@ void InitOmxEventQueue(OmxEventQueue *queue)
 
 void DeinitOmxEventQueue(OmxEventQueue *queue)
 {
-    (void) queue;
+    vlc_mutex_destroy(&queue->mutex);
+    vlc_cond_destroy(&queue->cond);
 }
 
 OMX_ERRORTYPE PostOmxEvent(OmxEventQueue *queue, OMX_EVENTTYPE event,
@@ -79,7 +81,7 @@ OMX_ERRORTYPE WaitForOmxEvent(OmxEventQueue *queue, OMX_EVENTTYPE *event,
     OMX_U32 *data_1, OMX_U32 *data_2, OMX_PTR *event_data)
 {
     OmxEvent *p_event;
-    vlc_tick_t deadline = vlc_tick_now() + VLC_TICK_FROM_SEC(1);
+    vlc_tick_t deadline = mdate() + CLOCK_FREQ;
 
     vlc_mutex_lock(&queue->mutex);
 
@@ -114,7 +116,7 @@ OMX_ERRORTYPE WaitForSpecificOmxEvent(OmxEventQueue *queue,
 {
     OMX_ERRORTYPE status;
     OMX_EVENTTYPE event;
-    vlc_tick_t before =  vlc_tick_now();
+    vlc_tick_t before =  mdate();
 
     while(1)
     {
@@ -122,7 +124,7 @@ OMX_ERRORTYPE WaitForSpecificOmxEvent(OmxEventQueue *queue,
         if(status != OMX_ErrorNone) return status;
 
         if(event == specific_event) break;
-        if(vlc_tick_now() - before > VLC_TICK_FROM_SEC(1)) return OMX_ErrorTimeout;
+        if(mdate() - before > CLOCK_FREQ) return OMX_ErrorTimeout;
     }
 
     return OMX_ErrorNone;
@@ -182,11 +184,6 @@ void ArchitectureSpecificCopyHooks( decoder_t *p_dec, int i_color_format,
         p_architecture_specific->data = p_surface_cache;
         p_dec->fmt_out.i_codec = VLC_CODEC_YV12;
     }
-#else
-    VLC_UNUSED(p_dec);
-    VLC_UNUSED(i_color_format);
-    VLC_UNUSED(i_src_stride);
-    VLC_UNUSED(p_architecture_specific);
 #endif
 }
 
@@ -201,8 +198,6 @@ void ArchitectureSpecificCopyHooksDestroy( int i_color_format,
         copy_cache_t *p_surface_cache = (copy_cache_t*)p_architecture_specific->data;
         CopyCleanCache(p_surface_cache);
     }
-#else
-    VLC_UNUSED(i_color_format);
 #endif
     free(p_architecture_specific->data);
     p_architecture_specific->data = NULL;
@@ -233,8 +228,6 @@ void CopyOmxPicture( int i_color_format, picture_t *p_pic,
         picture_SwapUV( p_pic );
         return;
     }
-#else
-    VLC_UNUSED(p_architecture_specific);
 #endif
 
     for( i_plane = 0; i_plane < p_pic->i_planes; i_plane++ )
@@ -439,112 +432,76 @@ int OMXCodec_GetQuirks( enum es_format_category_e i_cat, vlc_fourcc_t i_codec,
  *****************************************************************************/
 const char *StateToString(OMX_STATETYPE state)
 {
-    switch (state)
-    {
-#define CASE(state) case state: return #state
-        CASE(OMX_StateInvalid);
-        CASE(OMX_StateLoaded);
-        CASE(OMX_StateIdle);
-        CASE(OMX_StateExecuting);
-        CASE(OMX_StatePause);
-        CASE(OMX_StateWaitForResources);
-        CASE(OMX_StateKhronosExtensions);
-        CASE(OMX_StateVendorStartUnused);
-#undef CASE
-        case OMX_StateMax: break;
-    }
-    return "OMX_State unknown";
+    static const char *psz_names[] = {
+        "OMX_StateInvalid", "OMX_StateLoaded", "OMX_StateIdle",
+        "OMX_StateExecuting", "OMX_StatePause", "OMX_StateWaitForResources",
+        "OMX_State unknown"
+    };
+
+    if((unsigned int)state > sizeof(psz_names)/sizeof(char*)-1)
+        state = (OMX_STATETYPE)(sizeof(psz_names)/sizeof(char*)-1);
+    return psz_names[state];
 }
 
 const char *CommandToString(OMX_COMMANDTYPE command)
 {
-    switch (command)
-    {
-#define CASE(command) case command: return #command
-        CASE(OMX_CommandStateSet);
-        CASE(OMX_CommandFlush);
-        CASE(OMX_CommandPortDisable);
-        CASE(OMX_CommandPortEnable);
-        CASE(OMX_CommandMarkBuffer);
-        CASE(OMX_CommandKhronosExtensions);
-        CASE(OMX_CommandVendorStartUnused);
-#undef CASE
-        case OMX_CommandMax: break;
-    }
-    return "OMX_Command unknown";
+    static const char *psz_names[] = {
+        "OMX_CommandStateSet", "OMX_CommandFlush", "OMX_CommandPortDisable",
+        "OMX_CommandPortEnable", "OMX_CommandMarkBuffer",
+        "OMX_Command unknown"
+    };
+
+    if((unsigned int)command > sizeof(psz_names)/sizeof(char*)-1)
+        command = (OMX_COMMANDTYPE)(sizeof(psz_names)/sizeof(char*)-1);
+    return psz_names[command];
 }
 
 const char *EventToString(OMX_EVENTTYPE event)
 {
-    switch (event)
-    {
-#define CASE(event) case event: return #event
-        CASE(OMX_EventCmdComplete);
-        CASE(OMX_EventError);
-        CASE(OMX_EventMark);
-        CASE(OMX_EventPortSettingsChanged);
-        CASE(OMX_EventBufferFlag);
-        CASE(OMX_EventResourcesAcquired);
-        CASE(OMX_EventComponentResumed);
-        CASE(OMX_EventDynamicResourcesAvailable);
-        CASE(OMX_EventPortFormatDetected);
-        CASE(OMX_EventKhronosExtensions);
-        CASE(OMX_EventVendorStartUnused);
-#undef CASE
-        case OMX_EventMax: break;
-    }
-    return "OMX_Event unknown";
+    static const char *psz_names[] = {
+        "OMX_EventCmdComplete", "OMX_EventError", "OMX_EventMark",
+        "OMX_EventPortSettingsChanged", "OMX_EventBufferFlag",
+        "OMX_EventResourcesAcquired", "OMX_EventComponentResumed",
+        "OMX_EventDynamicResourcesAvailable", "OMX_EventPortFormatDetected",
+        "OMX_Event unknown"
+    };
+
+    if((unsigned int)event > sizeof(psz_names)/sizeof(char*)-1)
+        event = (OMX_EVENTTYPE)(sizeof(psz_names)/sizeof(char*)-1);
+    return psz_names[event];
 }
 
 const char *ErrorToString(OMX_ERRORTYPE error)
 {
-    switch (error)
-    {
-#define CASE(error) case error: return #error
-        CASE(OMX_ErrorNone);
-        CASE(OMX_ErrorInsufficientResources);
-        CASE(OMX_ErrorUndefined);
-        CASE(OMX_ErrorInvalidComponentName);
-        CASE(OMX_ErrorComponentNotFound);
-        CASE(OMX_ErrorInvalidComponent);
-        CASE(OMX_ErrorBadParameter);
-        CASE(OMX_ErrorNotImplemented);
-        CASE(OMX_ErrorUnderflow);
-        CASE(OMX_ErrorOverflow);
-        CASE(OMX_ErrorHardware);
-        CASE(OMX_ErrorInvalidState);
-        CASE(OMX_ErrorStreamCorrupt);
-        CASE(OMX_ErrorPortsNotCompatible);
-        CASE(OMX_ErrorResourcesLost);
-        CASE(OMX_ErrorNoMore);
-        CASE(OMX_ErrorVersionMismatch);
-        CASE(OMX_ErrorNotReady);
-        CASE(OMX_ErrorTimeout);
-        CASE(OMX_ErrorSameState);
-        CASE(OMX_ErrorResourcesPreempted);
-        CASE(OMX_ErrorPortUnresponsiveDuringAllocation);
-        CASE(OMX_ErrorPortUnresponsiveDuringDeallocation);
-        CASE(OMX_ErrorPortUnresponsiveDuringStop);
-        CASE(OMX_ErrorIncorrectStateTransition);
-        CASE(OMX_ErrorIncorrectStateOperation);
-        CASE(OMX_ErrorUnsupportedSetting);
-        CASE(OMX_ErrorUnsupportedIndex);
-        CASE(OMX_ErrorBadPortIndex);
-        CASE(OMX_ErrorPortUnpopulated);
-        CASE(OMX_ErrorComponentSuspended);
-        CASE(OMX_ErrorDynamicResourcesUnavailable);
-        CASE(OMX_ErrorMbErrorsInFrame);
-        CASE(OMX_ErrorFormatNotDetected);
-        CASE(OMX_ErrorContentPipeOpenFailed);
-        CASE(OMX_ErrorContentPipeCreationFailed);
-        CASE(OMX_ErrorSeperateTablesUsed);
-        CASE(OMX_ErrorTunnelingUnsupported);
-        CASE(OMX_ErrorKhronosExtensions);
-        CASE(OMX_ErrorVendorStartUnused);
-#undef CASE
-        case OMX_ErrorMax: break;
-    }
-    return "OMX_Error unknown";
+    static const char *psz_names[] = {
+        "OMX_ErrorInsufficientResources", "OMX_ErrorUndefined",
+        "OMX_ErrorInvalidComponentName", "OMX_ErrorComponentNotFound",
+        "OMX_ErrorInvalidComponent", "OMX_ErrorBadParameter",
+        "OMX_ErrorNotImplemented", "OMX_ErrorUnderflow",
+        "OMX_ErrorOverflow", "OMX_ErrorHardware", "OMX_ErrorInvalidState",
+        "OMX_ErrorStreamCorrupt", "OMX_ErrorPortsNotCompatible",
+        "OMX_ErrorResourcesLost", "OMX_ErrorNoMore", "OMX_ErrorVersionMismatch",
+        "OMX_ErrorNotReady", "OMX_ErrorTimeout", "OMX_ErrorSameState",
+        "OMX_ErrorResourcesPreempted", "OMX_ErrorPortUnresponsiveDuringAllocation",
+        "OMX_ErrorPortUnresponsiveDuringDeallocation",
+        "OMX_ErrorPortUnresponsiveDuringStop", "OMX_ErrorIncorrectStateTransition",
+        "OMX_ErrorIncorrectStateOperation", "OMX_ErrorUnsupportedSetting",
+        "OMX_ErrorUnsupportedIndex", "OMX_ErrorBadPortIndex",
+        "OMX_ErrorPortUnpopulated", "OMX_ErrorComponentSuspended",
+        "OMX_ErrorDynamicResourcesUnavailable", "OMX_ErrorMbErrorsInFrame",
+        "OMX_ErrorFormatNotDetected", "OMX_ErrorContentPipeOpenFailed",
+        "OMX_ErrorContentPipeCreationFailed", "OMX_ErrorSeperateTablesUsed",
+        "OMX_ErrorTunnelingUnsupported",
+        "OMX_Error unknown"
+    };
+
+    if(error == OMX_ErrorNone) return "OMX_ErrorNone";
+
+    error -= OMX_ErrorInsufficientResources;
+
+    if((unsigned int)error > sizeof(psz_names)/sizeof(char*)-1)
+        error = (OMX_STATETYPE)(sizeof(psz_names)/sizeof(char*)-1);
+    return psz_names[error];
 }
 
 /*****************************************************************************

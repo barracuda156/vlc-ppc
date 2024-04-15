@@ -33,7 +33,7 @@
 
 
 
-typedef struct
+typedef struct stream_sys_t
 {
     SRTSOCKET   sock;
     int         i_poll_id;
@@ -78,8 +78,8 @@ static int Control(stream_t *p_stream, int i_query, va_list args)
             *va_arg( args, bool * ) = false;
             break;
         case STREAM_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) = VLC_TICK_FROM_MS(
-                   var_InheritInteger(p_stream, "network-caching") );
+            *va_arg( args, int64_t * ) = INT64_C(1000)
+                   * var_InheritInteger(p_stream, "network-caching");
             break;
         default:
             i_ret = VLC_EGENERIC;
@@ -91,7 +91,7 @@ static int Control(stream_t *p_stream, int i_query, va_list args)
 
 static bool srt_schedule_reconnect(stream_t *p_stream)
 {
-    vlc_object_t *strm_obj = VLC_OBJECT(p_stream);
+    vlc_object_t *strm_obj = (vlc_object_t *) p_stream;
     int i_latency=var_InheritInteger( p_stream, SRT_PARAM_LATENCY );
     int stat;
     char *psz_passphrase = var_InheritString( p_stream, SRT_PARAM_PASSPHRASE );
@@ -126,7 +126,7 @@ static bool srt_schedule_reconnect(stream_t *p_stream)
         srt_close( p_sys->sock );
     }
 
-    p_sys->sock = srt_create_socket( );
+    p_sys->sock = srt_socket( res->ai_family, SOCK_DGRAM, 0 );
     if ( p_sys->sock == SRT_INVALID_SOCK )
     {
         msg_Err( p_stream, "Failed to open socket." );
@@ -371,7 +371,7 @@ static int Open(vlc_object_t *p_this)
         goto failed;
     }
 
-    p_sys->psz_host = vlc_obj_strdup( p_this, parsed_url.psz_host );
+    p_sys->psz_host = strdup( parsed_url.psz_host );
     p_sys->i_port = parsed_url.i_port;
 
     vlc_UrlClean( &parsed_url );
@@ -397,9 +397,13 @@ static int Open(vlc_object_t *p_this)
     return VLC_SUCCESS;
 
 failed:
+    vlc_mutex_destroy( &p_sys->lock );
+
     if ( p_sys->sock != SRT_INVALID_SOCK ) srt_close( p_sys->sock );
     if ( p_sys->i_poll_id != -1 ) srt_epoll_release( p_sys->i_poll_id );
     srt_cleanup();
+
+    free( p_sys->psz_host );
 
     return VLC_EGENERIC;
 }
@@ -409,10 +413,13 @@ static void Close(vlc_object_t *p_this)
     stream_t     *p_stream = (stream_t*)p_this;
     stream_sys_t *p_sys = p_stream->p_sys;
 
+    vlc_mutex_destroy( &p_sys->lock );
+
     srt_epoll_remove_usock( p_sys->i_poll_id, p_sys->sock );
     srt_close( p_sys->sock );
     srt_epoll_release( p_sys->i_poll_id );
 
+    free( p_sys->psz_host );
     srt_cleanup();
 }
 
@@ -420,22 +427,23 @@ static void Close(vlc_object_t *p_this)
 vlc_module_begin ()
     set_shortname( N_( "SRT" ) )
     set_description( N_( "SRT input" ) )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
 
     add_obsolete_integer( SRT_PARAM_CHUNK_SIZE )
     add_integer( SRT_PARAM_POLL_TIMEOUT, SRT_DEFAULT_POLL_TIMEOUT,
             N_( "Return poll wait after timeout milliseconds (-1 = infinite)" ),
-            NULL )
+            NULL, true )
     add_integer( SRT_PARAM_LATENCY, SRT_DEFAULT_LATENCY,
-            N_( "SRT latency (ms)" ), NULL )
+            N_( "SRT latency (ms)" ), NULL, true )
     add_password( SRT_PARAM_PASSPHRASE, "",
-            N_( "Password for stream encryption" ), NULL )
+            N_( "Password for stream encryption" ), NULL, false )
     add_obsolete_integer( SRT_PARAM_PAYLOAD_SIZE )
     add_integer( SRT_PARAM_KEY_LENGTH, SRT_DEFAULT_KEY_LENGTH,
-            SRT_KEY_LENGTH_TEXT, NULL )
+            SRT_KEY_LENGTH_TEXT, SRT_KEY_LENGTH_TEXT, false )
     change_integer_list( srt_key_lengths, srt_key_length_names )
     add_string(SRT_PARAM_STREAMID, "",
-            N_(" SRT Stream ID"), NULL)
+            N_(" SRT Stream ID"), NULL, false)
     change_safe()
 
     set_capability("access", 0)

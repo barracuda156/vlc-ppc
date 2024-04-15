@@ -104,7 +104,6 @@ SegmentChunk* ISegment::toChunk(SharedResources *res, size_t index, BaseRepresen
             chunk->discontinuitySequenceNumber = getDiscontinuitySequenceNumber();
             if(!prepareChunk(res, chunk, rep))
             {
-                res->getConnManager()->recycleSource(source);
                 delete chunk;
                 return nullptr;
             }
@@ -164,7 +163,7 @@ void ISegment::debug(vlc_object_t *obj, int indent) const
     if(startByte!=endByte)
         ss << " @" << startByte << ".." << endByte;
     if(startTime.Get() > 0)
-        ss << " stime " << startTime.Get();
+    	 ss << " stime " << startTime.Get();
     ss << " duration " << duration.Get();
     if(discontinuity)
     {

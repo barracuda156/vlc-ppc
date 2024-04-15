@@ -2,6 +2,7 @@
  * float32.c : precise float32 audio volume implementation
  *****************************************************************************
  * Copyright (C) 2002 VLC authors and VideoLAN
+ * $Id: 227069e696e063f017419d58b84612987b40627c $
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *
@@ -43,10 +44,11 @@ static int Create( vlc_object_t * );
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
-    set_subcategory( SUBCAT_AUDIO_AFILTER )
+    set_category( CAT_AUDIO )
+    set_subcategory( SUBCAT_AUDIO_MISC )
     set_description( N_("Single precision audio volume") )
     set_capability( "audio volume", 10 )
-    set_callback( Create )
+    set_callbacks( Create, NULL )
 vlc_module_end ()
 
 /**

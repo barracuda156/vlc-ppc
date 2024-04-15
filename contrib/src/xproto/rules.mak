@@ -3,7 +3,7 @@ XPROTO_VERSION := 7.0.29
 XPROTO_URL := http://xorg.freedesktop.org/releases/individual/proto/xproto-$(XPROTO_VERSION).tar.bz2
 
 $(TARBALLS)/xproto-$(XPROTO_VERSION).tar.bz2:
-	$(call download_pkg,$(XPROTO_URL),xcb)
+	$(call download,$(XPROTO_URL))
 
 ifeq ($(call need_pkg,"xproto"),)
 PKGS_FOUND += xproto
@@ -17,12 +17,8 @@ xproto: xproto-$(XPROTO_VERSION).tar.bz2 .sum-xproto
 
 DEPS_xproto = xorg-macros $(DEPS_xorg-macros)
 
-XPROTO_CONF := --enable-xthreads
-
 .xproto: xproto
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(XPROTO_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --enable-xthreads
+	cd $< && $(MAKE) install
 	touch $@

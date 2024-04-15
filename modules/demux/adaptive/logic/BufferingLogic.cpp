@@ -23,6 +23,7 @@
 
 #include "BufferingLogic.hpp"
 #include "../playlist/BaseRepresentation.h"
+#include "../playlist/BasePeriod.h"
 #include "../playlist/BasePlaylist.hpp"
 #include "../playlist/SegmentTemplate.h"
 #include "../playlist/SegmentTimeline.h"
@@ -36,10 +37,10 @@ using namespace adaptive;
 using namespace adaptive::playlist;
 using namespace adaptive::logic;
 
-const vlc_tick_t AbstractBufferingLogic::BUFFERING_LOWEST_LIMIT = VLC_TICK_FROM_SEC(2);
-const vlc_tick_t AbstractBufferingLogic::DEFAULT_MIN_BUFFERING = VLC_TICK_FROM_SEC(6);
-const vlc_tick_t AbstractBufferingLogic::DEFAULT_MAX_BUFFERING = VLC_TICK_FROM_SEC(30);
-const vlc_tick_t AbstractBufferingLogic::DEFAULT_LIVE_BUFFERING = VLC_TICK_FROM_SEC(15);
+const vlc_tick_t AbstractBufferingLogic::BUFFERING_LOWEST_LIMIT = CLOCK_FREQ * 2;
+const vlc_tick_t AbstractBufferingLogic::DEFAULT_MIN_BUFFERING = CLOCK_FREQ * 6;
+const vlc_tick_t AbstractBufferingLogic::DEFAULT_MAX_BUFFERING = CLOCK_FREQ * 30;
+const vlc_tick_t AbstractBufferingLogic::DEFAULT_LIVE_BUFFERING = CLOCK_FREQ * 15;
 
 AbstractBufferingLogic::AbstractBufferingLogic()
 {
@@ -105,7 +106,7 @@ vlc_tick_t DefaultBufferingLogic::getMinBuffering(const BasePlaylist *p) const
         return BUFFERING_LOWEST_LIMIT;
 
     vlc_tick_t buffering = userMinBuffering ? userMinBuffering
-                                            : DEFAULT_MIN_BUFFERING;
+                                         : DEFAULT_MIN_BUFFERING;
     if(p->getMinBuffering())
         buffering = std::max(buffering, p->getMinBuffering());
     return std::max(buffering, BUFFERING_LOWEST_LIMIT);
@@ -117,7 +118,7 @@ vlc_tick_t DefaultBufferingLogic::getMaxBuffering(const BasePlaylist *p) const
         return getMinBuffering(p);
 
     vlc_tick_t buffering = userMaxBuffering ? userMaxBuffering
-                                            : DEFAULT_MAX_BUFFERING;
+                                         : DEFAULT_MAX_BUFFERING;
     if(p->isLive())
         buffering = std::min(buffering, getLiveDelay(p));
     if(p->getMaxBuffering())
@@ -130,7 +131,7 @@ vlc_tick_t DefaultBufferingLogic::getLiveDelay(const BasePlaylist *p) const
     if(isLowLatency(p))
         return getMinBuffering(p);
     vlc_tick_t delay = userLiveDelay ? userLiveDelay
-                                     : DEFAULT_LIVE_BUFFERING;
+                                  : DEFAULT_LIVE_BUFFERING;
     if(p->suggestedPresentationDelay.Get())
         delay = p->suggestedPresentationDelay.Get();
     else if(p->presentationStartOffset.Get())
@@ -240,7 +241,7 @@ uint64_t DefaultBufferingLogic::getLiveStartSegmentNumber(BaseRepresentation *re
         if(scaledduration)
         {
             /* Compute playback offset and effective finished segment from wall time */
-            vlc_tick_t now = vlc_tick_from_sec(time(nullptr));
+            vlc_tick_t now = CLOCK_FREQ * time(nullptr);
             vlc_tick_t playbacktime = now - i_buffering;
             vlc_tick_t minavailtime = playlist->availabilityStartTime.Get() + rep->getPeriodStart();
             const uint64_t startnumber = mediaSegmentTemplate->inheritStartNumber();

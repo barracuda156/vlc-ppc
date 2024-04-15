@@ -24,9 +24,9 @@
 #include "Representationselectors.hpp"
 #include "../playlist/BaseRepresentation.h"
 #include "../playlist/BaseAdaptationSet.h"
-
-#include <algorithm>
+#include "../playlist/BasePeriod.h"
 #include <limits>
+#include <algorithm>
 
 using namespace adaptive::logic;
 
@@ -109,8 +109,8 @@ BaseRepresentation * RepresentationSelector::select(const std::vector<BaseRepres
         }
     }
 
-    if (candidate == nullptr)
-        return lowest;
+    if (!candidate)
+        return candidate = lowest;
 
     return candidate;
 }

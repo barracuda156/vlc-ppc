@@ -2,6 +2,7 @@
  * edgedetection.c : edge detection plugin for VLC
   *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id: 54a960ba4881a98e45685a6df45875d6699e42f8 $
  *
  * Authors: Odd-Arild Kristensen <oddarildkristensen@gmail.com>
  *
@@ -45,8 +46,8 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Open( filter_t * );
-static void Close( filter_t * );
+static int Open( vlc_object_t * );
+static int Close( vlc_object_t * );
 static picture_t *new_frame( filter_t * );
 static picture_t *Filter( filter_t *, picture_t * );
 static uint8_t sobel( const uint8_t *, const int, const int, int, int);
@@ -70,25 +71,17 @@ vlc_module_begin ()
     set_description( EDGE_DETECTION_DESCRIPTION )
     set_shortname( EDGE_DETECTION_TEXT )
     set_help( EDGE_DETECTION_LONGTEXT )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    set_callback_video_filter( Open )
+    set_capability( "video filter", 0 )
+    set_callbacks( Open, Close )
 
 vlc_module_end ()
 
-static const struct filter_video_callbacks filter_video_edge_cbs =
+/* Store the filter chain */
+struct filter_sys_t
 {
-    new_frame, NULL,
-};
-
-static void Flush( filter_t *p_filter )
-{
-    filter_chain_t *p_sys = p_filter->p_sys;
-    filter_chain_VideoFlush( p_sys );
-}
-
-static const struct vlc_filter_operations filter_ops =
-{
-    .filter_video = Filter, .flush = Flush, .close = Close,
+    filter_chain_t *p_chain;
 };
 
 /*****************************************************************************
@@ -98,61 +91,66 @@ static const struct vlc_filter_operations filter_ops =
  * needed so that the Sobel operator does not give a high response for noise,
  * or small changes in the image.
  *****************************************************************************/
-static int Open( filter_t *p_filter  )
+static int Open( vlc_object_t *p_this )
 {
     int i_ret;
+    filter_t *p_filter = (filter_t *)p_this;
     filter_owner_t owner = {
-        .video = &filter_video_edge_cbs,
         .sys = p_filter,
+        .video = {
+            .buffer_new = new_frame,
+        },
     };
     /* Store the filter chain in p_sys */
-    filter_chain_t *sys = filter_chain_NewVideo( p_filter, true, &owner );
-    if ( sys == NULL)
+    p_filter->p_sys = (filter_sys_t *)filter_chain_NewVideo( p_filter, true, &owner );
+
+    if ( p_filter->p_sys == NULL)
     {
         msg_Err( p_filter, "Could not allocate filter chain" );
+        free( p_filter->p_sys );
         return VLC_EGENERIC;
     }
     /* Clear filter chain */
-    filter_chain_Reset( sys, &p_filter->fmt_in, p_filter->vctx_in, &p_filter->fmt_in);
+    filter_chain_Reset( (filter_chain_t *)p_filter->p_sys, &p_filter->fmt_in, &p_filter->fmt_in);
     /* Add adjust filter to turn frame black-and-white */
-    i_ret = filter_chain_AppendFromString( sys, "adjust{saturation=0}" );
+    i_ret = filter_chain_AppendFromString( (filter_chain_t *)p_filter->p_sys,
+                                           "adjust{saturation=0}" );
     if ( i_ret == -1 )
     {
         msg_Err( p_filter, "Could not append filter to filter chain" );
-        filter_chain_Delete( sys );
+        filter_chain_Delete( (filter_chain_t *)p_filter->p_sys );
         return VLC_EGENERIC;
     }
     /* Add gaussian blur to the frame so to remove noise from the frame */
-    i_ret = filter_chain_AppendFromString( sys, "gaussianblur{deviation=1}" );
+    i_ret = filter_chain_AppendFromString( (filter_chain_t *)p_filter->p_sys,
+                                           "gaussianblur{deviation=1}" );
     if ( i_ret == -1 )
     {
         msg_Err( p_filter, "Could not append filter to filter chain" );
-        filter_chain_Delete( sys );
+        filter_chain_Delete( (filter_chain_t *)p_filter->p_sys );
         return VLC_EGENERIC;
     }
     /* Set callback function */
-    p_filter->ops = &filter_ops;
-    p_filter->p_sys = sys;
+    p_filter->pf_video_filter = Filter;
     return VLC_SUCCESS;
 }
 
 /******************************************************************************
  * Closes the filter and cleans up all dynamically allocated data.
  ******************************************************************************/
-static void Close( filter_t *p_filter )
+static int Close( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_chain_Delete( (filter_chain_t *)p_filter->p_sys );
+    return VLC_SUCCESS;
 }
 
 /* *****************************************************************************
  * Allocates a new buffer for the filter chain.
  ******************************************************************************/
-static picture_t *new_frame( filter_t *p_filter )
+static picture_t *new_frame( filter_t *p_filter)
 {
-    filter_t *p_this = p_filter->owner.sys;
-    // the last filter of the internal chain gets its pictures from the original
-    // filter source
-    return filter_NewPicture( p_this );
+    return filter_NewPicture( p_filter->owner.sys );
 }
 
 /******************************************************************************

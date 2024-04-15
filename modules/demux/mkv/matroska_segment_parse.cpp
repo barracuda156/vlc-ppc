@@ -2,6 +2,7 @@
  * matroska_segment_parse.cpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2003-2010 VLC authors and VideoLAN
+ * $Id$
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Steve Lhomme <steve.lhomme@free.fr>
@@ -36,14 +37,10 @@ extern "C" {
 #include "../mp4/libmp4.h"
 }
 
-#include "../../packetizer/iso_color_tables.h"
-
 #include <vlc_codecs.h>
 #include <stdexcept>
 #include <limits>
 #include <algorithm>
-
-namespace mkv {
 
 /* GetFourCC helper */
 #define GetFOURCC( p )  __GetFOURCC( (uint8_t*)p )
@@ -90,10 +87,12 @@ static inline char * ToUTF8( const UTFstring &u )
 void matroska_segment_c::ParseSeekHead( KaxSeekHead *seekhead )
 {
     EbmlElement *l;
+    bool b_seekable;
 
     i_seekhead_count++;
 
-    if( !sys.b_seekable )
+    vlc_stream_Control( sys.demuxer.s, STREAM_CAN_SEEK, &b_seekable );
+    if( !b_seekable )
         return;
 
     EbmlParser eparser ( &es, seekhead, &sys.demuxer );
@@ -249,9 +248,6 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
         unsigned int i_display_unit;
         unsigned int i_display_width;
         unsigned int i_display_height;
-
-        unsigned int chroma_sit_vertical;
-        unsigned int chroma_sit_horizontal;
       } track_video_info;
 
     } metadata_payload = {
@@ -332,8 +328,9 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
         }
         E_CASE( KaxTrackDefaultDuration, defd )
         {
-            vars.tk->i_default_duration = VLC_TICK_FROM_NS(static_cast<uint64>(defd));
+            vars.tk->i_default_duration = static_cast<uint64>(defd);
             debug( vars, "Track Default Duration=%" PRId64, vars.tk->i_default_duration );
+            vars.tk->i_default_duration /= 1000;
         }
         E_CASE( KaxTrackTimecodeScale, ttcs )
         {
@@ -393,13 +390,13 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
 #if LIBMATROSKA_VERSION >= 0x010401
         E_CASE( KaxCodecDelay, codecdelay )
         {
-            vars.tk->i_codec_delay = VLC_TICK_FROM_NS(static_cast<uint64_t>( codecdelay ));
+            vars.tk->i_codec_delay = static_cast<uint64_t>( codecdelay ) / 1000;
             msg_Dbg( vars.p_demuxer, "|   |   |   + Track Codec Delay =%" PRIu64,
                      vars.tk->i_codec_delay );
         }
         E_CASE( KaxSeekPreRoll, spr )
         {
-            vars.tk->i_seek_preroll = VLC_TICK_FROM_NS(static_cast<uint64_t>( spr ));
+            vars.tk->i_seek_preroll = static_cast<uint64_t>( spr ) / 1000;
             debug( vars, "Track Seek Preroll =%" PRIu64, vars.tk->i_seek_preroll );
         }
 #endif
@@ -487,98 +484,28 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
             unsigned int i_crop_bottom = vars.track_video_info.i_crop_bottom;
             unsigned int i_crop_left   = vars.track_video_info.i_crop_left;
 
-            unsigned int i_display_unit   = vars.track_video_info.i_display_unit;
+            unsigned int i_display_unit   = vars.track_video_info.i_display_unit; VLC_UNUSED(i_display_unit);
             unsigned int i_display_width  = vars.track_video_info.i_display_width;
             unsigned int i_display_height = vars.track_video_info.i_display_height;
 
-            if (vars.track_video_info.chroma_sit_vertical || vars.track_video_info.chroma_sit_horizontal)
+            if( i_display_height && i_display_width )
             {
-                switch (vars.track_video_info.chroma_sit_vertical)
-                {
-                case 0: // unspecified
-                case 2: // center
-                    if (vars.track_video_info.chroma_sit_horizontal == 1) // left
-                        tk->fmt.video.chroma_location = CHROMA_LOCATION_LEFT;
-                    else if (vars.track_video_info.chroma_sit_horizontal == 2) // half
-                        tk->fmt.video.chroma_location = CHROMA_LOCATION_CENTER;
-                    else
-                        debug( vars, "unsupported chroma Siting %u/%u",
-                               vars.track_video_info.chroma_sit_horizontal,
-                               vars.track_video_info.chroma_sit_vertical);
-                    break;
-                case 1: // top
-                    if (vars.track_video_info.chroma_sit_horizontal == 1) // left
-                        tk->fmt.video.chroma_location = CHROMA_LOCATION_TOP_LEFT;
-                    else if (vars.track_video_info.chroma_sit_horizontal == 2) // half
-                        tk->fmt.video.chroma_location = CHROMA_LOCATION_TOP_CENTER;
-                    else
-                        debug( vars, "unsupported chroma Siting %u/%u",
-                               vars.track_video_info.chroma_sit_horizontal,
-                               vars.track_video_info.chroma_sit_vertical);
-                    break;
-                }
+                tk->fmt.video.i_sar_num = i_display_width  * tk->fmt.video.i_height;
+                tk->fmt.video.i_sar_den = i_display_height * tk->fmt.video.i_width;
             }
 
-            unsigned int h_crop;
-            if (add_overflow(i_crop_left, i_crop_right, &h_crop))
-            {
-                debug( vars, "invalid horizontal crop %u+%u",
-                              i_crop_left, i_crop_right );
-                i_crop_left = i_crop_right = 0;
-            }
-            else if (unlikely(h_crop >= tk->fmt.video.i_width))
-            {
-                debug( vars, "Horizontal crop (left=%u, right=%u) "
-                             "greater than the picture width (%u)",
-                              i_crop_left, i_crop_right, tk->fmt.video.i_width );
-                i_crop_left = i_crop_right = 0;
-            }
+            tk->fmt.video.i_visible_width   = tk->fmt.video.i_width;
+            tk->fmt.video.i_visible_height  = tk->fmt.video.i_height;
 
-            unsigned int v_crop;
-            if (add_overflow(i_crop_top, i_crop_bottom, &v_crop))
+            if( i_crop_left || i_crop_right || i_crop_top || i_crop_bottom )
             {
-                debug( vars, "invalid vertical crop %u+%u",
-                              i_crop_top, i_crop_bottom);
-                i_crop_top = i_crop_bottom = 0;
+                tk->fmt.video.i_x_offset        = i_crop_left;
+                tk->fmt.video.i_y_offset        = i_crop_top;
+                tk->fmt.video.i_visible_width  -= i_crop_left + i_crop_right;
+                tk->fmt.video.i_visible_height -= i_crop_top + i_crop_bottom;
             }
-            if (unlikely(v_crop >= tk->fmt.video.i_height))
-            {
-                debug( vars, "Vertical crop (top=%u, bottom=%u) "
-                             "greater than the picture height (%u)",
-                              i_crop_top, i_crop_bottom, tk->fmt.video.i_height );
-                i_crop_top = i_crop_bottom = 0;
-            }
-
-            tk->fmt.video.i_x_offset      = i_crop_left;
-            tk->fmt.video.i_y_offset      = i_crop_top;
-            tk->fmt.video.i_visible_width = tk->fmt.video.i_width -
-                                            (i_crop_left + i_crop_right);
-            tk->fmt.video.i_visible_height = tk->fmt.video.i_height -
-                                            (i_crop_top + i_crop_bottom);
-
-            if (i_display_unit == 0 && i_display_width == 0)
-                i_display_width = tk->fmt.video.i_width;
-            if (i_display_unit == 0 && i_display_height == 0)
-                i_display_height = tk->fmt.video.i_height;
-
-            if (i_display_height && i_display_width)
-            {
-                switch (i_display_unit)
-                {
-                    case 0: // pixels
-                    case 1: // centimeters
-                    case 2: // inches
-                        vlc_ureduce( &tk->fmt.video.i_sar_num, &tk->fmt.video.i_sar_den,
-                                     i_display_width * tk->fmt.video.i_visible_height,
-                                     i_display_height * tk->fmt.video.i_visible_width, 0);
-                        break;
-                    case 3: // display aspect ratio
-                        vlc_ureduce( &tk->fmt.video.i_sar_num, &tk->fmt.video.i_sar_den,
-                                     i_display_height * tk->fmt.video.i_visible_width,
-                                     i_display_width * tk->fmt.video.i_visible_height, 0);
-                        break;
-                }
-            }
+            /* FIXME: i_display_* allows you to not only set DAR, but also a zoom factor.
+               we do not support this atm */
         }
 #if LIBMATROSKA_VERSION >= 0x010406
         E_CASE( KaxVideoProjection, proj )
@@ -632,82 +559,55 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
         }
         E_CASE( KaxVideoStereoMode, stereo ) // UNUSED
         {
-            ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.b_multiview_right_eye_first = false;
-            switch (static_cast<uint8>( stereo ))
-            {
-            case 0: vars.tk->fmt.video.multiview_mode = MULTIVIEW_2D;         break;
-            case 1: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_SBS; break;
-            case 2: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_TB;  break;
-            case 3: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_TB;
-                    vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            case 4: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_CHECKERBOARD;
-                    vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            case 5: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_CHECKERBOARD; break;
-            case 6: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_ROW;
-                    vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            case 7: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_ROW; break;
-            case 8: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_COL;
-                    vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            case 9: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_COL; break;
-            case 11: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_SBS;
-                     vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            case 13: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_FRAME; break;
-            case 14: vars.tk->fmt.video.multiview_mode = MULTIVIEW_STEREO_FRAME;
-                    vars.tk->fmt.video.b_multiview_right_eye_first = true;    break;
-            default:
-            case 10: case 12:
-                debug( vars, " unsupported Stereo Mode=%u", static_cast<uint8>( stereo ) ) ;
-            }
             debug( vars, "Track Video Stereo Mode=%u", static_cast<uint8>( stereo ) ) ;
         }
         E_CASE( KaxVideoPixelWidth, vwidth )
         {
             ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.i_width += static_cast<uint32>( vwidth );
-            debug( vars, "width=%u", vars.tk->fmt.video.i_width );
+            vars.tk->fmt.video.i_width += static_cast<uint16>( vwidth );
+            debug( vars, "width=%d", vars.tk->fmt.video.i_width );
         }
         E_CASE( KaxVideoPixelHeight, vheight )
         {
             ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.i_height += static_cast<uint32>( vheight );
-            debug( vars, "height=%u", vars.tk->fmt.video.i_height );
+            vars.tk->fmt.video.i_height += static_cast<uint16>( vheight );
+            debug( vars, "height=%d", vars.tk->fmt.video.i_height );
         }
         E_CASE( KaxVideoDisplayWidth, vwidth )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_display_width = static_cast<uint32>( vwidth );
-            debug( vars, "display width=%u", vars.track_video_info.i_display_width );
+            vars.track_video_info.i_display_width = static_cast<uint16>( vwidth );
+            debug( vars, "display width=%d", vars.track_video_info.i_display_width );
         }
         E_CASE( KaxVideoDisplayHeight, vheight )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_display_height = static_cast<uint32>( vheight );
-            debug( vars, "display height=%u", vars.track_video_info.i_display_height );
+            vars.track_video_info.i_display_height = static_cast<uint16>( vheight );
+            debug( vars, "display height=%d", vars.track_video_info.i_display_height );
         }
         E_CASE( KaxVideoPixelCropBottom, cropval )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_crop_bottom = static_cast<uint32>( cropval );
-            debug( vars, "crop pixel bottom=%u", vars.track_video_info.i_crop_bottom );
+            vars.track_video_info.i_crop_bottom = static_cast<uint16>( cropval );
+            debug( vars, "crop pixel bottom=%d", vars.track_video_info.i_crop_bottom );
         }
         E_CASE( KaxVideoPixelCropTop, cropval )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_crop_top = static_cast<uint32>( cropval );
-            debug( vars, "crop pixel top=%u", vars.track_video_info.i_crop_top );
+            vars.track_video_info.i_crop_top = static_cast<uint16>( cropval );
+            debug( vars, "crop pixel top=%d", vars.track_video_info.i_crop_top );
         }
         E_CASE( KaxVideoPixelCropRight, cropval )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_crop_right = static_cast<uint32>( cropval );
-            debug( vars, "crop pixel right=%u", vars.track_video_info.i_crop_right );
+            vars.track_video_info.i_crop_right = static_cast<uint16>( cropval );
+            debug( vars, "crop pixel right=%d", vars.track_video_info.i_crop_right );
         }
         E_CASE( KaxVideoPixelCropLeft, cropval )
         {
             ONLY_FMT(VIDEO);
-            vars.track_video_info.i_crop_left = static_cast<uint32>( cropval );
-            debug( vars, "crop pixel left=%u", vars.track_video_info.i_crop_left );
+            vars.track_video_info.i_crop_left = static_cast<uint16>( cropval );
+            debug( vars, "crop pixel left=%d", vars.track_video_info.i_crop_left );
         }
         E_CASE( KaxVideoDisplayUnit, vdmode )
         {
@@ -732,7 +632,7 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
         E_CASE( KaxVideoFrameRate, vfps )
         {
             ONLY_FMT(VIDEO);
-            vars.tk->f_fps = std::max( static_cast<float>(vfps) , 1.0f );
+            vars.tk->f_fps = __MAX( static_cast<float>( vfps ), 1 );
             debug( vars, "fps=%f", vars.tk->f_fps );
         }
         E_CASE( KaxVideoColourSpace, colourspace )
@@ -765,163 +665,89 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
         E_CASE( KaxVideoColourRange, range )
         {
             ONLY_FMT(VIDEO);
-            const char *name = nullptr;
             switch( static_cast<uint8>(range) )
             {
-            case 1:
-                vars.tk->fmt.video.color_range = COLOR_RANGE_LIMITED;
-                name ="limited";
+            case 1: // broadcast
+                vars.tk->fmt.video.b_color_range_full = 0;
                 break;
-            case 2:
-                vars.tk->fmt.video.color_range = COLOR_RANGE_FULL;
-                name ="full";
+            case 2: // full range
+                vars.tk->fmt.video.b_color_range_full = 1;
                 break;
             case 3: // Matrix coefficients + Transfer characteristics
             default:
                 debug( vars, "Unsupported Colour Range=%d", static_cast<uint8>(range) );
             }
-            if (name != nullptr) debug( vars, "Range=%s", name );
         }
         E_CASE( KaxVideoColourTransferCharacter, transfer )
         {
             ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.transfer = iso_23001_8_tc_to_vlc_xfer( static_cast<uint8>(transfer) );
-            const char *name = nullptr;
             switch( static_cast<uint8>(transfer) )
             {
-            case 1: name = "BT-709";
+            case 1: // BT-709
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_BT709;
                 break;
-            case 4: name = "BT.470BM";
+            case 4: // Gamma 2.2
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_SRGB;
                 break;
-            case 5: name = "BT.470BG";
+            case 5: // Gamma 2.8
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_BT470_BG;
                 break;
-            case 6: name = "SMPTE 170M";
+            case 6: // SMPTE 170
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_SMPTE_170;
                 break;
-            case 7: name = "SMPTE 240M";
+            case 7: // SMPTE 240M
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_SMPTE_240;
                 break;
-            case 8: name = "linear";
+            case 8: // Linear
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_LINEAR;
                 break;
-            case 13: name = "sRGB/sYCC";
+            case 16: // SMPTE ST-2084
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_SMPTE_ST2084;
                 break;
-            case 16: name = "BT.2100 PQ";
-                break;
-            case 18: name = "HLG";
+            case 18: // ARIB STD-B67
+                vars.tk->fmt.video.transfer = TRANSFER_FUNC_ARIB_B67;
                 break;
             case 9:  // Log
             case 10: // Log SQRT
             case 11: // IEC 61966-2-4
             case 12: // ITU-R BT.1361 Extended Colour Gamut
+            case 13: // IEC 61966-2-1
             case 14: // ITU-R BT.2020 10 bit
             case 15: // ITU-R BT.2020 12 bit
             case 17: // SMPTE ST 428-1
             default:
-                break;
-            }
-            if (vars.tk->fmt.video.transfer == TRANSFER_FUNC_UNDEF)
                 debug( vars, "Unsupported Colour Transfer=%d", static_cast<uint8>(transfer) );
-            else if (name == nullptr)
-                debug( vars, "Colour Transfer=%d", static_cast<uint8>(transfer) );
-            else
-                debug( vars, "Colour Transfer=%s", name );
+            }
         }
         E_CASE( KaxVideoColourPrimaries, primaries )
         {
             ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.primaries = iso_23001_8_cp_to_vlc_primaries( static_cast<uint8>(primaries) );
-            const char *name = nullptr;
             switch( static_cast<uint8>(primaries) )
             {
-            case 1: name = "BT-709";
+            case 1: // ITU-R BT.709
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_BT709;
                 break;
-            case 4: name = "BT.470M";
+            case 4: // ITU-R BT.470M
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_BT470_M;
                 break;
-            case 5: name = "BT.470BG";
+            case 5: // ITU-R BT.470BG
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_BT470_BG;
                 break;
-            case 6: name = "SMPTE 170M";
+            case 6: // SMPTE 170M
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_SMTPE_170;
                 break;
-            case 7: name = "SMPTE 240M";
+            case 7: // SMPTE 240M
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_SMTPE_240;
                 break;
-            case 9: name = "BT.2020";
+            case 9: // ITU-R BT.2020
+                vars.tk->fmt.video.primaries = COLOR_PRIMARIES_BT2020;
                 break;
             case 8:  // FILM
             case 10: // SMPTE ST 428-1
             case 22: // JEDEC P22 phosphors
             default:
-                break;
-            }
-            if (vars.tk->fmt.video.primaries == COLOR_PRIMARIES_UNDEF)
                 debug( vars, "Unsupported Colour Primaries=%d", static_cast<uint8>(primaries) );
-            else if (name == nullptr)
-                debug( vars, "Colour Primaries=%s", static_cast<uint8>(primaries) );
-            else
-                debug( vars, "Colour Primaries=%s", name );
-        }
-        E_CASE( KaxVideoColourMatrix, matrix )
-        {
-            ONLY_FMT(VIDEO);
-            vars.tk->fmt.video.space = iso_23001_8_mc_to_vlc_coeffs( static_cast<uint8>(matrix) );
-            const char *name = nullptr;
-            switch( static_cast<uint8>(matrix) )
-            {
-            case 1: name = "BT-709";
-                break;
-            case 6: name = "SMPTE 170M";
-                break;
-            case 7: name = "SMPTE 240M";
-                break;
-            case 9: name = "BT.2020 Non-constant Luminance";
-                break;
-            case 10: name = "BT.2020 Constant Luminance";
-                break;
-            case 0: // Identity
-            case 2: // unspecified
-            case 3: // reserved
-            case 4: // US FCC 73.682
-            case 5: // ITU-R BT.470BG
-            case 8: // YCoCg
-            case 11: // SMPTE ST 2085
-            case 12: // Chroma-derived Non-constant Luminance
-            case 13: // Chroma-derived Constant Luminance
-            case 14: // ITU-R BT.2100
-            default:
-                break;
             }
-            if (vars.tk->fmt.video.space == COLOR_SPACE_UNDEF)
-                debug( vars, "Unsupported Colour Matrix=%d", static_cast<uint8>(matrix) );
-            else if (name == nullptr)
-                debug( vars, "Colour Matrix=%d", static_cast<uint8>(matrix) );
-            else
-                debug( vars, "Colour Matrix=%s", name );
-        }
-        E_CASE( KaxVideoChromaSitHorz, chroma_hor )
-        {
-            ONLY_FMT(VIDEO);
-            const char *name = nullptr;
-            vars.track_video_info.chroma_sit_horizontal = static_cast<uint8>(chroma_hor);
-            switch( static_cast<uint8>(chroma_hor) )
-            {
-            case 0: name = "unspecified"; break;
-            case 1: name = "left";        break;
-            case 2: name = "center";      break;
-            default:
-                debug( vars, "Unsupported Horizontal Chroma Siting=%d", static_cast<uint8>(chroma_hor) );
-            }
-            if (name != nullptr) debug( vars, "Chroma Siting Horizontal=%s", name);
-        }
-        E_CASE( KaxVideoChromaSitVert, chroma_ver )
-        {
-            ONLY_FMT(VIDEO);
-            const char *name = nullptr;
-            vars.track_video_info.chroma_sit_vertical = static_cast<uint8>(chroma_ver);
-            switch( static_cast<uint8>(chroma_ver) )
-            {
-            case 0: name = "unspecified"; break;
-            case 1: name = "left";        break;
-            case 2: name = "center";      break;
-            default:
-                debug( vars, "Unsupported Vertical Chroma Siting=%d", static_cast<uint8>(chroma_ver) );
-            }
-            if (name != nullptr) debug( vars, "Chroma Siting Vertical=%s", name);
         }
         E_CASE( KaxVideoColourMaxCLL, maxCLL )
         {
@@ -1062,7 +888,7 @@ void matroska_segment_c::ParseTrackEntry( const KaxTrackEntry *m )
 
     if ( bSupported )
     {
-#ifdef HAVE_ZLIB
+#ifdef HAVE_ZLIB_H
         if( p_track->i_compression_type == MATROSKA_COMPRESSION_ZLIB &&
             p_track->i_encoding_scope & MATROSKA_ENCODING_SCOPE_PRIVATE &&
             p_track->i_extra_data && p_track->p_extra_data &&
@@ -1140,9 +966,10 @@ void matroska_segment_c::ParseTracks( KaxTracks *tracks )
 
     TrackHandlers::Dispatcher().iterate( tracks->begin(), tracks->end(), &payload );
 
-    for (auto &track : matroska_segment_c::tracks)
+    auto t = matroska_segment_c::tracks.begin();
+    for (t; t != matroska_segment_c::tracks.end(); ++t)
     {
-        pcr_shift = std::max(pcr_shift, track.second->i_codec_delay);
+        pcr_shift = std::max(pcr_shift, t->second->i_codec_delay);
     }
 }
 
@@ -1177,10 +1004,9 @@ void matroska_segment_c::ParseInfo( KaxInfo *info )
         matroska_segment_c * obj;
         EbmlElement       *&  el;
         EbmlMaster        *&   m;
-        double             f_duration;
         int& i_upper_level;
 
-    } captures = { &sys.demuxer, this, el, m, -1., i_upper_level };
+    } captures = { &sys.demuxer, this, el, m, i_upper_level };
 
     MKV_SWITCH_CREATE(EbmlTypeDispatcher, InfoHandlers, InfoHandlerPayload)
     {
@@ -1225,8 +1051,8 @@ void matroska_segment_c::ParseInfo( KaxInfo *info )
         }
         E_CASE( KaxDuration, dur )
         {
-            vars.f_duration = static_cast<double>( dur );
-            debug( vars, "Duration=%.0f", vars.f_duration );
+            vars.obj->i_duration = vlc_tick_t( static_cast<double>( dur ) );
+            debug( vars, "Duration=%" PRId64, vars.obj->i_duration );
         }
         E_CASE( KaxMuxingApp, mapp )
         {
@@ -1321,8 +1147,8 @@ void matroska_segment_c::ParseInfo( KaxInfo *info )
 
     InfoHandlers::Dispatcher().iterate( m->begin(), m->end(), &captures );
 
-    if( captures.f_duration != -1. )
-        i_duration = VLC_TICK_FROM_NS( captures.f_duration * i_timescale );
+    if( i_duration != -1 )
+        i_duration = vlc_tick_t( static_cast<double>( i_duration * i_timescale ) / 10e5 );
 }
 
 
@@ -1387,12 +1213,12 @@ void matroska_segment_c::ParseChapterAtom( int i_level, KaxChapterAtom *ca, chap
         }
         E_CASE( KaxChapterTimeStart, start )
         {
-            vars.chapters.i_start_time = VLC_TICK_FROM_NS(static_cast<uint64>( start ));
+            vars.chapters.i_start_time = static_cast<uint64>( start ) / (INT64_C(1000000000) / CLOCK_FREQ);
             debug( vars, "ChapterTimeStart=%" PRId64, vars.chapters.i_start_time );
         }
         E_CASE( KaxChapterTimeEnd, end )
         {
-            vars.chapters.i_end_time = VLC_TICK_FROM_NS(static_cast<uint64>( end ));
+            vars.chapters.i_end_time = static_cast<uint64>( end ) / (INT64_C(1000000000) / CLOCK_FREQ);
             debug( vars, "ChapterTimeEnd=%" PRId64, vars.chapters.i_end_time );
         }
         E_CASE( KaxChapterDisplay, chapter_display )
@@ -1405,16 +1231,18 @@ void matroska_segment_c::ParseChapterAtom( int i_level, KaxChapterAtom *ca, chap
         }
         E_CASE( KaxChapterString, name )
         {
-            std::string str_name( UTFstring( name ).GetUTF8() );
+            char *psz_tmp_utf8 = ToUTF8( UTFstring( name ) );
 
             for ( int k = 0; k < vars.i_level; k++)
-                vars.chapters.str_name += '+';
+                vars.chapters.psz_name += '+';
 
-            vars.chapters.str_name += ' ';
-            vars.chapters.str_name += str_name;
+            vars.chapters.psz_name += ' ';
+            vars.chapters.psz_name += psz_tmp_utf8;
             vars.chapters.b_user_display = true;
 
-            debug( vars, "ChapterString=%s", str_name.c_str() );
+            debug( vars, "ChapterString=%s", psz_tmp_utf8 );
+
+            free( psz_tmp_utf8 );
         }
         E_CASE( KaxChapterLanguage, lang )
         {
@@ -1502,31 +1330,36 @@ void matroska_segment_c::ParseAttachments( KaxAttachments *attachments )
     while( attachedFile && ( attachedFile->GetSize() > 0 ) )
     {
         KaxFileData  &img_data     = GetChild<KaxFileData>( *attachedFile );
-        std::string attached_filename( UTFstring( GetChild<KaxFileName>( *attachedFile ) ).GetUTF8() );
-        auto new_attachment = vlc_input_attachment_New( attached_filename.c_str(),
-                                                        GetChild<KaxMimeType>( *attachedFile ).GetValue().c_str(),
-                                                        nullptr,
-                                                        img_data.GetBuffer(),
-                                                        img_data.GetSize() );
-        if (!new_attachment)
-            continue;
-        msg_Dbg( &sys.demuxer, "|   |   - %s (%s)", new_attachment->psz_name,
-                 new_attachment->psz_mime );
+        char *psz_tmp_utf8 =  ToUTF8( UTFstring( GetChild<KaxFileName>( *attachedFile ) ) );
+        std::string attached_filename(psz_tmp_utf8);
+        free(psz_tmp_utf8);
+        attachment_c *new_attachment = new attachment_c( attached_filename,
+                                                         GetChild<KaxMimeType>( *attachedFile ),
+                                                         img_data.GetSize() );
 
-        if( !strncmp( new_attachment->psz_mime, "image/", 6 ) )
+        msg_Dbg( &sys.demuxer, "|   |   - %s (%s)", new_attachment->fileName(), new_attachment->mimeType() );
+
+        if( new_attachment->init() )
         {
-            char *psz_url;
-            if( asprintf( &psz_url, "attachment://%s",
-                          new_attachment->psz_name ) >= 0 )
+            memcpy( new_attachment->p_data, img_data.GetBuffer(), img_data.GetSize() );
+            sys.stored_attachments.push_back( new_attachment );
+            if( !strncmp( new_attachment->mimeType(), "image/", 6 ) )
             {
+                char *psz_url;
+                if( asprintf( &psz_url, "attachment://%s",
+                              new_attachment->fileName() ) == -1 )
+                    continue;
                 if( !sys.meta )
                     sys.meta = vlc_meta_New();
                 vlc_meta_SetArtURL( sys.meta, psz_url );
                 free( psz_url );
             }
         }
-        sys.stored_attachments.push_back( vlc::wrap_cptr( new_attachment,
-                                                          &vlc_input_attachment_Release ) );
+        else
+        {
+            delete new_attachment;
+        }
+
         attachedFile = &GetNextChild<KaxAttached>( *attachments, *attachedFile );
     }
 }
@@ -1663,7 +1496,7 @@ bool matroska_segment_c::ParseCluster( KaxCluster *cluster, bool b_update_start_
     }
 
     if( b_update_start_time )
-        i_mk_start_time = VLC_TICK_FROM_NS( cluster->GlobalTimecode() );
+        i_mk_start_time = cluster->GlobalTimecode() / INT64_C( 1000 );
 
     return true;
 }
@@ -1746,6 +1579,7 @@ bool matroska_segment_c::TrackInit( mkv_track_t * p_tk )
         }
         static void v_real_helper (vlc_fourcc_t codec, HandlerPayload& vars)
         {
+            vars.p_tk->b_dts_only = true;
             vars.p_fmt->i_codec   = codec;
 
             /* Extract the framerate from the header */
@@ -1784,15 +1618,6 @@ bool matroska_segment_c::TrackInit( mkv_track_t * p_tk )
             vars.p_tk->b_pts_only = true;
 
             fill_extra_data( vars.p_tk, 0 );
-        }
-        S_CASE("V_CAVS") {
-            vars.p_fmt->i_codec = VLC_CODEC_CAVS;
-        }
-        S_CASE("V_AVS2") {
-            vars.p_fmt->i_codec = VLC_CODEC_CAVS2;
-        }
-        S_CASE("V_AVS3") {
-            vars.p_fmt->i_codec = VLC_CODEC_CAVS3;
         }
         S_CASE("V_MPEG4/MS/V3") {
             vars.p_fmt->i_codec = VLC_CODEC_DIV3;
@@ -1913,10 +1738,8 @@ bool matroska_segment_c::TrackInit( mkv_track_t * p_tk )
                 if( p_wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
                     p_tk->i_extra_data >= sizeof(WAVEFORMATEXTENSIBLE) )
                 {
-                    WAVEFORMATEXTENSIBLE *p_wext = container_of(p_wf, WAVEFORMATEXTENSIBLE, Format);
-                    GUID subFormat = p_wext->SubFormat;
-
-                    sf_tag_to_fourcc( &subFormat,  &p_tk->fmt.i_codec, NULL);
+                    WAVEFORMATEXTENSIBLE * p_wext = (WAVEFORMATEXTENSIBLE*) p_wf;
+                    sf_tag_to_fourcc( &p_wext->SubFormat,  &p_tk->fmt.i_codec, NULL);
                     /* FIXME should we use Samples */
 
                     if( p_tk->fmt.audio.i_channels > 2 &&
@@ -2304,7 +2127,6 @@ bool matroska_segment_c::TrackInit( mkv_track_t * p_tk )
         }
         S_CASE("S_DVBSUB")
         {
-            ONLY_FMT(SPU);
             vars.p_fmt->i_codec = VLC_CODEC_DVBS;
 
             if( vars.p_tk->i_extra_data < 4 )
@@ -2353,5 +2175,3 @@ bool matroska_segment_c::TrackInit( mkv_track_t * p_tk )
 
     return true;
 }
-
-} // namespace

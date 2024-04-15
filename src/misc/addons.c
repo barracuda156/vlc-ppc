@@ -38,7 +38,7 @@
 typedef struct addon_entry_owner
 {
     addon_entry_t entry;
-    vlc_atomic_rc_t rc;
+    atomic_uint refs;
 } addon_entry_owner_t;
 
 struct addons_manager_private_t
@@ -80,7 +80,7 @@ addon_entry_t * addon_entry_New(void)
     if( unlikely(owner == NULL) )
         return NULL;
 
-    vlc_atomic_rc_init( &owner->rc );
+    atomic_init( &owner->refs, 1 );
 
     addon_entry_t *p_entry = &owner->entry;
     vlc_mutex_init( &p_entry->lock );
@@ -92,7 +92,7 @@ addon_entry_t * addon_entry_Hold( addon_entry_t * p_entry )
 {
     addon_entry_owner_t *owner = (addon_entry_owner_t *) p_entry;
 
-    vlc_atomic_rc_inc( &owner->rc );
+    atomic_fetch_add( &owner->refs, 1 );
     return p_entry;
 }
 
@@ -100,7 +100,7 @@ void addon_entry_Release( addon_entry_t * p_entry )
 {
     addon_entry_owner_t *owner = (addon_entry_owner_t *) p_entry;
 
-    if( !vlc_atomic_rc_dec( &owner->rc ) )
+    if( atomic_fetch_sub(&owner->refs, 1) != 1 )
         return;
 
     free( p_entry->psz_name );
@@ -116,14 +116,14 @@ void addon_entry_Release( addon_entry_t * p_entry )
     free( p_entry->p_custom );
 
     addon_file_t *p_file;
-    ARRAY_FOREACH( p_file, p_entry->files )
-    {
-        free( p_file->psz_filename );
-        free( p_file->psz_download_uri );
-        free( p_file );
-    }
+    FOREACH_ARRAY( p_file, p_entry->files )
+    free( p_file->psz_filename );
+    free( p_file->psz_download_uri );
+    free( p_file );
+    FOREACH_END()
     ARRAY_RESET( p_entry->files );
 
+    vlc_mutex_destroy( &p_entry->lock );
     free( owner );
 }
 
@@ -192,20 +192,20 @@ void addons_manager_Delete( addons_manager_t *p_manager )
         vlc_join( p_manager->p_priv->installer.thread, NULL );
     }
 
-    addon_entry_t *p_entry;
-
 #define FREE_QUEUE( name ) \
-    ARRAY_FOREACH( p_entry, p_manager->p_priv->name.entries )\
+    FOREACH_ARRAY( addon_entry_t *p_entry, p_manager->p_priv->name.entries )\
         addon_entry_Release( p_entry );\
+    FOREACH_END();\
     ARRAY_RESET( p_manager->p_priv->name.entries );\
+    vlc_mutex_destroy( &p_manager->p_priv->name.lock );\
+    vlc_cond_destroy( &p_manager->p_priv->name.waitcond );\
     vlc_interrupt_destroy( p_manager->p_priv->name.p_interrupt );
 
     FREE_QUEUE( finder )
     FREE_QUEUE( installer )
-
-    char *psz_uri;
-    ARRAY_FOREACH( psz_uri, p_manager->p_priv->finder.uris )
+    FOREACH_ARRAY( char *psz_uri, p_manager->p_priv->finder.uris )
        free( psz_uri );
+    FOREACH_END();
     ARRAY_RESET( p_manager->p_priv->finder.uris );
 
     free( p_manager->p_priv );
@@ -223,8 +223,8 @@ void addons_manager_Gather( addons_manager_t *p_manager, const char *psz_uri )
 
     if( !p_manager->p_priv->finder.b_live )
     {
-        if( vlc_clone( &p_manager->p_priv->finder.thread, FinderThread, p_manager
-                       ) )
+        if( vlc_clone( &p_manager->p_priv->finder.thread, FinderThread, p_manager,
+                       VLC_THREAD_PRIORITY_LOW ) )
         {
             msg_Err( p_manager->p_priv->p_parent,
                      "cannot spawn entries provider thread" );
@@ -247,16 +247,14 @@ static addon_entry_t * getHeldEntryByUUID( addons_manager_t *p_manager,
 {
     addon_entry_t *p_return = NULL;
     vlc_mutex_lock( &p_manager->p_priv->finder.lock );
-    addon_entry_t *p_entry;
-    ARRAY_FOREACH( p_entry, p_manager->p_priv->finder.entries )
+    FOREACH_ARRAY( addon_entry_t *p_entry, p_manager->p_priv->finder.entries )
+    if ( !memcmp( p_entry->uuid, uuid, sizeof( addon_uuid_t ) ) )
     {
-        if ( !memcmp( p_entry->uuid, uuid, sizeof( addon_uuid_t ) ) )
-        {
-            p_return = p_entry;
-            addon_entry_Hold( p_return );
-            break;
-        }
+        p_return = p_entry;
+        addon_entry_Hold( p_return );
+        break;
     }
+    FOREACH_END()
     vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
     return p_return;
 }
@@ -301,7 +299,7 @@ static void LoadLocalStorage( addons_manager_t *p_manager )
 {
     addons_finder_t *p_finder =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_finder ), "entries finder" );
-    p_finder->obj.no_interact = true;
+    p_finder->obj.flags |= OBJECT_FLAGS_NOINTERACT;
 
     module_t *p_module = module_need( p_finder, "addons finder",
                                       "addons.store.list", true );
@@ -316,7 +314,7 @@ static void LoadLocalStorage( addons_manager_t *p_manager )
 
         ARRAY_RESET( p_finder->entries );
     }
-    vlc_object_delete(p_finder);
+    vlc_object_release( p_finder );
 }
 
 static void finder_thread_interrupted( void* p_data )
@@ -330,8 +328,6 @@ static void finder_thread_interrupted( void* p_data )
 
 static void *FinderThread( void *p_data )
 {
-    vlc_thread_set_name("vlc-addon-find");
-
     addons_manager_t *p_manager = p_data;
     int i_cancel = vlc_savecancel();
     vlc_interrupt_set( p_manager->p_priv->finder.p_interrupt );
@@ -361,7 +357,7 @@ static void *FinderThread( void *p_data )
 
         if( p_finder != NULL )
         {
-            p_finder->obj.no_interact = true;
+            p_finder->obj.flags |= OBJECT_FLAGS_NOINTERACT;
             module_t *p_module;
             ARRAY_INIT( p_finder->entries );
             p_finder->psz_uri = psz_uri;
@@ -375,7 +371,7 @@ static void *FinderThread( void *p_data )
             }
             ARRAY_RESET( p_finder->entries );
             free( psz_uri );
-            vlc_object_delete(p_finder);
+            vlc_object_release( p_finder );
         }
 
         p_manager->owner.discovery_ended( p_manager );
@@ -393,7 +389,7 @@ static int addons_manager_WriteCatalog( addons_manager_t *p_manager )
 
     addons_storage_t *p_storage =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_storage ), "entries storage" );
-    p_storage->obj.no_interact = true;
+    p_storage->obj.flags |= OBJECT_FLAGS_NOINTERACT;
 
     module_t *p_module = module_need( p_storage, "addons storage",
                                       "addons.store.install", true );
@@ -405,7 +401,7 @@ static int addons_manager_WriteCatalog( addons_manager_t *p_manager )
         vlc_mutex_unlock( &p_manager->p_priv->finder.lock );
         module_unneed( p_storage, p_module );
     }
-    vlc_object_delete(p_storage);
+    vlc_object_release( p_storage );
 
     return i_return;
 }
@@ -422,7 +418,7 @@ static int installOrRemoveAddon( addons_manager_t *p_manager, addon_entry_t *p_e
 
     addons_storage_t *p_storage =
         vlc_custom_create( p_manager->p_priv->p_parent, sizeof( *p_storage ), "entries storage" );
-    p_storage->obj.no_interact = true;
+    p_storage->obj.flags |= OBJECT_FLAGS_NOINTERACT;
 
     module_t *p_module = module_need( p_storage, "addons storage",
                                       "addons.store.install", true );
@@ -442,7 +438,7 @@ static int installOrRemoveAddon( addons_manager_t *p_manager, addon_entry_t *p_e
             vlc_mutex_unlock( &p_entry->lock );
         }
     }
-    vlc_object_delete(p_storage);
+    vlc_object_release( p_storage );
 
     return i_return;
 }
@@ -458,8 +454,6 @@ static void installer_thread_interrupted( void* p_data )
 
 static void *InstallerThread( void *p_data )
 {
-    vlc_thread_set_name("vlc-addon-instl");
-
     addons_manager_t *p_manager = p_data;
     int i_cancel = vlc_savecancel();
     vlc_interrupt_set( p_manager->p_priv->installer.p_interrupt );
@@ -535,14 +529,14 @@ static int InstallEntry( addons_manager_t *p_manager, addon_entry_t *p_entry )
     if ( p_entry->e_type == ADDON_UNKNOWN ||
          p_entry->e_type == ADDON_PLUGIN ||
          p_entry->e_type == ADDON_OTHER )
-        return VLC_EINVAL;
+        return VLC_EBADVAR;
 
     vlc_mutex_lock( &p_manager->p_priv->installer.lock );
     ARRAY_APPEND( p_manager->p_priv->installer.entries, p_entry );
     if( !p_manager->p_priv->installer.b_live )
     {
-        if( vlc_clone( &p_manager->p_priv->installer.thread, InstallerThread, p_manager
-                       ) )
+        if( vlc_clone( &p_manager->p_priv->installer.thread, InstallerThread, p_manager,
+                       VLC_THREAD_PRIORITY_LOW ) )
         {
             msg_Err( p_manager->p_priv->p_parent,
                      "cannot spawn addons installer thread" );

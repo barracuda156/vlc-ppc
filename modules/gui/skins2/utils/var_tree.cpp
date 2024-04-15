@@ -2,6 +2,7 @@
  * var_tree.cpp
  *****************************************************************************
  * Copyright (C) 2005 the VideoLAN team
+ * $Id: b77985a7acb6aeed9f1ac86dc552bd678bfd6bfb $
  *
  * Authors: Antoine Cellerier <dionoea@videolan.org>
  *          Clément Stenac <zorglub@videolan.org>
@@ -28,7 +29,7 @@
 const std::string VarTree::m_type = "tree";
 
 VarTree::VarTree( intf_thread_t *pIntf )
-    : Variable( pIntf ), m_pParent( NULL ), m_media( NULL ),
+    : Variable( pIntf ), m_pParent( NULL ), m_id( 0 ),
       m_readonly( false ), m_selected( false ),
       m_playing( false ), m_expanded( false ),
       m_flat( false ), m_dontMove( false )
@@ -40,18 +41,15 @@ VarTree::VarTree( intf_thread_t *pIntf )
     getPositionVar().addObserver( this );
 }
 
-VarTree::VarTree( intf_thread_t *pIntf, VarTree *pParent, input_item_t *media,
+VarTree::VarTree( intf_thread_t *pIntf, VarTree *pParent, int id,
                   const UStringPtr &rcString, bool selected, bool playing,
                   bool expanded, bool readonly )
-    : Variable( pIntf ), m_pParent( pParent ), m_media( media ),
-      m_cString( rcString ),
+    : Variable( pIntf ), m_pParent( pParent ),
+      m_id( id ), m_cString( rcString ),
       m_readonly( readonly ), m_selected( selected ),
       m_playing( playing ), m_expanded( expanded ),
       m_flat( false ), m_dontMove( false )
 {
-    if( m_media )
-        input_item_Hold( m_media );
-
     // Create the position variable
     m_cPosition = VariablePtr( new VarPercent( pIntf ) );
     getPositionVar().set( 1.0 );
@@ -62,14 +60,11 @@ VarTree::VarTree( intf_thread_t *pIntf, VarTree *pParent, input_item_t *media,
 VarTree::VarTree( const VarTree& v )
     : Variable( v.getIntf() ),
       m_children( v.m_children), m_pParent( v.m_pParent ),
-      m_media( v.m_media ), m_cString( v.m_cString ),
+      m_id( v.m_id ), m_cString( v.m_cString ),
       m_readonly( v.m_readonly ), m_selected( v.m_selected ),
       m_playing( v.m_playing ), m_expanded( v.m_expanded ),
       m_flat( false ), m_dontMove( false )
 {
-    if( m_media )
-        input_item_Hold( m_media );
-
     // Create the position variable
     m_cPosition = VariablePtr( new VarPercent( getIntf() ) );
     getPositionVar().set( 1.0 );
@@ -80,20 +75,9 @@ VarTree::VarTree( const VarTree& v )
 VarTree::~VarTree()
 {
     getPositionVar().delObserver( this );
-    if( m_media )
-        input_item_Release( m_media );
 }
 
-void VarTree::setMedia( input_item_t *media )
-{
-    if( m_media )
-        input_item_Release( m_media );
-    m_media = media;
-    if( m_media )
-        input_item_Hold( m_media );
-}
-
-VarTree::Iterator VarTree::add( input_item_t* media, const UStringPtr &rcString,
+VarTree::Iterator VarTree::add( int id, const UStringPtr &rcString,
                   bool selected, bool playing, bool expanded, bool readonly,
                   int pos )
 {
@@ -109,7 +93,7 @@ VarTree::Iterator VarTree::add( input_item_t* media, const UStringPtr &rcString,
     }
 
     return m_children.insert( it,
-                              VarTree( getIntf(), this, media, rcString,
+                              VarTree( getIntf(), this, id, rcString,
                                        selected, playing,
                                        expanded, readonly ) );
 }

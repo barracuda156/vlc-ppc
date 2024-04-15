@@ -2,6 +2,7 @@
  * gradient.c : Gradient and edge detection video effects plugin for vlc
  *****************************************************************************
  * Copyright (C) 2000-2008 VLC authors and VideoLAN
+ * $Id: 7f9f000337bdcac385f56b51b0e7411308acad9a $
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *          Antoine Cellerier <dionoea -at- videolan -dot- org>
@@ -43,12 +44,13 @@ enum { GRADIENT, EDGE, HOUGH };
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static int GradientCallback( vlc_object_t *, char const *,
                              vlc_value_t, vlc_value_t,
                              void * );
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 static void FilterGradient( filter_t *, picture_t *, picture_t * );
 static void FilterEdge    ( filter_t *, picture_t *, picture_t * );
@@ -60,8 +62,9 @@ static void FilterHough   ( filter_t *, picture_t *, picture_t * );
 #define MODE_TEXT N_("Distort mode")
 #define MODE_LONGTEXT N_("Distort mode, one of \"gradient\", \"edge\" and \"hough\".")
 
-#define COLOR_TEXT N_("Keep color")
-#define COLOR_LONGTEXT N_("This will keep the colors, otherwise the image will be turned white." )
+#define GRADIENT_TEXT N_("Gradient image type")
+#define GRADIENT_LONGTEXT N_("Gradient image type (0 or 1). 0 will " \
+        "turn the image to white while 1 will keep colors." )
 
 #define CARTOON_TEXT N_("Apply cartoon effect")
 #define CARTOON_LONGTEXT N_("Apply cartoon effect. It is only used by " \
@@ -78,24 +81,25 @@ vlc_module_begin ()
     set_description( N_("Gradient video filter") )
     set_shortname( N_( "Gradient" ))
     set_help(GRADIENT_HELP)
+    set_capability( "video filter", 0 )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
     add_string( FILTER_PREFIX "mode", "gradient",
-                MODE_TEXT, MODE_LONGTEXT )
+                MODE_TEXT, MODE_LONGTEXT, false )
         change_string_list( mode_list, mode_list_text )
 
-    add_obsolete_integer( "gradient-type" ) /* since 4.0.0 */
-    add_bool( FILTER_PREFIX "color", false,
-                COLOR_TEXT, COLOR_LONGTEXT )
+    add_integer_with_range( FILTER_PREFIX "type", 0, 0, 1,
+                GRADIENT_TEXT, GRADIENT_LONGTEXT, false )
     add_bool( FILTER_PREFIX "cartoon", true,
-                CARTOON_TEXT, CARTOON_LONGTEXT )
+                CARTOON_TEXT, CARTOON_LONGTEXT, false )
 
     add_shortcut( "gradient" )
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
-    "mode", "color", "cartoon", NULL
+    "mode", "type", "cartoon", NULL
 };
 
 /*****************************************************************************
@@ -104,13 +108,13 @@ static const char *const ppsz_filter_options[] = {
  * This structure is part of the video output thread descriptor.
  * It describes the Distort specific properties of an output thread.
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     vlc_mutex_t lock;
     int i_mode;
 
     /* For the gradient mode */
-    int color;
+    int i_gradient_type;
     bool b_cartoon;
 
     uint32_t *p_buf32;
@@ -119,15 +123,16 @@ typedef struct
 
     /* For hough mode */
     int *p_pre_hough;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Create: allocates Distort video thread output method
  *****************************************************************************
  * This function allocates and initializes a Distort vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     char *psz_method;
 
     switch( p_filter->fmt_in.video.i_chroma )
@@ -142,14 +147,13 @@ static int Create( filter_t *p_filter )
     }
 
     /* Allocate structure */
-    filter_sys_t *p_sys = malloc( sizeof( filter_sys_t ) );
-    if( p_sys == NULL )
+    p_filter->p_sys = malloc( sizeof( filter_sys_t ) );
+    if( p_filter->p_sys == NULL )
         return VLC_ENOMEM;
-    p_filter->p_sys = p_sys;
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
-    p_sys->p_pre_hough = NULL;
+    p_filter->p_sys->p_pre_hough = NULL;
 
     config_ChainParse( p_filter, FILTER_PREFIX, ppsz_filter_options,
                    p_filter->p_cfg );
@@ -159,46 +163,46 @@ static int Create( filter_t *p_filter )
     {
         msg_Err( p_filter, "configuration variable "
                  FILTER_PREFIX "mode empty" );
-        p_sys->i_mode = GRADIENT;
+        p_filter->p_sys->i_mode = GRADIENT;
     }
     else
     {
         if( !strcmp( psz_method, "gradient" ) )
         {
-            p_sys->i_mode = GRADIENT;
+            p_filter->p_sys->i_mode = GRADIENT;
         }
         else if( !strcmp( psz_method, "edge" ) )
         {
-            p_sys->i_mode = EDGE;
+            p_filter->p_sys->i_mode = EDGE;
         }
         else if( !strcmp( psz_method, "hough" ) )
         {
-            p_sys->i_mode = HOUGH;
+            p_filter->p_sys->i_mode = HOUGH;
         }
         else
         {
             msg_Err( p_filter, "no valid gradient mode provided (%s)", psz_method );
-            p_sys->i_mode = GRADIENT;
+            p_filter->p_sys->i_mode = GRADIENT;
         }
     }
     free( psz_method );
 
-    p_sys->color =
-        var_CreateGetBoolCommand( p_filter, FILTER_PREFIX "color" );
-    p_sys->b_cartoon =
+    p_filter->p_sys->i_gradient_type =
+        var_CreateGetIntegerCommand( p_filter, FILTER_PREFIX "type" );
+    p_filter->p_sys->b_cartoon =
         var_CreateGetBoolCommand( p_filter, FILTER_PREFIX "cartoon" );
 
-    vlc_mutex_init( &p_sys->lock );
+    vlc_mutex_init( &p_filter->p_sys->lock );
     var_AddCallback( p_filter, FILTER_PREFIX "mode",
-                     GradientCallback, p_sys );
-    var_AddCallback( p_filter, FILTER_PREFIX "color",
-                     GradientCallback, p_sys );
+                     GradientCallback, p_filter->p_sys );
+    var_AddCallback( p_filter, FILTER_PREFIX "type",
+                     GradientCallback, p_filter->p_sys );
     var_AddCallback( p_filter, FILTER_PREFIX "cartoon",
-                     GradientCallback, p_sys );
+                     GradientCallback, p_filter->p_sys );
 
-    p_sys->p_buf32 = NULL;
-    p_sys->p_buf32_bis = NULL;
-    p_sys->p_buf8 = NULL;
+    p_filter->p_sys->p_buf32 = NULL;
+    p_filter->p_sys->p_buf32_bis = NULL;
+    p_filter->p_sys->p_buf8 = NULL;
 
     return VLC_SUCCESS;
 }
@@ -208,16 +212,18 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method created by DistortCreateOutputMethod
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     var_DelCallback( p_filter, FILTER_PREFIX "mode",
                      GradientCallback, p_sys );
-    var_DelCallback( p_filter, FILTER_PREFIX "color",
+    var_DelCallback( p_filter, FILTER_PREFIX "type",
                      GradientCallback, p_sys );
     var_DelCallback( p_filter, FILTER_PREFIX "cartoon",
                      GradientCallback, p_sys );
+    vlc_mutex_destroy( &p_sys->lock );
 
     free( p_sys->p_buf32 );
     free( p_sys->p_buf32_bis );
@@ -234,12 +240,21 @@ static void Destroy( filter_t *p_filter )
  * until it is displayed and switch the two rendering buffers, preparing next
  * frame.
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    picture_t *p_outpic;
 
-    vlc_mutex_lock( &p_sys->lock );
-    switch( p_sys->i_mode )
+    if( !p_pic ) return NULL;
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
+
+    vlc_mutex_lock( &p_filter->p_sys->lock );
+    switch( p_filter->p_sys->i_mode )
     {
         case EDGE:
             FilterEdge( p_filter, p_pic, p_outpic );
@@ -256,7 +271,9 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
         default:
             break;
     }
-    vlc_mutex_unlock( &p_sys->lock );
+    vlc_mutex_unlock( &p_filter->p_sys->lock );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 /*****************************************************************************
@@ -323,8 +340,6 @@ static void GaussianConvolution( picture_t *p_inpic, uint32_t *p_smooth )
 static void FilterGradient( filter_t *p_filter, picture_t *p_inpic,
                                                 picture_t *p_outpic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-
     const int i_src_pitch = p_inpic->p[Y_PLANE].i_pitch;
     const int i_src_visible = p_inpic->p[Y_PLANE].i_visible_pitch;
     const int i_dst_pitch = p_outpic->p[Y_PLANE].i_pitch;
@@ -334,14 +349,14 @@ static void FilterGradient( filter_t *p_filter, picture_t *p_inpic,
     uint8_t *p_outpix = p_outpic->p[Y_PLANE].p_pixels;
 
     uint32_t *p_smooth;
-    if( !p_sys->p_buf32 )
-        p_sys->p_buf32 =
+    if( !p_filter->p_sys->p_buf32 )
+        p_filter->p_sys->p_buf32 =
             vlc_alloc( i_num_lines * i_src_visible, sizeof(uint32_t));
-    p_smooth = p_sys->p_buf32;
+    p_smooth = p_filter->p_sys->p_buf32;
 
     if( !p_smooth ) return;
 
-    if( p_sys->b_cartoon )
+    if( p_filter->p_sys->b_cartoon )
     {
         plane_CopyPixels( &p_outpic->p[U_PLANE], &p_inpic->p[U_PLANE] );
         plane_CopyPixels( &p_outpic->p[V_PLANE], &p_inpic->p[V_PLANE] );
@@ -381,9 +396,9 @@ static void FilterGradient( filter_t *p_filter, picture_t *p_inpic,
                     + ((int)p_smooth[(y + 1) * i_src_visible + x - 1] \
                      - (int)p_smooth[(y + 1) * i_src_visible + x + 1]));
 
-    if( p_sys->color )
+    if( p_filter->p_sys->i_gradient_type )
     {
-        if( p_sys->b_cartoon )
+        if( p_filter->p_sys->b_cartoon )
         {
             FOR
             if( a > 60 )
@@ -444,8 +459,6 @@ static void FilterGradient( filter_t *p_filter, picture_t *p_inpic,
 static void FilterEdge( filter_t *p_filter, picture_t *p_inpic,
                                             picture_t *p_outpic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-
     const int i_src_pitch = p_inpic->p[Y_PLANE].i_pitch;
     const int i_src_visible = p_inpic->p[Y_PLANE].i_visible_pitch;
     const int i_dst_pitch = p_outpic->p[Y_PLANE].i_pitch;
@@ -458,24 +471,24 @@ static void FilterEdge( filter_t *p_filter, picture_t *p_inpic,
     uint32_t *p_grad;
     uint8_t *p_theta;
 
-    if( !p_sys->p_buf32 )
-        p_sys->p_buf32 =
+    if( !p_filter->p_sys->p_buf32 )
+        p_filter->p_sys->p_buf32 =
             vlc_alloc( i_num_lines * i_src_visible, sizeof(uint32_t));
-    p_smooth = p_sys->p_buf32;
+    p_smooth = p_filter->p_sys->p_buf32;
 
-    if( !p_sys->p_buf32_bis )
-        p_sys->p_buf32_bis =
+    if( !p_filter->p_sys->p_buf32_bis )
+        p_filter->p_sys->p_buf32_bis =
             vlc_alloc( i_num_lines * i_src_visible, sizeof(uint32_t));
-    p_grad = p_sys->p_buf32_bis;
+    p_grad = p_filter->p_sys->p_buf32_bis;
 
-    if( !p_sys->p_buf8 )
-        p_sys->p_buf8 =
+    if( !p_filter->p_sys->p_buf8 )
+        p_filter->p_sys->p_buf8 =
             vlc_alloc( i_num_lines * i_src_visible, sizeof(uint8_t));
-    p_theta = p_sys->p_buf8;
+    p_theta = p_filter->p_sys->p_buf8;
 
     if( !p_smooth || !p_grad || !p_theta ) return;
 
-    if( p_sys->b_cartoon )
+    if( p_filter->p_sys->b_cartoon )
     {
         plane_CopyPixels( &p_outpic->p[U_PLANE], &p_inpic->p[U_PLANE] );
         plane_CopyPixels( &p_outpic->p[V_PLANE], &p_inpic->p[V_PLANE] );
@@ -577,7 +590,7 @@ static void FilterEdge( filter_t *p_filter, picture_t *p_inpic,
             else
             {
                 colorize:
-                if( p_sys->b_cartoon )
+                if( p_filter->p_sys->b_cartoon )
                 {
                     if( p_smooth[y*i_src_visible+x] > 0xa0 )
                         p_outpix[y*i_dst_pitch+x] = (uint8_t)
@@ -600,12 +613,10 @@ static void FilterEdge( filter_t *p_filter, picture_t *p_inpic,
 /*****************************************************************************
  * FilterHough
  *****************************************************************************/
-#define p_pre_hough p_sys->p_pre_hough
+#define p_pre_hough p_filter->p_sys->p_pre_hough
 static void FilterHough( filter_t *p_filter, picture_t *p_inpic,
                                              picture_t *p_outpic )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
-
     int i_src_visible = p_inpic->p[Y_PLANE].i_visible_pitch;
     int i_dst_pitch = p_outpic->p[Y_PLANE].i_pitch;
     int i_num_lines = p_inpic->p[Y_PLANE].i_visible_lines;
@@ -728,7 +739,7 @@ static int GradientCallback( vlc_object_t *p_this, char const *psz_var,
                              void *p_data )
 {
     VLC_UNUSED(oldval);
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *)p_data;
 
     vlc_mutex_lock( &p_sys->lock );
     if( !strcmp( psz_var, FILTER_PREFIX "mode" ) )
@@ -751,9 +762,9 @@ static int GradientCallback( vlc_object_t *p_this, char const *psz_var,
             p_sys->i_mode = GRADIENT;
         }
     }
-    else if( !strcmp( psz_var, FILTER_PREFIX "color" ) )
+    else if( !strcmp( psz_var, FILTER_PREFIX "type" ) )
     {
-        p_sys->color = newval.b_bool;
+        p_sys->i_gradient_type = newval.i_int;
     }
     else if( !strcmp( psz_var, FILTER_PREFIX "cartoon" ) )
     {

@@ -2,6 +2,7 @@
  * mpeg4video.c: mpeg 4 video packetizer
  *****************************************************************************
  * Copyright (C) 2001-2006 VLC authors and VideoLAN
+ * $Id: c5a81e6f3a2fbd181a07d8bd1457f82a2d6ea52c $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Laurent Aimar <fenrir@via.ecp.fr>
@@ -40,7 +41,7 @@
 #include <vlc_block_helper.h>
 #include "packetizer_helper.h"
 #include "startcode_helper.h"
-#include "iso_color_tables.h"
+#include "hxxx_nal.h" /* colour values/mappings */
 
 /*****************************************************************************
  * Module descriptor
@@ -49,6 +50,7 @@ static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
 vlc_module_begin ()
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_PACKETIZER )
     set_description( N_("MPEG4 video packetizer") )
     set_capability( "packetizer", 50 )
@@ -58,7 +60,7 @@ vlc_module_end ()
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Input properties
@@ -71,22 +73,24 @@ typedef struct
     vlc_tick_t i_interpolated_pts;
     vlc_tick_t i_interpolated_dts;
     vlc_tick_t i_last_ref_pts;
-    int64_t i_last_time_ref;
-    int64_t i_time_ref;
-    int64_t i_last_time;
-    int64_t i_last_timeincr;
+    vlc_tick_t i_last_time_ref;
+    vlc_tick_t i_time_ref;
+    vlc_tick_t i_last_time;
+    vlc_tick_t i_last_timeincr;
 
     unsigned int i_flags;
 
     int         i_fps_num;
     int         i_fps_den;
+    int         i_last_incr;
+    int         i_last_incr_diff;
 
     bool  b_frame;
 
     /* Current frame being built */
     block_t    *p_frame;
     block_t    **pp_last;
-} decoder_sys_t;
+};
 
 static block_t *Packetize( decoder_t *, block_t ** );
 static void PacketizeFlush( decoder_t * );
@@ -132,7 +136,7 @@ static int Open( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_MP4V )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_MP4V )
         return VLC_EGENERIC;
 
     /* Allocate the memory needed to store the decoder's structure */
@@ -151,7 +155,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->pp_last = &p_sys->p_frame;
 
     /* Setup properties */
-    es_format_Copy( &p_dec->fmt_out, p_dec->fmt_in );
+    es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );
     p_dec->fmt_out.i_codec = VLC_CODEC_MP4V;
 
     if( p_dec->fmt_out.i_extra )
@@ -165,7 +169,6 @@ static int Open( vlc_object_t *p_this )
     /* Set callback */
     p_dec->pf_packetize = Packetize;
     p_dec->pf_flush = PacketizeFlush;
-    p_dec->pf_get_cc = NULL;
 
     return VLC_SUCCESS;
 }
@@ -204,12 +207,12 @@ static void PacketizeFlush( decoder_t *p_dec )
 /*****************************************************************************
  * Helpers:
  *****************************************************************************/
-static void PacketizeReset( void *p_private, bool b_flush )
+static void PacketizeReset( void *p_private, bool b_broken )
 {
     decoder_t *p_dec = p_private;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if( b_flush )
+    if( b_broken )
     {
         if( p_sys->p_frame )
             block_ChainRelease( p_sys->p_frame );
@@ -248,8 +251,8 @@ static int PacketizeValidate( void *p_private, block_t *p_au )
 
     /* We've just started the stream, wait for the first PTS.
      * We discard here so we can still get the sequence header. */
-    if( p_sys->i_interpolated_pts == VLC_TICK_INVALID &&
-        p_sys->i_interpolated_dts == VLC_TICK_INVALID )
+    if( p_sys->i_interpolated_pts <= VLC_TICK_INVALID &&
+        p_sys->i_interpolated_dts <= VLC_TICK_INVALID )
     {
         msg_Dbg( p_dec, "need a starting pts/dts" );
         return VLC_EGENERIC;
@@ -257,7 +260,7 @@ static int PacketizeValidate( void *p_private, block_t *p_au )
 
     /* When starting the stream we can have the first frame with
      * a null DTS (i_interpolated_pts is initialized to 0) */
-    if( p_au->i_dts == VLC_TICK_INVALID )
+    if( !p_au->i_dts )
         p_au->i_dts = p_au->i_pts;
     return VLC_SUCCESS;
 }
@@ -292,18 +295,13 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
              i_startcode < RESERVED_START_CODE )
     {
         /* Copy the complete VOL */
-        if( (size_t)p_dec->fmt_out.i_extra != p_frag->i_buffer ||
-           ( p_frag->i_buffer && memcmp(p_dec->fmt_out.p_extra,
-                                        p_frag->p_buffer, p_frag->i_buffer) ) )
+        if( (size_t)p_dec->fmt_out.i_extra != p_frag->i_buffer )
         {
-            void *p_realloc = realloc( p_dec->fmt_out.p_extra, p_frag->i_buffer );
-            if( p_realloc )
-            {
-                p_dec->fmt_out.p_extra = p_realloc;
-                p_dec->fmt_out.i_extra = p_frag->i_buffer;
-                memcpy( p_realloc, p_frag->p_buffer, p_frag->i_buffer );
-            }
+            p_dec->fmt_out.p_extra =
+                xrealloc( p_dec->fmt_out.p_extra, p_frag->i_buffer );
+            p_dec->fmt_out.i_extra = p_frag->i_buffer;
         }
+        memcpy( p_dec->fmt_out.p_extra, p_frag->p_buffer, p_frag->i_buffer );
         ParseVOL( p_dec, &p_dec->fmt_out,
                   p_dec->fmt_out.p_extra, p_dec->fmt_out.i_extra );
 
@@ -344,9 +342,6 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
         p_pic->i_pts = p_sys->i_interpolated_pts;
         p_pic->i_dts = p_sys->i_interpolated_dts;
 
-#if 0
-    msg_Err( p_dec, "output dts/pts (%"PRId64",%"PRId64")", p_pic->i_dts, p_pic->i_pts );
-#endif
         /* Reset context */
         p_sys->p_frame = NULL;
         p_sys->pp_last = &p_sys->p_frame;
@@ -371,10 +366,8 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
         if( i_vol <= 5 )
             return VLC_EGENERIC;
 
-        uint32_t i_startcode = GetDWBE( p_vol );
-        if( i_startcode >= VIDEO_OBJECT_LAYER_START_CODE &&
-            i_startcode < RESERVED_START_CODE )
-            break;
+        if( p_vol[0] == 0x00 && p_vol[1] == 0x00 && p_vol[2] == 0x01 &&
+            p_vol[3] >= 0x20 && p_vol[3] <= 0x2f ) break;
 
         p_vol++; i_vol--;
     }
@@ -476,12 +469,12 @@ static int ParseVO( decoder_t *p_dec, block_t *p_vo )
             }
         }
 
-        if( p_dec->fmt_in->video.primaries == COLOR_PRIMARIES_UNDEF )
+        if( p_dec->fmt_in.video.primaries == COLOR_PRIMARIES_UNDEF )
         {
-            p_dec->fmt_out.video.primaries = iso_23001_8_cp_to_vlc_primaries( colour_primaries );
-            p_dec->fmt_out.video.transfer = iso_23001_8_tc_to_vlc_xfer( colour_xfer );
-            p_dec->fmt_out.video.space = iso_23001_8_mc_to_vlc_coeffs( colour_matrix_coeff );
-            p_dec->fmt_out.video.color_range = full_range ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+            p_dec->fmt_out.video.primaries = hxxx_colour_primaries_to_vlc( colour_primaries );
+            p_dec->fmt_out.video.transfer = hxxx_transfer_characteristics_to_vlc( colour_xfer );
+            p_dec->fmt_out.video.space = hxxx_matrix_coeffs_to_vlc( colour_matrix_coeff );
+            p_dec->fmt_out.video.b_color_range_full = full_range;
         }
     }
 
@@ -518,7 +511,7 @@ static int ParseVOP( decoder_t *p_dec, block_t *p_vop )
     if( !bs_read1( &s ) ) return VLC_EGENERIC; /* Marker */
 
     /* VOP time increment */
-    i_time_increment_bits = vlc_log2(p_sys->i_fps_num - 1) + 1;
+    i_time_increment_bits = vlc_log2(p_dec->p_sys->i_fps_num - 1) + 1;
     if( i_time_increment_bits < 1 ) i_time_increment_bits = 1;
     i_time_increment = bs_read( &s, i_time_increment_bits );
 
@@ -527,52 +520,42 @@ static int ParseVOP( decoder_t *p_dec, block_t *p_vop )
     {
         p_sys->i_last_time_ref = p_sys->i_time_ref;
         p_sys->i_time_ref +=
-            (i_modulo_time_base * p_sys->i_fps_num);
+            (i_modulo_time_base * p_dec->p_sys->i_fps_num);
         i_time_ref = p_sys->i_time_ref;
     }
     else
     {
         i_time_ref = p_sys->i_last_time_ref +
-            (i_modulo_time_base * p_sys->i_fps_num);
-    }
-
-    int64_t i_time_diff = (i_time_ref + i_time_increment) - (p_sys->i_last_time + p_sys->i_last_timeincr);
-    if( p_sys->i_fps_num && i_modulo_time_base == 0 && i_time_diff < 0 && -i_time_diff > p_sys->i_fps_num )
-    {
-        msg_Warn(p_dec, "missing modulo_time_base update");
-        i_modulo_time_base += -i_time_diff / p_sys->i_fps_num;
-        p_sys->i_time_ref += (i_modulo_time_base * p_sys->i_fps_num);
-        p_sys->i_time_ref += p_sys->i_last_timeincr % p_sys->i_fps_num;
-        i_time_ref = p_sys->i_time_ref;
-    }
-
-    if( p_sys->i_fps_num < 5 && /* Work-around buggy streams */
-        p_dec->fmt_in->video.i_frame_rate > 0 &&
-        p_dec->fmt_in->video.i_frame_rate_base > 0 )
-    {
-        p_sys->i_interpolated_pts += vlc_tick_from_samples(
-        p_dec->fmt_in->video.i_frame_rate_base,
-        p_dec->fmt_in->video.i_frame_rate);
-    }
-    else if( p_sys->i_fps_num )
-    {
-        i_time_diff = (i_time_ref + i_time_increment) - (p_sys->i_last_time + p_sys->i_last_timeincr);
-        p_sys->i_interpolated_pts += vlc_tick_from_samples( i_time_diff, p_sys->i_fps_num );
+            (i_modulo_time_base * p_dec->p_sys->i_fps_num);
     }
 
 #if 0
-    msg_Err( p_dec, "interp dts/pts (%"PRId64",%"PRId64"), dts/pts (%"PRId64",%"PRId64") %"PRId64" mod %d inc %"PRId64,
-             p_sys->i_interpolated_dts, p_sys->i_interpolated_pts,
-             p_vop->i_dts, p_vop->i_pts, p_sys->i_time_ref, i_modulo_time_base, i_time_increment );
+    msg_Err( p_dec, "interp pts/dts (%lli,%lli), pts/dts (%lli,%lli)",
+             p_sys->i_interpolated_pts, p_sys->i_interpolated_dts,
+             p_vop->i_pts, p_vop->i_dts );
 #endif
+
+    if( p_dec->p_sys->i_fps_num < 5 && /* Work-around buggy streams */
+        p_dec->fmt_in.video.i_frame_rate > 0 &&
+        p_dec->fmt_in.video.i_frame_rate_base > 0 )
+    {
+        p_sys->i_interpolated_pts += CLOCK_FREQ *
+        p_dec->fmt_in.video.i_frame_rate_base /
+        p_dec->fmt_in.video.i_frame_rate;
+    }
+    else if( p_dec->p_sys->i_fps_num )
+        p_sys->i_interpolated_pts +=
+            ( CLOCK_FREQ * (i_time_ref + i_time_increment -
+              p_sys->i_last_time - p_sys->i_last_timeincr) /
+              p_dec->p_sys->i_fps_num );
 
     p_sys->i_last_time = i_time_ref;
     p_sys->i_last_timeincr = i_time_increment;
 
     /* Correct interpolated dts when we receive a new pts/dts */
-    if( p_vop->i_pts != VLC_TICK_INVALID )
+    if( p_vop->i_pts > VLC_TICK_INVALID )
         p_sys->i_interpolated_pts = p_vop->i_pts;
-    if( p_vop->i_dts != VLC_TICK_INVALID )
+    if( p_vop->i_dts > VLC_TICK_INVALID )
         p_sys->i_interpolated_dts = p_vop->i_dts;
 
     if( (p_sys->i_flags & BLOCK_FLAG_TYPE_B) || !p_sys->b_frame )
@@ -581,16 +564,16 @@ static int ParseVOP( decoder_t *p_dec, block_t *p_vop )
 
         p_sys->i_interpolated_dts = p_sys->i_interpolated_pts;
 
-        if( p_vop->i_pts != VLC_TICK_INVALID )
+        if( p_vop->i_pts > VLC_TICK_INVALID )
             p_sys->i_interpolated_dts = p_vop->i_pts;
-        if( p_vop->i_dts != VLC_TICK_INVALID )
+        if( p_vop->i_dts > VLC_TICK_INVALID )
             p_sys->i_interpolated_dts = p_vop->i_dts;
 
         p_sys->i_interpolated_pts = p_sys->i_interpolated_dts;
     }
     else
     {
-        if( p_sys->i_last_ref_pts != VLC_TICK_INVALID )
+        if( p_sys->i_last_ref_pts > VLC_TICK_INVALID )
             p_sys->i_interpolated_dts = p_sys->i_last_ref_pts;
 
         p_sys->i_last_ref_pts = p_sys->i_interpolated_pts;

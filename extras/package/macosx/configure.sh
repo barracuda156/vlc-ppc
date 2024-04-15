@@ -1,13 +1,10 @@
 #!/bin/sh
 
-SCRIPTDIR=$(dirname "$0")
-. "$SCRIPTDIR/env.build.sh" "none"
-
 CFLAGS=${CFLAGS}
 LDFLAGS=${LDFLAGS}
 
 OPTIONS="
-        --prefix=/
+        --prefix=`pwd`/vlc_install_dir
         --enable-macosx
         --enable-merge-ffmpeg
         --enable-osx-notifications
@@ -17,20 +14,19 @@ OPTIONS="
         --enable-shout
         --enable-ncurses
         --enable-twolame
+        --enable-realrtsp
         --enable-libass
         --enable-macosx-avfoundation
         --disable-skins2
         --disable-xcb
         --disable-caca
         --disable-pulse
+        --disable-sdl-image
         --disable-vnc
-        --with-macosx-version-min=10.11
-        --without-x
+        --with-macosx-version-min=10.7
 "
 
 export CFLAGS
 export LDFLAGS
-
-vlcSetSymbolEnvironment
 
 sh "$(dirname $0)"/../../../configure ${OPTIONS} "$@"

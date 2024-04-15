@@ -48,8 +48,9 @@ struct cvpxpic_ctx
     CVPixelBufferRef cvpx;
     unsigned nb_fields;
 
-    vlc_atomic_rc_t rc;
-    void (*on_released_cb)(vlc_video_context *vctx, unsigned);
+    atomic_uint ref_count;
+    void (*on_released_cb)(CVPixelBufferRef, void *, unsigned);
+    void *on_released_data;
 };
 
 static void
@@ -57,11 +58,11 @@ cvpxpic_destroy_cb(picture_context_t *opaque)
 {
     struct cvpxpic_ctx *ctx = (struct cvpxpic_ctx *)opaque;
 
-    if (vlc_atomic_rc_dec(&ctx->rc))
+    if (atomic_fetch_sub(&ctx->ref_count, 1) == 1)
     {
         CFRelease(ctx->cvpx);
         if (ctx->on_released_cb)
-            ctx->on_released_cb(opaque->vctx, ctx->nb_fields);
+            ctx->on_released_cb(ctx->cvpx, ctx->on_released_data, ctx->nb_fields);
         free(opaque);
     }
 }
@@ -70,16 +71,15 @@ static picture_context_t *
 cvpxpic_copy_cb(struct picture_context_t *opaque)
 {
     struct cvpxpic_ctx *ctx = (struct cvpxpic_ctx *)opaque;
-    vlc_atomic_rc_inc(&ctx->rc);
-    vlc_video_context_Hold(opaque->vctx);
+    atomic_fetch_add(&ctx->ref_count, 1);
     return opaque;
 }
 
 static int
 cvpxpic_attach_common(picture_t *p_pic, CVPixelBufferRef cvpx,
                       void (*pf_destroy)(picture_context_t *),
-                      vlc_video_context *vctx,
-                      void (*on_released_cb)(vlc_video_context *vctx, unsigned))
+                      void (*on_released_cb)(CVPixelBufferRef, void *, unsigned),
+                      void *on_released_data)
 {
     struct cvpxpic_ctx *ctx = malloc(sizeof(struct cvpxpic_ctx));
     if (ctx == NULL)
@@ -87,16 +87,14 @@ cvpxpic_attach_common(picture_t *p_pic, CVPixelBufferRef cvpx,
         picture_Release(p_pic);
         return VLC_ENOMEM;
     }
-    ctx->s = (picture_context_t) {
-        pf_destroy, cvpxpic_copy_cb, vctx,
-    };
+    ctx->s.destroy = pf_destroy;
+    ctx->s.copy = cvpxpic_copy_cb;
     ctx->cvpx = CVPixelBufferRetain(cvpx);
     ctx->nb_fields = p_pic->i_nb_fields;
-    vlc_atomic_rc_init(&ctx->rc);
+    atomic_init(&ctx->ref_count, 1);
 
-    assert(vctx);
-    vlc_video_context_Hold(vctx);
     ctx->on_released_cb = on_released_cb;
+    ctx->on_released_data = on_released_data;
 
     p_pic->context = &ctx->s;
 
@@ -104,10 +102,17 @@ cvpxpic_attach_common(picture_t *p_pic, CVPixelBufferRef cvpx,
 }
 
 int
-cvpxpic_attach(picture_t *p_pic, CVPixelBufferRef cvpx, vlc_video_context *vctx,
-               void (*on_released_cb)(vlc_video_context *vctx, unsigned))
+cvpxpic_attach(picture_t *p_pic, CVPixelBufferRef cvpx)
 {
-    return cvpxpic_attach_common(p_pic, cvpx, cvpxpic_destroy_cb, vctx, on_released_cb);
+    return cvpxpic_attach_common(p_pic, cvpx, cvpxpic_destroy_cb, NULL, NULL);
+}
+
+int cvpxpic_attach_with_cb(picture_t *p_pic, CVPixelBufferRef cvpx,
+                           void (*on_released_cb)(CVPixelBufferRef, void *, unsigned),
+                           void *on_released_data)
+{
+    return cvpxpic_attach_common(p_pic, cvpx, cvpxpic_destroy_cb, on_released_cb,
+                                 on_released_data);
 }
 
 CVPixelBufferRef
@@ -137,8 +142,7 @@ cvpxpic_destroy_mapped_rw_cb(picture_context_t *opaque)
 
 picture_t *
 cvpxpic_create_mapped(const video_format_t *fmt, CVPixelBufferRef cvpx,
-                      vlc_video_context *vctx, bool readonly)
-
+                      bool readonly)
 {
     unsigned planes_count;
     switch (fmt->i_chroma)
@@ -159,33 +163,32 @@ cvpxpic_create_mapped(const video_format_t *fmt, CVPixelBufferRef cvpx,
     assert(CVPixelBufferGetPlaneCount(cvpx) == planes_count);
 #endif
 
-    void (*pf_destroy)(picture_context_t *) = readonly ?
-        cvpxpic_destroy_mapped_ro_cb : cvpxpic_destroy_mapped_rw_cb;
-
-    picture_t *pic = picture_NewFromResource(fmt, &rsc);
-    if (pic == NULL
-     || cvpxpic_attach_common(pic, cvpx, pf_destroy, vctx, NULL) != VLC_SUCCESS)
-    {
-        CVPixelBufferUnlockBaseAddress(cvpx, lock);
-        return NULL;
-    }
-
     if (planes_count == 0)
     {
-        pic->p[0].p_pixels = CVPixelBufferGetBaseAddress(cvpx);
-        pic->p[0].i_lines = CVPixelBufferGetHeight(cvpx);
-        pic->p[0].i_pitch = CVPixelBufferGetBytesPerRow(cvpx);
+        rsc.p[0].p_pixels = CVPixelBufferGetBaseAddress(cvpx);
+        rsc.p[0].i_lines = CVPixelBufferGetHeight(cvpx);
+        rsc.p[0].i_pitch = CVPixelBufferGetBytesPerRow(cvpx);
     }
     else
     {
         for (unsigned i = 0; i < planes_count; ++i)
         {
-            pic->p[i].p_pixels = CVPixelBufferGetBaseAddressOfPlane(cvpx, i);
-            pic->p[i].i_lines = CVPixelBufferGetHeightOfPlane(cvpx, i);
-            pic->p[i].i_pitch = CVPixelBufferGetBytesPerRowOfPlane(cvpx, i);
+            rsc.p[i].p_pixels = CVPixelBufferGetBaseAddressOfPlane(cvpx, i);
+            rsc.p[i].i_lines = CVPixelBufferGetHeightOfPlane(cvpx, i);
+            rsc.p[i].i_pitch = CVPixelBufferGetBytesPerRowOfPlane(cvpx, i);
         }
     }
 
+    void (*pf_destroy)(picture_context_t *) = readonly ?
+        cvpxpic_destroy_mapped_ro_cb : cvpxpic_destroy_mapped_rw_cb;
+
+    picture_t *pic = picture_NewFromResource(fmt, &rsc);
+    if (pic == NULL
+     || cvpxpic_attach_common(pic, cvpx, pf_destroy, NULL, NULL) != VLC_SUCCESS)
+    {
+        CVPixelBufferUnlockBaseAddress(cvpx, lock);
+        return NULL;
+    }
     return pic;
 }
 
@@ -214,7 +217,7 @@ cvpxpic_unmap(picture_t *mapped_pic)
         return NULL;
     }
 
-    cvpxpic_attach(hw_pic, cvpxpic_get_ref(mapped_pic), NULL, NULL);
+    cvpxpic_attach(hw_pic, cvpxpic_get_ref(mapped_pic));
     picture_CopyProperties(hw_pic, mapped_pic);
     picture_Release(mapped_pic);
     return hw_pic;
@@ -313,55 +316,4 @@ cvpxpool_new_cvpx(CVPixelBufferPoolRef pool)
         return NULL;
 
     return cvpx;
-}
-
-struct cvpx_video_context
-{
-    const struct vlc_video_context_operations *ops;
-    enum cvpx_video_context_type type;
-    uint8_t private[];
-};
-
-static void
-cvpx_video_context_Destroy(void *priv)
-{
-    struct cvpx_video_context *cvpx_vctx = priv;
-    if (cvpx_vctx->ops->destroy)
-        cvpx_vctx->ops->destroy(&cvpx_vctx->private);
-}
-
-vlc_video_context *
-vlc_video_context_CreateCVPX(vlc_decoder_device *device,
-                              enum cvpx_video_context_type type, size_t type_size,
-                              const struct vlc_video_context_operations *ops)
-{
-    static const struct vlc_video_context_operations vctx_ops =
-    {
-        cvpx_video_context_Destroy,
-    };
-    vlc_video_context *vctx =
-        vlc_video_context_Create(device, VLC_VIDEO_CONTEXT_CVPX,
-                                 sizeof(struct cvpx_video_context) + type_size,
-                                 &vctx_ops);
-    if (!vctx)
-        return NULL;
-    struct cvpx_video_context *cvpx_vctx =
-        vlc_video_context_GetPrivate(vctx, VLC_VIDEO_CONTEXT_CVPX);
-    assert(cvpx_vctx != NULL);
-    cvpx_vctx->type = type;
-    cvpx_vctx->ops = ops;
-
-    return vctx;
-}
-
-void *
-vlc_video_context_GetCVPXPrivate(vlc_video_context *vctx,
-                                 enum cvpx_video_context_type type)
-{
-    struct cvpx_video_context *cvpx_vctx =
-        vlc_video_context_GetPrivate(vctx, VLC_VIDEO_CONTEXT_CVPX);
-
-    if (cvpx_vctx && cvpx_vctx->type == type)
-        return &cvpx_vctx->private;
-    return NULL;
 }

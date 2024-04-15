@@ -26,12 +26,12 @@
  *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
-%define api.pure full
-%define api.prefix {css}
+%pure-parser
 
-%param { yyscan_t scanner }
+%parse-param { yyscan_t scanner }
 %parse-param { vlc_css_parser_t *css_parser }
-
+%lex-param   { yyscan_t scanner }
+%lex-param   { vlc_css_parser_t *css_parser }
 
 %{
 #ifdef HAVE_CONFIG_H
@@ -64,12 +64,12 @@ typedef void* yyscan_t;
 
 %{
 /* See bison pure calling */
-#define YY_DECL int yylex(union YYSTYPE *, yyscan_t)
-YY_DECL;
+int yylex(union YYSTYPE *, yyscan_t, vlc_css_parser_t *);
 
-static void yyerror(yyscan_t scanner, vlc_css_parser_t *p, const char *msg)
+static int yyerror(yyscan_t scanner, vlc_css_parser_t *p, const char *msg)
 {
     VLC_UNUSED(scanner);VLC_UNUSED(p);VLC_UNUSED(msg);
+    return 1;
 }
 
 %}

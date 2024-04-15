@@ -38,11 +38,11 @@
 
 struct index_entry_s
 {
-    vlc_tick_t time;
+    int64_t time;
     unsigned active;
 };
 
-typedef struct
+struct demux_sys_t
 {
     es_out_id_t *es;
     bool         b_slave;
@@ -72,7 +72,7 @@ typedef struct
     } index;
 
     webvtt_text_parser_t *p_streamparser;
-} demux_sys_t;
+};
 
 #define WEBVTT_PREALLOC 64
 
@@ -346,7 +346,7 @@ static void BuildIndex( demux_t *p_demux )
     }
 }
 
-static block_t *demux_From( demux_t *p_demux, vlc_tick_t i_start )
+static block_t *demux_Range( demux_t *p_demux, vlc_tick_t i_start, vlc_tick_t i_end )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
 
@@ -435,7 +435,8 @@ static void MakeExtradata( demux_sys_t *p_sys, void **p_extra, size_t *pi_extra 
 static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
-    double *pf;
+    int64_t *pi64, i64;
+    double *pf, f;
 
     switch( i_query )
     {
@@ -444,24 +445,24 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_GET_LENGTH:
-            *(va_arg( args, vlc_tick_t * )) = p_sys->i_length;
+            *(va_arg( args, int64_t * )) = p_sys->i_length;
             return VLC_SUCCESS;
 
         case DEMUX_GET_TIME:
-            *va_arg( args, vlc_tick_t * ) = p_sys->i_next_demux_time;
+            pi64 = va_arg( args, int64_t * );
+            *pi64 = p_sys->i_next_demux_time;
             return VLC_SUCCESS;
 
         case DEMUX_SET_TIME:
-            if( p_sys->cues.i_count )
+            i64 = va_arg( args, int64_t );
             {
-                p_sys->index.i_current = getIndexByTime( p_sys, va_arg( args, vlc_tick_t ) );
+                p_sys->index.i_current = getIndexByTime( p_sys, i64 );
                 p_sys->b_first_time = true;
                 p_sys->i_next_demux_time =
                         p_sys->index.p_array[p_sys->index.i_current].time;
                 p_sys->i_next_block_flags |= BLOCK_FLAG_DISCONTINUITY;
                 return VLC_SUCCESS;
             }
-            break;
 
         case DEMUX_GET_POSITION:
             pf = va_arg( args, double * );
@@ -472,7 +473,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             else if( p_sys->index.i_count > 0 )
             {
                 *pf = (double) p_sys->i_next_demux_time /
-                      (p_sys->i_length + VLC_TICK_FROM_MS(500));
+                      (p_sys->i_length + 0.5);
             }
             else
             {
@@ -481,10 +482,11 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_SET_POSITION:
+            f = va_arg( args, double );
             if( p_sys->cues.i_count )
             {
-                double f = va_arg( args, double );
-                p_sys->index.i_current = getIndexByTime( p_sys, p_sys->i_length * f );
+                i64 = f * p_sys->i_length;
+                p_sys->index.i_current = getIndexByTime( p_sys, i64 );
                 p_sys->b_first_time = true;
                 p_sys->i_next_demux_time =
                         p_sys->index.p_array[p_sys->index.i_current].time;
@@ -495,13 +497,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
         case DEMUX_SET_NEXT_DEMUX_TIME:
             p_sys->b_slave = true;
-            p_sys->i_next_demux_time = va_arg( args, vlc_tick_t ) - VLC_TICK_0;
+            p_sys->i_next_demux_time = va_arg( args, int64_t ) - VLC_TICK_0;
             return VLC_SUCCESS;
-
-        case DEMUX_CAN_PAUSE:
-        case DEMUX_SET_PAUSE_STATE:
-        case DEMUX_CAN_CONTROL_PACE:
-            return demux_vaControlHelper( p_demux->s, 0, -1, 0, 1, i_query, args );
 
         case DEMUX_GET_PTS_DELAY:
         case DEMUX_GET_FPS:
@@ -520,13 +517,15 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 static int ControlStream( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
+    int64_t *pi64;
 
     switch( i_query )
     {
         case DEMUX_GET_TIME:
+            pi64 = va_arg( args, int64_t * );
             if( p_sys->i_next_demux_time != VLC_TICK_INVALID )
             {
-                *va_arg( args, vlc_tick_t * ) = p_sys->i_next_demux_time;
+                *pi64 = p_sys->i_next_demux_time;
                 return VLC_SUCCESS;
             }
         default:
@@ -543,7 +542,7 @@ static int Demux( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
 
-    vlc_tick_t i_barrier = p_sys->i_next_demux_time;
+    int64_t i_barrier = p_sys->i_next_demux_time;
 
     while( p_sys->index.i_current < p_sys->index.i_count &&
            p_sys->index.p_array[p_sys->index.i_current].time <= i_barrier )
@@ -561,7 +560,7 @@ static int Demux( demux_t *p_demux )
             }
         }
 
-        block_t *p_block = demux_From( p_demux, i_start_time );
+        block_t *p_block = demux_Range( p_demux, i_start_time, i_end_time );
         if( p_block )
         {
             p_block->i_length = i_end_time - i_start_time;
@@ -593,7 +592,7 @@ static int Demux( demux_t *p_demux )
     if ( !p_sys->b_slave )
     {
         es_out_SetPCR( p_demux->out, VLC_TICK_0 + i_barrier );
-        p_sys->i_next_demux_time += VLC_TICK_FROM_SEC(1);
+        p_sys->i_next_demux_time += CLOCK_FREQ;
     }
 
     if( p_sys->index.i_current >= p_sys->index.i_count )
@@ -669,7 +668,6 @@ int webvtt_OpenDemux ( vlc_object_t *p_this )
     size_t i_extra = 0;
     MakeExtradata( p_sys, &fmt.p_extra, &i_extra );
     fmt.i_extra = i_extra;
-    fmt.i_id = 0;
     p_sys->es = es_out_Add( p_demux->out, &fmt );
     es_format_Clean( &fmt );
     if( p_sys->es == NULL )

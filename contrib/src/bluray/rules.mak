@@ -4,11 +4,9 @@ BLURAY_VERSION := 1.3.2
 BLURAY_URL := $(VIDEOLAN)/libbluray/$(BLURAY_VERSION)/libbluray-$(BLURAY_VERSION).tar.bz2
 
 ifdef BUILD_DISCS
-ifndef HAVE_WINSTORE
 PKGS += bluray
 endif
-endif
-ifeq ($(call need_pkg,"libbluray >= 1.1.0"),)
+ifeq ($(call need_pkg,"libbluray >= 1.0.0"),)
 PKGS_FOUND += bluray
 endif
 
@@ -29,7 +27,9 @@ endif
 DEPS_bluray = libxml2 $(DEPS_libxml2) freetype2 $(DEPS_freetype2)
 
 BLURAY_CONF = --disable-examples  \
-              --with-libxml2
+              --with-libxml2      \
+              --enable-udf        \
+              --enable-bdjava
 
 ifneq ($(WITH_FONTCONFIG), 0)
 DEPS_bluray += fontconfig $(DEPS_fontconfig)
@@ -55,8 +55,6 @@ bluray: libbluray-$(BLURAY_VERSION).tar.bz2 .sum-bluray
 .bluray: bluray
 	rm -rf $(PREFIX)/share/java/libbluray*.jar
 	cd $< && ./bootstrap
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(BLURAY_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(BLURAY_CONF) $(HOSTCONF)
+	cd $< && $(MAKE) install
 	touch $@

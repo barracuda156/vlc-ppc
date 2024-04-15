@@ -2,6 +2,7 @@
  * mms.c: MMS over tcp, udp and http access plug-in
  *****************************************************************************
  * Copyright (C) 2002-2004 VLC authors and VideoLAN
+ * $Id: 87f42055ff39453e850090189d81a8ccdcf094c2 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -61,12 +62,15 @@ vlc_module_begin ()
     set_shortname( "MMS" )
     set_description( N_("Microsoft Media Server (MMS) input") )
     set_capability( "access", -1 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
 
-    add_integer( "mms-timeout", 5000, TIMEOUT_TEXT, TIMEOUT_LONGTEXT )
+    add_integer( "mms-timeout", 5000, TIMEOUT_TEXT, TIMEOUT_LONGTEXT,
+                 true )
 
-    add_bool( "mms-all", false, ALL_TEXT, ALL_LONGTEXT )
-    add_integer( "mms-maxbitrate", 0, BITRATE_TEXT, BITRATE_LONGTEXT  )
+    add_bool( "mms-all", false, ALL_TEXT, ALL_LONGTEXT, true )
+    add_integer( "mms-maxbitrate", 0, BITRATE_TEXT, BITRATE_LONGTEXT ,
+                 false )
     add_obsolete_string( "mmsh-proxy" ) /* since 3.0.0 */
 
     add_shortcut( "mms", "mmsu", "mmst", "mmsh" )
@@ -76,10 +80,10 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-typedef struct
+struct access_sys_t
 {
     int i_proto;
-} access_sys_t;
+};
 
 /*****************************************************************************
  * Open:

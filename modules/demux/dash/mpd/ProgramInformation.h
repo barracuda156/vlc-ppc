@@ -26,6 +26,7 @@
 #define PROGRAMINFORMATION_H_
 
 #include <string>
+#include <map>
 
 namespace dash
 {

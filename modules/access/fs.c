@@ -33,7 +33,9 @@
 vlc_module_begin ()
     set_description( N_("File input") )
     set_shortname( N_("File") )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
+    add_obsolete_string( "file-cat" )
     set_capability( "access", 50 )
     add_shortcut( "file", "fd", "stream" )
     set_callbacks( FileOpen, FileClose )
@@ -49,6 +51,6 @@ vlc_module_begin ()
     set_callbacks( DirOpen, DirClose )
 
     add_bool("list-special-files", false, N_("List special files"),
-             N_("Include devices and pipes when listing directories"))
+             N_("Include devices and pipes when listing directories"), true)
     add_obsolete_string("directory-sort") /* since 3.0.0 */
 vlc_module_end ()

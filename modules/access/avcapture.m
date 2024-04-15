@@ -65,19 +65,20 @@ static int Control(demux_t *, int, va_list);
 vlc_module_begin ()
    set_shortname(N_("AVFoundation Video Capture"))
    set_description(N_("AVFoundation video capture module."))
+   set_category(CAT_INPUT)
    set_subcategory(SUBCAT_INPUT_ACCESS)
    add_shortcut("avcapture")
-   set_capability("access", 0)
+   set_capability("access_demux", 10)
    set_callbacks(Open, Close)
 vlc_module_end ()
 
-static vlc_tick_t vlc_CMTime_to_tick(CMTime timestamp)
+static vlc_tick_t vlc_CMTime_to_mtime(CMTime timestamp)
 {
     CMTime scaled = CMTimeConvertScale(
             timestamp, CLOCK_FREQ,
             kCMTimeRoundingMethod_Default);
 
-    return VLC_TICK_0 + scaled.value;
+    return 1 + scaled.value;
 }
 
 /*****************************************************************************
@@ -169,14 +170,14 @@ static vlc_tick_t vlc_CMTime_to_tick(CMTime timestamp)
     }
 }
 
-- (vlc_tick_t)currentPts
+-(vlc_tick_t)currentPts
 {
     vlc_tick_t pts;
 
     @synchronized (self)
     {
        if ( !currentImageBuffer || currentPts == previousPts )
-           return VLC_TICK_INVALID;
+           return 0;
         pts = previousPts = currentPts;
     }
 
@@ -198,7 +199,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         @synchronized (self) {
             imageBufferToRelease = currentImageBuffer;
             currentImageBuffer = videoFrame;
-            currentPts = vlc_CMTime_to_tick(presentationtimestamp);
+            currentPts = vlc_CMTime_to_mtime(presentationtimestamp);
             timeScale = (long)presentationtimestamp.timescale;
         }
 
@@ -209,7 +210,9 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 - (vlc_tick_t)copyCurrentFrameToBuffer:(void *)buffer
 {
     CVImageBufferRef imageBuffer;
-    void *pixels = NULL;
+    vlc_tick_t pts;
+
+    void *pixels;
 
     if ( !currentImageBuffer || currentPts == previousPts )
         return 0;
@@ -219,7 +222,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         imageBuffer = CVBufferRetain(currentImageBuffer);
         if (imageBuffer)
         {
-            previousPts = currentPts;
+            pts = previousPts = currentPts;
             CVPixelBufferLockBaseAddress(imageBuffer, 0);
             pixels = CVPixelBufferGetBaseAddress(imageBuffer);
             if (pixels)
@@ -266,6 +269,10 @@ static int Open(vlc_object_t *p_this)
 {
     demux_t                 *p_demux = (demux_t*)p_this;
 
+    /* Only when selected */
+    if ( *p_demux->psz_access == '\0' )
+        return VLC_EGENERIC;
+
     if (p_demux->out == NULL)
         return VLC_EGENERIC;
 
@@ -277,6 +284,9 @@ static int Open(vlc_object_t *p_this)
     }
     p_demux->pf_demux = Demux;
     p_demux->pf_control = Control;
+    p_demux->info.i_update = 0;
+    p_demux->info.i_title = 0;
+    p_demux->info.i_seekpoint = 0;
 
     return VLC_SUCCESS;
 }
@@ -292,7 +302,7 @@ static void Close(vlc_object_t *p_this)
 
     /* Signal ARC we won't use those references anymore. */
     p_demux->p_sys = nil;
-    (void)demux;
+    demux = nil;
 }
 
 /*****************************************************************************
@@ -324,8 +334,8 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
            return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-           *va_arg(args, vlc_tick_t *) =
-               VLC_TICK_FROM_MS(var_InheritInteger(p_demux, "live-caching"));
+           *va_arg(args, int64_t *) =
+               INT64_C(1000) * var_InheritInteger(p_demux, "live-caching");
            return VLC_SUCCESS;
 
         case DEMUX_GET_TIME:
@@ -347,7 +357,7 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
 
     AVCaptureDeviceInput    *input = nil;
 
-    int                     deviceCount, ivideo;
+    int                     i, i_width, i_height, deviceCount, ivideo;
 
     char                    *psz_uid = NULL;
 
@@ -437,7 +447,7 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
         return nil;
     }
 
-    int chroma = VLC_CODEC_BGRA;
+    int chroma = VLC_CODEC_RGB32;
 
     memset(&_fmt, 0, sizeof(es_format_t));
     es_format_Init(&_fmt, VIDEO_ES, chroma);
@@ -485,7 +495,7 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
             {
                 /* Nothing to display yet, just forget */
                 block_Release(p_block);
-                vlc_tick_sleep(VLC_HARD_MIN_SLEEP);
+                msleep(10000);
                 return 1;
             }
             else if ( !_es_video )

@@ -81,8 +81,8 @@ struct stream_extractor_private {
 /**
  * Create an MRL for a specific sub-entry
  *
- * This internal function is used to create an MRL that refers to \p subentry
- * within \p base, see \ref mrl_helpers for further information.
+ * This internal function is used to create an MRL that refers to \subentry
+ * within \ref base, see \ref mrl_helpers for further information.
  **/
 
 static char*
@@ -128,7 +128,7 @@ static void se_Release( struct stream_extractor_private* priv )
             vlc_stream_Delete( priv->source );
     }
 
-    vlc_object_delete(priv->object);
+    vlc_object_release( priv->object );
 }
 
 /**
@@ -151,7 +151,7 @@ se_StreamRead( stream_t* stream, void* buf, size_t len )
 }
 
 static block_t*
-se_StreamBlock( stream_t* stream, bool* restrict eof )
+se_StreamBlock( stream_t* stream, bool* eof )
 {
     struct stream_extractor_private* priv = stream->p_sys;
     return priv->extractor.pf_block( &priv->extractor, eof );
@@ -182,8 +182,10 @@ static int
 se_DirControl( stream_t* stream, int req, va_list args )
 {
     (void)stream;
-    (void)req;
     (void)args;
+
+    if( req == STREAM_IS_DIRECTORY )
+        return VLC_SUCCESS;
 
     return VLC_EGENERIC;
 }
@@ -253,8 +255,7 @@ se_InitDirectory( struct stream_extractor_private* priv, stream_t* s )
 static int
 se_AttachWrapper( struct stream_extractor_private* priv, stream_t* source )
 {
-    stream_t* s = vlc_stream_CommonNew( vlc_object_parent(source),
-                                        se_StreamDelete );
+    stream_t* s = vlc_stream_CommonNew( source->obj.parent, se_StreamDelete );
 
     if( unlikely( !s ) )
         return VLC_ENOMEM;
@@ -266,12 +267,16 @@ se_AttachWrapper( struct stream_extractor_private* priv, stream_t* source )
     }
 
     priv->wrapper = s;
-    priv->wrapper->p_input_item = source->p_input_item;
+    priv->wrapper->p_input = source->p_input;
     priv->wrapper->p_sys = priv;
 
     priv->source = source;
 
-    priv->wrapper = stream_FilterChainNew( priv->wrapper, "cache" );
+    if( priv->wrapper->pf_read )
+        priv->wrapper = stream_FilterChainNew( priv->wrapper, "cache_read" );
+    else if( priv->wrapper->pf_block )
+        priv->wrapper = stream_FilterChainNew( priv->wrapper, "cache_block" );
+
     return VLC_SUCCESS;
 }
 
@@ -284,7 +289,7 @@ StreamExtractorAttach( stream_t** source, char const* identifier,
                                        : "stream_directory";
 
     struct stream_extractor_private* priv = vlc_custom_create(
-        vlc_object_parent(*source), sizeof( *priv ), capability );
+        (*source)->obj.parent, sizeof( *priv ), capability );
 
     if( unlikely( !priv ) )
         return VLC_ENOMEM;

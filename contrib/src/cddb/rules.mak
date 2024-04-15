@@ -28,20 +28,10 @@ ifdef HAVE_WIN32
 endif
 	$(MOVE)
 
-DEPS_cddb = regex $(DEPS_regex) gettext $(DEPS_gettext)
-
-CDDB_CONF := --without-iconv
-
-CDDB_CFLAGS := $(CFLAGS) -D_BSD_SOCKLEN_T_=int
-ifdef HAVE_WIN32
-CDDB_CFLAGS += -DWIN32_LEAN_AND_MEAN
-endif
-CDDB_CONF += CFLAGS="$(CDDB_CFLAGS)"
+DEPS_cddb = regex $(DEPS_regex)
 
 .cddb: cddb
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(CDDB_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --without-iconv CFLAGS="$(CFLAGS) -D_BSD_SOCKLEN_T_=int -DWIN32_LEAN_AND_MEAN"
+	cd $< && $(MAKE) install
 	touch $@

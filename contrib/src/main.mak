@@ -10,8 +10,6 @@ SRC_BUILT := $(TOPSRC_BUILT)/src
 TARBALLS := $(TOPSRC)/tarballs
 VLC_TOOLS ?= $(TOPSRC)/../extras/tools/build
 
-CMAKE_GENERATOR ?= Ninja
-
 PATH :=$(abspath $(VLC_TOOLS)/bin):$(PATH)
 export PATH
 
@@ -21,14 +19,10 @@ VPATH := $(TARBALLS)
 
 # Common download locations
 GNU ?= http://ftp.gnu.org/gnu
-SF := https://downloads.sourceforge.net/project
+SF := https://netcologne.dl.sourceforge.net/
 VIDEOLAN := http://downloads.videolan.org/pub/videolan
 CONTRIB_VIDEOLAN := http://downloads.videolan.org/pub/contrib
-VIDEOLAN_GIT := https://git.videolan.org/git
-GITHUB := https://github.com
-GOOGLE_CODE := https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com
-QT := https://download.qt.io/official_releases/qt
-XIPH := https://ftp.osuosl.org/pub/xiph/releases
+GITHUB := https://github.com/
 
 #
 # Machine-dependent variables
@@ -36,7 +30,7 @@ XIPH := https://ftp.osuosl.org/pub/xiph/releases
 
 PREFIX ?= $(TOPDST)/$(HOST)
 PREFIX := $(abspath $(PREFIX))
-BUILDPREFIX ?= $(PREFIX)/..
+BUILDPREFIX ?= $(TOPDST)
 BUILDPREFIX := $(abspath $(BUILDPREFIX))
 BUILDBINDIR ?= $(BUILDPREFIX)/bin
 ifneq ($(HOST),$(BUILD))
@@ -51,50 +45,66 @@ ifeq ($(ARCH)-$(HAVE_WIN32),aarch64-1)
 HAVE_WIN64 := 1
 endif
 
-ifeq ($(findstring mingw32,$(BUILD)),mingw32)
-MSYS_BUILD := 1
-endif
-ifeq ($(findstring msys,$(BUILD)),msys)
-MSYS_BUILD := 1
+ifdef HAVE_CROSS_COMPILE
+need_pkg = 1
+else
+need_pkg = $(shell $(PKG_CONFIG) $(1) || echo 1)
 endif
 
 #
 # Default values for tools
 #
-ifdef HAVE_CROSS_COMPILE
-MAYBEHOST := $(HOST)-
-else
-MAYBEHOST :=
-endif
+ifndef HAVE_CROSS_COMPILE
 ifneq ($(findstring $(origin CC),undefined default),)
-CC := $(MAYBEHOST)gcc
+CC := gcc
 endif
 ifneq ($(findstring $(origin CXX),undefined default),)
-CXX := $(MAYBEHOST)g++
+CXX := g++
 endif
 ifneq ($(findstring $(origin LD),undefined default),)
-LD := $(MAYBEHOST)ld
+LD := ld
 endif
 ifneq ($(findstring $(origin AR),undefined default),)
-ifeq ($(shell $(MAYBEHOST)gcc-ar --version >/dev/null 2>&1 || echo Prehistory),)
-AR := $(MAYBEHOST)gcc-ar
+AR := ar
+endif
+ifneq ($(findstring $(origin RANLIB),undefined default),)
+RANLIB := ranlib
+endif
+ifneq ($(findstring $(origin STRIP),undefined default),)
+STRIP := strip
+endif
+ifneq ($(findstring $(origin WIDL),undefined default),)
+WIDL := widl
+endif
+ifneq ($(findstring $(origin WINDRES),undefined default),)
+WINDRES := windres
+endif
 else
-AR := $(MAYBEHOST)ar
+ifneq ($(findstring $(origin CC),undefined default),)
+CC := $(HOST)-gcc
+endif
+ifneq ($(findstring $(origin CXX),undefined default),)
+CXX := $(HOST)-g++
+endif
+ifneq ($(findstring $(origin LD),undefined default),)
+LD := $(HOST)-ld
+endif
+ifneq ($(findstring $(origin AR),undefined default),)
+AR := $(HOST)-ar
+endif
+ifneq ($(findstring $(origin RANLIB),undefined default),)
+RANLIB := $(HOST)-ranlib
+endif
+ifneq ($(findstring $(origin STRIP),undefined default),)
+STRIP := $(HOST)-strip
+endif
+ifneq ($(findstring $(origin WIDL),undefined default),)
+WIDL := $(HOST)-widl
+endif
+ifneq ($(findstring $(origin WINDRES),undefined default),)
+WINDRES := $(HOST)-windres
 endif
 endif
-ifeq ($(shell $(MAYBEHOST)gcc-nm --version >/dev/null 2>&1 || echo Prehistory),)
-NM ?= $(MAYBEHOST)gcc-nm
-else
-NM ?= $(MAYBEHOST)nm
-endif
-ifeq ($(shell $(MAYBEHOST)gcc-ranlib --version >/dev/null 2>&1 || echo Prehistory),)
-RANLIB ?= $(MAYBEHOST)gcc-ranlib
-else
-RANLIB ?= $(MAYBEHOST)ranlib
-endif
-STRIP ?= $(MAYBEHOST)strip
-WIDL ?= $(MAYBEHOST)widl
-WINDRES ?= $(MAYBEHOST)windres
 
 ifdef HAVE_ANDROID
 ifneq ($(findstring $(origin CC),undefined default),)
@@ -123,6 +133,13 @@ endif
 
 CCAS=$(CC) -c
 
+ifdef HAVE_IOS
+ifdef HAVE_NEON
+AS=perl $(abspath $(VLC_TOOLS)/bin/gas-preprocessor.pl) $(CC)
+CCAS=gas-preprocessor.pl $(CC) -c
+endif
+endif
+
 LN_S = ln -s
 ifdef HAVE_WIN32
 MINGW_W64_VERSION := $(shell echo "__MINGW64_VERSION_MAJOR" | $(CC) $(CFLAGS) -E -include _mingw.h - | tail -n 1)
@@ -130,6 +147,7 @@ ifneq ($(MINGW_W64_VERSION),)
 HAVE_MINGW_W64 := 1
 mingw_at_least = $(shell [ $(MINGW_W64_VERSION) -gt $(1) ] && echo true)
 endif
+HAVE_WINPTHREAD := $(shell $(CC) $(CFLAGS) -E -dM -include pthread.h - < /dev/null >/dev/null 2>&1 || echo FAIL)
 ifndef HAVE_CROSS_COMPILE
 LN_S = cp -R
 endif
@@ -145,16 +163,11 @@ EXTRA_LDFLAGS += -m32
 endif
 endif
 
-ifdef HAVE_WINSTORE
-EXTRA_CFLAGS += -DWINSTORECOMPAT
-EXTRA_LDFLAGS += -lwindowsappcompat
-endif
-
-ifneq ($(findstring clang, $(shell $(CC) --version 2>/dev/null)),)
+ifneq ($(findstring clang, $(shell $(CC) --version)),)
 HAVE_CLANG := 1
 endif
 
-cppcheck = $(shell printf '$(2)' | $(CC) $(CFLAGS) -E -dM - 2>/dev/null | grep -E $(1))
+cppcheck = $(shell $(CC) $(CFLAGS) -E -dM - < /dev/null | grep -E $(1))
 
 EXTRA_CFLAGS += -I$(PREFIX)/include
 CPPFLAGS := $(CPPFLAGS) $(EXTRA_CFLAGS)
@@ -162,48 +175,7 @@ CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS)
 CXXFLAGS := $(CXXFLAGS) $(EXTRA_CFLAGS) $(EXTRA_CXXFLAGS)
 LDFLAGS := $(LDFLAGS) -L$(PREFIX)/lib $(EXTRA_LDFLAGS)
 
-ifdef ENABLE_PDB
-ifdef HAVE_CLANG
-ifneq ($(findstring $(ARCH),i686 x86_64),)
-CFLAGS := $(CFLAGS) -gcodeview
-CXXFLAGS := $(CXXFLAGS) -gcodeview
-endif
-endif
-endif
-
-ifeq ($(shell gcc --version >/dev/null 2>&1 || echo No GCC),)
-BUILDCC ?= gcc
-BUILDCXX ?= g++
-ifeq ($(shell gcc-ar --version >/dev/null 2>&1 || echo Prehistoric GCC),)
-BUILDAR ?= gcc-ar
-BUILDNM ?= gcc-nm
-BUILDRANLIB ?= gcc-ranlib
-endif
-else ifeq ($(shell clang --version >/dev/null 2>&1 || No LLVM/Clang),)
-BUILDCC ?= clang
-BUILDCXX ?= clang++
-ifeq ($(shell llvm-ar --version >/dev/null 2>&1 || echo Prehistoric LLVM),)
-BUILDAR ?= llvm-ar
-BUILDNM ?= llvm-nm
-BUILDRANLIB ?= llvm-ranlib
-BUILDSTRIP ?= llvm-strip
-endif
-endif
-
-BUILDCC ?= cc
-BUILDCXX ?= c++
-BUILDLD ?= $(BUILDCC)
-BUILDAR ?= ar
-BUILDNM ?= nm
-BUILDRANLIB ?= ranlib
-BUILDSTRIP ?= strip
-
-BUILDCPPFLAGS ?=
-BUILDCFLAGS ?= -O2
-BUILDCXXFLAGS ?= $(BUILDCFLAGS)
-BUILDLDFLAGS ?= $(BUILDCFLAGS)
-
-# Do not export variables above! Use HOSTVARS or BUILDVARS.
+# Do not export those! Use HOSTVARS.
 
 # Do the FPU detection, after we have figured out our compilers and flags.
 ifneq ($(findstring $(ARCH),aarch64 i386 ppc ppc64 sparc sparc64 x86_64),)
@@ -233,22 +205,14 @@ export ACLOCAL_AMFLAGS
 # Tools #
 #########
 
-need_pkg = $(shell $(PKG_CONFIG) $(1) || echo 1)
-
-ifdef HAVE_CROSS_COMPILE
-# Use pkg-config cross-tool if it actually works
-ifeq ($(shell unset PKG_CONFIG_LIBDIR; $(HOST)-pkg-config --version 1>/dev/null 2>/dev/null || echo FAIL),)
-PKG_CONFIG ?= $(HOST)-pkg-config
-else
-# Use the regular pkg-config and set some PKG_CONFIG_LIBDIR ourselves
-PKG_CONFIG_LIBDIR ?= /usr/$(HOST)/lib/pkgconfig:/usr/lib/$(HOST)/pkgconfig:/usr/share/pkgconfig
-export PKG_CONFIG_LIBDIR
-need_pkg = $(shell PKG_CONFIG_LIBDIR=$(PKG_CONFIG_LIBDIR) $(PKG_CONFIG) $(1) || echo 1)
-endif
-endif # HAVE_CROSS_COMPILE
-
 PKG_CONFIG ?= pkg-config
-
+ifdef HAVE_CROSS_COMPILE
+# This inhibits .pc file from within the cross-compilation toolchain sysroot.
+# Hopefully, nobody ever needs that.
+PKG_CONFIG_PATH := /usr/share/pkgconfig
+PKG_CONFIG_LIBDIR := /usr/$(HOST)/lib/pkgconfig
+export PKG_CONFIG_LIBDIR
+endif
 PKG_CONFIG_PATH := $(PREFIX)/lib/pkgconfig:$(PKG_CONFIG_PATH)
 export PKG_CONFIG_PATH
 
@@ -257,14 +221,14 @@ ifeq ($(shell git --version >/dev/null 2>&1 || echo FAIL),)
 GIT = git
 endif
 endif
-GIT ?= $(error git not found)
+GIT ?= $(error git not found!)
 
 ifndef SVN
 ifeq ($(shell svn --version >/dev/null 2>&1 || echo FAIL),)
 SVN = svn
 endif
 endif
-SVN ?= $(error subversion client (svn) not found)
+SVN ?= $(error subversion client (svn) not found!)
 
 ifeq ($(shell curl --version >/dev/null 2>&1 || echo FAIL),)
 download = curl -f -L -- "$(1)" > "$@"
@@ -273,22 +237,22 @@ download = (rm -f $@.tmp && \
 	wget --passive -c -p -O $@.tmp "$(1)" && \
 	touch $@.tmp && \
 	mv $@.tmp $@ )
-else ifeq ($(command -v fetch >/dev/null 2>&1 || echo FAIL),)
+else ifeq ($(which fetch >/dev/null 2>&1 || echo FAIL),)
 download = (rm -f $@.tmp && \
 	fetch -p -o $@.tmp "$(1)" && \
 	touch $@.tmp && \
 	mv $@.tmp $@)
 else
-download = $(error Neither curl nor wget found)
+download = $(error Neither curl nor wget found!)
 endif
 
 download_pkg = $(call download,$(CONTRIB_VIDEOLAN)/$(2)/$(lastword $(subst /, ,$(@)))) || \
 	( $(call download,$(1)) && echo "Please upload this package $(lastword $(subst /, ,$(@))) to our FTP" )
 
-ifeq ($(shell command -v xz >/dev/null 2>&1 || echo FAIL),)
+ifeq ($(shell which xz >/dev/null 2>&1 || echo FAIL),)
 XZ = xz
 else
-XZ ?= $(error XZ (LZMA) compressor not found)
+XZ ?= $(error XZ (LZMA) compressor not found!)
 endif
 
 ifeq ($(shell sha512sum --version >/dev/null 2>&1 || echo FAIL),)
@@ -298,7 +262,13 @@ SHA512SUM = shasum -a 512 --check
 else ifeq ($(shell openssl version >/dev/null 2>&1 || echo FAIL),)
 SHA512SUM = openssl dgst -sha512
 else
-SHA512SUM = $(error SHA-512 checksumming not found)
+SHA512SUM = $(error SHA-512 checksumming not found!)
+endif
+
+ifeq ($(shell protoc --version >/dev/null 2>&1 || echo FAIL),)
+PROTOC = protoc
+else
+PROTOC ?= $(error Protobuf compiler (protoc) not found!)
 endif
 
 #
@@ -321,12 +291,16 @@ PIC := -fPIC
 endif
 
 HOSTTOOLS := \
-	CC="$(CC)" CXX="$(CXX)" OBJC="$(OBJC)" LD="$(LD)" \
+	CC="$(CC)" CXX="$(CXX)" LD="$(LD)" \
 	AR="$(AR)" CCAS="$(CCAS)" RANLIB="$(RANLIB)" STRIP="$(STRIP)" \
 	PATH="$(PREFIX)/bin:$(PATH)" \
 	PKG_CONFIG="$(PKG_CONFIG)"
 
-HOSTVARS_MESON := $(HOSTTOOLS)
+HOSTVARS_MESON := $(HOSTTOOLS) \
+	CPPFLAGS="$(CPPFLAGS)" \
+	CFLAGS="$(CFLAGS)" \
+	CXXFLAGS="$(CXXFLAGS)" \
+	LDFLAGS="$(LDFLAGS)"
 
 # Add these flags after Meson consumed the CFLAGS/CXXFLAGS
 # as when setting those for Meson, it would apply to tests
@@ -340,9 +314,13 @@ CFLAGS := $(CFLAGS) -g -O2
 CXXFLAGS := $(CXXFLAGS) -g -O2
 endif
 
-ifdef HAVE_BITCODE_ENABLED
-CFLAGS := $(CFLAGS) -fembed-bitcode
-CXXFLAGS := $(CXXFLAGS) -fembed-bitcode
+ifdef ENABLE_PDB
+ifdef HAVE_CLANG
+ifneq ($(findstring $(ARCH),i686 x86_64),)
+CFLAGS := $(CFLAGS) -gcodeview
+CXXFLAGS := $(CXXFLAGS) -gcodeview
+endif
+endif
 endif
 
 HOSTVARS := $(HOSTTOOLS) \
@@ -355,31 +333,6 @@ HOSTVARS_PIC := $(HOSTTOOLS) \
 	CFLAGS="$(CFLAGS) $(PIC)" \
 	CXXFLAGS="$(CXXFLAGS) $(PIC)" \
 	LDFLAGS="$(LDFLAGS)"
-
-BUILDCOMMONCONF := --disable-dependency-tracking
-BUILDCOMMONCONF += --prefix="$(BUILDPREFIX)"
-BUILDCOMMONCONF += --bindir="$(BUILDBINDIR)"
-BUILDCOMMONCONF += --datarootdir="$(BUILDPREFIX)/share"
-BUILDCOMMONCONF += --includedir="$(BUILDPREFIX)/include"
-BUILDCOMMONCONF += --libdir="$(BUILDPREFIX)"
-BUILDCOMMONCONF += --build="$(BUILD)" --host="$(BUILD)"
-# For platform-independent tools (--target should be meaningless):
-BUILDPROGCONF := $(BUILDCOMMONCONF) \
-	--target="$(BUILD)" --program-prefix=""
-# For platform-dependent tools:
-BUILDTOOLCONF := $(BUILDCOMMONCONF) \
-	--target="$(HOST)" --program-prefix="$(HOST)-"
-
-BUILDTOOLS := \
-	CC="$(BUILDCC)" CXX="$(BUILDCXX)" LD="$(BUILDLD)" \
-	AR="$(BUILDAR)" NM="$(BUILDNM)" RANLIB="$(BUILDRANLIB)" \
-	STRIP="$(BUILDSTRIP)" PATH="$(BUILDBINDIR):$(PATH)"
-
-BUILDVARS := $(BUILDTOOLS) \
-	CPPFLAGS="$(BUILDCPPFLAGS)" \
-	CFLAGS="$(BUILDCFLAGS)" \
-	CXXFLAGS="$(BUILDCXXFLAGS)" \
-	LDFLAGS="$(BUILDLDFLAGS)"
 
 download_git = \
 	rm -Rf -- "$(@:.tar.xz=)" && \
@@ -400,22 +353,18 @@ check_githash = \
 		< "$(<:.tar.xz=.githash)"` && \
 	test "$$h" = "$1"
 
-ifeq ($(V),1)
-TAR_VERBOSE := v
-endif
-
 checksum = \
 	$(foreach f,$(filter $(TARBALLS)/%,$^), \
 		grep -- " $(f:$(TARBALLS)/%=%)$$" \
-			"$(SRC)/$(patsubst $(3)%,%,$@)/$(2)SUMS" &&) \
+			"$(SRC)/$(patsubst .sum-%,%,$@)/$(2)SUMS" &&) \
 	(cd $(TARBALLS) && $(1) /dev/stdin) < \
-		"$(SRC)/$(patsubst $(3)%,%,$@)/$(2)SUMS"
-CHECK_SHA512 = $(call checksum,$(SHA512SUM),SHA512,.sum-)
+		"$(SRC)/$(patsubst .sum-%,%,$@)/$(2)SUMS"
+CHECK_SHA512 = $(call checksum,$(SHA512SUM),SHA512)
 UNPACK = $(RM) -R $@ \
-	$(foreach f,$(filter %.tar.gz %.tgz,$^), && tar $(TAR_VERBOSE)xzfo $(f)) \
-	$(foreach f,$(filter %.tar.bz2,$^), && tar $(TAR_VERBOSE)xjfo $(f)) \
-	$(foreach f,$(filter %.tar.xz,$^), && tar $(TAR_VERBOSE)xJfo $(f)) \
-	$(foreach f,$(filter %.zip,$^), && unzip $(f) $(UNZIP_PARAMS))
+	$(foreach f,$(filter %.tar.gz %.tgz,$^), && tar xvzfo $(f)) \
+	$(foreach f,$(filter %.tar.bz2,$^), && tar xvjfo $(f)) \
+	$(foreach f,$(filter %.tar.xz,$^), && tar xvJfo $(f)) \
+	$(foreach f,$(filter %.zip,$^), && unzip $(f))
 UNPACK_DIR = $(patsubst %.tar,%,$(basename $(notdir $<)))
 APPLY = (cd $(UNPACK_DIR) && patch -fp1) <
 pkg_static = (cd $(UNPACK_DIR) && $(SRC_BUILT)/pkg-static.sh $(1))
@@ -429,60 +378,31 @@ UPDATE_AUTOCONFIG = for dir in $(AUTOMAKE_DATA_DIRS); do \
 		fi; \
 	done
 
+ifdef HAVE_DARWIN_OS
+AUTORECONF = AUTOPOINT=true GTKDOCIZE=true autoreconf
+else
 AUTORECONF = GTKDOCIZE=true autoreconf
+endif
 RECONF = mkdir -p -- $(PREFIX)/share/aclocal && \
 	cd $< && $(AUTORECONF) -fiv $(ACLOCAL_AMFLAGS)
-
-BUILD_DIR = $</vlc_build
-BUILD_SRC := ..
-# build directory relative to UNPACK_DIR
-BUILD_DIRUNPACK = vlc_build
-
-MAKEBUILDDIR = mkdir -p $(BUILD_DIR) && rm -f $(BUILD_DIR)/config.status && test ! -f $</config.status || $(MAKE) -C $< distclean
-MAKEBUILD = $(MAKE) -C $(BUILD_DIR)
-MAKECONFDIR = cd $(BUILD_DIR) && $(HOSTVARS) $(BUILD_SRC)
-MAKECONFIGURE = $(MAKECONFDIR)/configure $(HOSTCONF)
-
-# Work around for https://lists.nongnu.org/archive/html/bug-gnulib/2020-05/msg00237.html
-# When using a single command, make might take a shortcut and fork/exec
-# itself instead of relying on a shell, but a bug in gnulib ends up
-# trying to execute a cmake folder when one is found in the PATH
-CMAKEBUILD = env cmake --build $(BUILD_DIR)
-CMAKEINSTALL = env cmake --install $(BUILD_DIR) --prefix $(PREFIX)
-CMAKECLEAN = rm -f $(BUILD_DIR)/CMakeCache.txt
-CMAKE = cmake -S $< -DCMAKE_TOOLCHAIN_FILE=$(abspath toolchain.cmake) \
-		-B $(BUILD_DIR) \
-		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+CMAKEBUILD := cmake --build
+CMAKE = cmake . -DCMAKE_TOOLCHAIN_FILE=$(abspath toolchain.cmake) \
 		-DCMAKE_INSTALL_PREFIX:STRING=$(PREFIX) \
 		-DBUILD_SHARED_LIBS:BOOL=OFF \
-		-DCMAKE_INSTALL_LIBDIR:STRING=lib \
-		-DBUILD_TESTING:BOOL=OFF
+		-DCMAKE_INSTALL_LIBDIR:STRING=lib
 ifdef HAVE_WIN32
 CMAKE += -DCMAKE_DEBUG_POSTFIX:STRING=
 endif
-ifdef MSYS_BUILD
-CMAKE = PKG_CONFIG_LIBDIR="$(PKG_CONFIG_PATH)" $(CMAKE)
+ifeq ($(findstring mingw32,$(BUILD)),mingw32)
 CMAKE += -DCMAKE_LINK_LIBRARY_SUFFIX:STRING=.a
 endif
-CMAKE += -G $(CMAKE_GENERATOR)
 
-ifeq ($(V),1)
-CMAKE += -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON
-endif
-
-MESONFLAGS = $(BUILD_DIR) $< --default-library static --prefix "$(PREFIX)" \
-	--backend ninja -Dlibdir=lib
+MESONFLAGS = --default-library static --prefix "$(PREFIX)" --backend ninja \
+	-Dlibdir=lib
 ifndef WITH_OPTIMIZATION
 MESONFLAGS += --buildtype debug
 else
 MESONFLAGS += --buildtype debugoptimized
-endif
-ifdef HAVE_BITCODE_ENABLED
-MESONFLAGS += -Db_bitcode=true
-endif
-MESONFLAGS += -Dc_args="$(CFLAGS)" -Dc_link_args="$(LDFLAGS)" -Dcpp_args="$(CXXFLAGS)" -Dcpp_link_args="$(LDFLAGS)"
-ifdef HAVE_DARWIN_OS
-MESONFLAGS += -Dobjc_args="$(CFLAGS)" -Dobjc_link_args="$(LDFLAGS)" -Dobjcpp_args="$(CXXFLAGS)" -Dobjcpp_link_args="$(LDFLAGS)"
 endif
 
 ifdef HAVE_CROSS_COMPILE
@@ -497,18 +417,11 @@ ifdef HAVE_CROSS_COMPILE
 # generated crossfile, so everything should work as
 # expected.
 MESONFLAGS += --cross-file $(abspath crossfile.meson)
-MESON = env -i PATH="$(PREFIX)/bin:$(PATH)" \
-	PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" \
-	CMAKE="$(shell command -v cmake)" \
-	CMAKE_PREFIX_PATH="$(PREFIX)" \
-	meson setup -Dpkg_config_path="$(PKG_CONFIG_PATH)" \
-	$(MESONFLAGS)
-
+MESON = env -i PATH="$(PREFIX)/bin:$(PATH)" PKG_CONFIG_LIBDIR="$(PKG_CONFIG_LIBDIR)" \
+	PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" meson $(MESONFLAGS)
 else
-MESON = meson setup $(MESONFLAGS)
+MESON = meson $(MESONFLAGS)
 endif
-MESONCLEAN = rm -rf $(BUILD_DIR)/meson-private
-MESONBUILD = meson compile -C $(BUILD_DIR) $(MESON_BUILD) && meson install -C $(BUILD_DIR)
 
 ifdef GPL
 REQUIRE_GPL =
@@ -522,19 +435,6 @@ REQUIRE_GNUV3 = \
 	@echo "Package \"$<\" requires the version 3 of GNU licenses." >&2; \
 	exit 1
 endif
-
-PYTHON_VENV = $(BUILDPREFIX)/python-venv
-PYTHON_ACTIVATE = . $(PYTHON_VENV)/bin/activate
-PYTHON_INSTALL = $(HOSTVARS) $(PYTHON_VENV)/bin/pip3 install ./$<
-
-.python-venv:
-	python3 -m venv $(PYTHON_VENV)
-	touch $@
-
-#
-# Rust specific rules
-#
-include $(SRC)/main-rust.mak
 
 #
 # Per-package build rules
@@ -562,16 +462,13 @@ PKGS := $(sort $(PKGS_MANUAL) $(PKGS_DEPS))
 fetch: $(PKGS:%=.sum-%)
 fetch-all: $(PKGS_ALL:%=.sum-%)
 install: $(PKGS:%=.%)
-tools: $(PKGS_TOOLS:%=.dep-%)
 
 mostlyclean:
 	-$(RM) $(foreach p,$(PKGS_ALL),.$(p) .sum-$(p) .dep-$(p))
-	-$(RM) -R "$(PYTHON_VENV)"
-	-$(RM) .python-venv
 	-$(RM) toolchain.cmake
 	-$(RM) crossfile.meson
 	-$(RM) -R "$(PREFIX)"
-	-$(RM) "$(BUILDBINDIR)/$(HOST)-*"
+	-$(RM) -R "$(BUILDBINDIR)"
 	-$(RM) -R */
 
 clean: mostlyclean
@@ -588,7 +485,7 @@ vlc-contrib-$(HOST)-latest.tar.bz2:
 
 prebuilt: vlc-contrib-$(HOST)-latest.tar.bz2
 	$(RM) -r $(PREFIX)
-	$(UNPACK)
+	-$(UNPACK)
 	mv $(HOST) $(PREFIX)
 	cd $(PREFIX) && $(abspath $(SRC))/change_prefix.sh
 ifdef HAVE_WIN32
@@ -605,7 +502,7 @@ package: install
 	cd tmp/$(notdir $(PREFIX)); \
 		cd share; rm -Rf man doc gtk-doc info lua projectM; cd ..; \
 		rm -Rf man sbin etc lib/lua lib/sidplay
-	cd tmp/$(notdir $(PREFIX)) && $(abspath $(SRC))/change_prefix.sh $(PREFIX)
+	cd tmp/$(notdir $(PREFIX)) && $(abspath $(SRC))/change_prefix.sh $(PREFIX) @@CONTRIB_PREFIX@@
 ifneq ($(notdir $(PREFIX)),$(HOST))
 	(cd tmp && mv $(notdir $(PREFIX)) $(HOST))
 endif
@@ -614,8 +511,6 @@ endif
 list:
 	@echo All packages:
 	@echo '  $(PKGS_ALL)' | tr " " "\n" | sort | tr "\n" " " |fmt
-	@echo All native tools:
-	@echo '  $(PKGS_TOOLS)' | tr " " "\n" | sort | tr "\n" " " |fmt
 	@echo Distribution-provided packages:
 	@echo '  $(PKGS_FOUND)' | tr " " "\n" | sort | tr "\n" " " |fmt
 	@echo Automatically selected packages:
@@ -632,15 +527,9 @@ list:
 help:
 	@cat $(SRC)/help.txt
 
-.PHONY: all fetch fetch-all install mostlyclean clean distclean package list help prebuilt tools
+.PHONY: all fetch fetch-all install mostlyclean clean distclean package list help prebuilt
 
 CMAKE_SYSTEM_NAME =
-ifdef HAVE_CROSS_COMPILE
-CMAKE_SYSTEM_NAME = $(error CMAKE_SYSTEM_NAME required for cross-compilation)
-endif
-ifdef HAVE_LINUX
-CMAKE_SYSTEM_NAME = Linux
-endif
 ifdef HAVE_WIN32
 CMAKE_SYSTEM_NAME = Windows
 ifdef HAVE_VISUALSTUDIO
@@ -655,58 +544,58 @@ endif
 ifdef HAVE_DARWIN_OS
 CMAKE_SYSTEM_NAME = Darwin
 endif
-ifdef HAVE_EMSCRIPTEN
-CMAKE_SYSTEM_NAME = Emscripten
-EMCMAKE_PATH := $(shell command -v emcmake)
-EMSDK_PATH := $(dir $(EMCMAKE_PATH))
-endif
-
-ifdef HAVE_ANDROID
-CFLAGS += -DANDROID_NATIVE_API_LEVEL=$(ANDROID_API)
-endif
 
 # CMake toolchain
-CMAKE_TOOLCHAIN_ENV := $(HOSTTOOLS) HOST_ARCH="$(ARCH)" SYSTEM_NAME="$(CMAKE_SYSTEM_NAME)"
+toolchain.cmake:
+	$(RM) $@
 ifndef WITH_OPTIMIZATION
-	CMAKE_TOOLCHAIN_ENV += BUILD_TYPE=Debug
+	echo "set(CMAKE_BUILD_TYPE Debug)" >> $@
 else
-	CMAKE_TOOLCHAIN_ENV += BUILD_TYPE=RelWithDebInfo
+	echo "set(CMAKE_BUILD_TYPE RelWithDebInfo)" >> $@
 endif
+	echo "set(CMAKE_SYSTEM_PROCESSOR $(ARCH))" >> $@
+	if test -n "$(CMAKE_SYSTEM_NAME)"; then \
+		echo "set(CMAKE_SYSTEM_NAME $(CMAKE_SYSTEM_NAME))" >> $@; \
+	fi;
 ifdef HAVE_WIN32
 ifdef HAVE_CROSS_COMPILE
-	CMAKE_TOOLCHAIN_ENV += RC_COMPILER="$(WINDRES)"
+	echo "set(CMAKE_RC_COMPILER $(WINDRES))" >> $@
 endif
 endif
 ifdef HAVE_DARWIN_OS
+	echo "set(CMAKE_C_FLAGS \"$(CFLAGS)\")" >> $@
+	echo "set(CMAKE_CXX_FLAGS \"$(CXXFLAGS)\")" >> $@
+	echo "set(CMAKE_LD_FLAGS \"$(LDFLAGS)\")" >> $@
+	echo "set(CMAKE_AR ar CACHE FILEPATH \"Archiver\")" >> $@
 ifdef HAVE_IOS
-	CMAKE_TOOLCHAIN_ENV += OSX_SYSROOT="$(IOS_SDK)"
+	echo "set(CMAKE_OSX_SYSROOT $(IOS_SDK))" >> $@
 else
-	CMAKE_TOOLCHAIN_ENV += OSX_SYSROOT="$(MACOSX_SDK)"
+	echo "set(CMAKE_OSX_SYSROOT $(MACOSX_SDK))" >> $@
 endif
+else
+	echo "set(CMAKE_AR $(AR) CACHE FILEPATH \"Archiver\")" >> $@
 endif
 ifdef HAVE_CROSS_COMPILE
-	CMAKE_TOOLCHAIN_ENV += TOOLCHAIN_PREFIX="$(HOST)-"
-	CMAKE_TOOLCHAIN_ENV += PATH_MODE_LIBRARY="ONLY"
-	CMAKE_TOOLCHAIN_ENV += PATH_MODE_INCLUDE="ONLY"
-endif
+	echo "set(_CMAKE_TOOLCHAIN_PREFIX $(HOST)-)" >> $@
 ifdef HAVE_ANDROID
 # cmake will overwrite our --sysroot with a native (host) one on Darwin
 # Set it to "" right away to short-circuit this behaviour
-	CMAKE_TOOLCHAIN_ENV += CXX_SYSROOT_FLAG=
-	CMAKE_TOOLCHAIN_ENV += C_SYSROOT_FLAG=
+	echo "set(CMAKE_CXX_SYSROOT_FLAG \"\")" >> $@
+	echo "set(CMAKE_C_SYSROOT_FLAG \"\")" >> $@
 endif
-ifdef MSYS_BUILD
-	CMAKE_TOOLCHAIN_ENV += FIND_ROOT_PATH="$(shell cygpath -m $(PREFIX))"
+endif
+	echo "set(CMAKE_C_COMPILER $(CC))" >> $@
+	echo "set(CMAKE_CXX_COMPILER $(CXX))" >> $@
+ifeq ($(findstring msys,$(BUILD)),msys)
+	echo "set(CMAKE_FIND_ROOT_PATH `cygpath -m $(PREFIX)`)" >> $@
 else
-	CMAKE_TOOLCHAIN_ENV += FIND_ROOT_PATH="$(PREFIX)"
+	echo "set(CMAKE_FIND_ROOT_PATH $(PREFIX))" >> $@
 endif
-ifdef HAVE_EMSCRIPTEN
-	CMAKE_TOOLCHAIN_ENV += EXTRA_INCLUDE="$(EMSDK_PATH)cmake/Modules/Platform/Emscripten.cmake"
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> $@
+ifdef HAVE_CROSS_COMPILE
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> $@
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> $@
 endif
-
-toolchain.cmake: $(SRC)/gen-cmake-toolchain.py
-	$(CMAKE_TOOLCHAIN_ENV) $(SRC)/gen-cmake-toolchain.py $@
-	cat $@
 
 MESON_SYSTEM_NAME =
 ifdef HAVE_WIN32
@@ -722,24 +611,21 @@ ifdef HAVE_LINUX
 	# android has also system = linux and defines HAVE_LINUX
 	MESON_SYSTEM_NAME = linux
 else
-ifdef HAVE_EMSCRIPTEN
-	MESON_SYSTEM_NAME = emscripten
-else
 	$(error "No meson system name known for this target")
 endif
 endif
 endif
 endif
-endif
 
-crossfile.meson: $(SRC)/gen-meson-machinefile.py
+
+crossfile.meson: $(SRC)/gen-meson-crossfile.py
 	$(HOSTVARS_MESON) \
 	WINDRES="$(WINDRES)" \
 	PKG_CONFIG="$(PKG_CONFIG)" \
 	HOST_SYSTEM="$(MESON_SYSTEM_NAME)" \
 	HOST_ARCH="$(subst i386,x86,$(ARCH))" \
 	HOST="$(HOST)" \
-	$(SRC)/gen-meson-machinefile.py $@
+	$(SRC)/gen-meson-crossfile.py $@
 	cat $@
 
 # Default pattern rules

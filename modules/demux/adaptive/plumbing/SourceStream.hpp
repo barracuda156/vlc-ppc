@@ -21,7 +21,9 @@
 #define SOURCESTREAM_HPP
 
 #include <vlc_common.h>
+#include <vlc_block.h>
 #include <vlc_block_helper.h>
+#include <string>
 
 namespace adaptive
 {

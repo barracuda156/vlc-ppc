@@ -2,6 +2,7 @@
  * xiph_metadata.h: Vorbis Comment parser
  *****************************************************************************
  * Copyright © 2008-2013 VLC authors and VideoLAN
+ * $Id: 29cc4eb48b27f7a0c243cb44670a57efb9a01645 $
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *          Jean-Baptiste Kempf <jb@videolan.org>
@@ -295,7 +296,7 @@ static void xiph_ParseCueSheetMeta( unsigned *pi_flags, vlc_meta_t *p_meta,
         unsigned m, s, f;
         if( sscanf( &psz_line[13], "%u:%u:%u", &m, &s, &f ) == 3 )
         {
-            p_seekpoint->i_time_offset = vlc_tick_from_sec(m * 60 + s) + vlc_tick_from_samples(f, 75);
+            p_seekpoint->i_time_offset = CLOCK_FREQ * (m * 60 + s) + f * CLOCK_FREQ/75;
             *pb_valid = true;
         }
     }
@@ -403,22 +404,22 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
         memcpy( psz_comment, p_data, comment_size );
         psz_comment[comment_size] = '\0';
 
+        EnsureUTF8( psz_comment );
+
 #define IF_EXTRACT(txt,var) \
     if( !strncasecmp(psz_comment, txt, strlen(txt)) ) \
     { \
-        size_t key_length = strlen(txt); \
-        EnsureUTF8( psz_comment + key_length ); \
         const char *oldval = vlc_meta_Get( p_meta, vlc_meta_ ## var ); \
         if( oldval && (hasMetaFlags & XIPHMETA_##var)) \
         { \
             char * newval; \
-            if( asprintf( &newval, "%s,%s", oldval, &psz_comment[key_length] ) == -1 ) \
+            if( asprintf( &newval, "%s,%s", oldval, &psz_comment[strlen(txt)] ) == -1 ) \
                 newval = NULL; \
             vlc_meta_Set( p_meta, vlc_meta_ ## var, newval ); \
             free( newval ); \
         } \
         else \
-            vlc_meta_Set( p_meta, vlc_meta_ ## var, &psz_comment[key_length] ); \
+            vlc_meta_Set( p_meta, vlc_meta_ ## var, &psz_comment[strlen(txt)] ); \
         hasMetaFlags |= XIPHMETA_##var; \
     }
 
@@ -427,6 +428,17 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
     { \
         vlc_meta_Set( p_meta, vlc_meta_ ## var, &psz_comment[strlen(txt)] ); \
         hasMetaFlags |= XIPHMETA_##var; \
+    }
+
+#define IF_EXTRACT_FMT(txt,var,fmt,target) \
+    if( !strncasecmp(psz_comment, txt, strlen(txt)) ) \
+    { \
+        IF_EXTRACT(txt,var)\
+        if( fmt )\
+        {\
+            free( fmt->target );\
+            fmt->target = strdup(&psz_comment[strlen(txt)]);\
+        }\
     }
 
         IF_EXTRACT("TITLE=", Title )
@@ -461,15 +473,7 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
         else IF_EXTRACT("COMMENTS=", Description )
         else IF_EXTRACT("RATING=", Rating )
         else IF_EXTRACT("DATE=", Date )
-        else if( !strncasecmp(psz_comment, "LANGUAGE=", strlen("LANGUAGE=") ) )
-        {
-            IF_EXTRACT("LANGUAGE=",Language)
-            if( p_fmt )
-            {
-                free( p_fmt->psz_language );
-                p_fmt->psz_language = strdup(&psz_comment[strlen("LANGUAGE=")]);
-            }
-        }
+        else IF_EXTRACT_FMT("LANGUAGE=", Language, p_fmt, psz_language )
         else IF_EXTRACT("ORGANIZATION=", Publisher )
         else IF_EXTRACT("ENCODER=", EncodedBy )
         else if( !strncasecmp( psz_comment, "METADATA_BLOCK_PICTURE=", strlen("METADATA_BLOCK_PICTURE=")))
@@ -494,19 +498,19 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
             if (!p) goto next_comment;
             if ( !strncasecmp(psz_comment, "REPLAYGAIN_TRACK_GAIN=", 22) )
             {
-                (*ppf_replay_gain)[AUDIO_REPLAY_GAIN_TRACK] = vlc_atof_c( ++p );
+                (*ppf_replay_gain)[AUDIO_REPLAY_GAIN_TRACK] = us_atof( ++p );
             }
             else if ( !strncasecmp(psz_comment, "REPLAYGAIN_ALBUM_GAIN=", 22) )
             {
-                (*ppf_replay_gain)[AUDIO_REPLAY_GAIN_ALBUM] = vlc_atof_c( ++p );
+                (*ppf_replay_gain)[AUDIO_REPLAY_GAIN_ALBUM] = us_atof( ++p );
             }
             else if ( !strncasecmp(psz_comment, "REPLAYGAIN_ALBUM_PEAK=", 22) )
             {
-                (*ppf_replay_peak)[AUDIO_REPLAY_GAIN_ALBUM] = vlc_atof_c( ++p );
+                (*ppf_replay_peak)[AUDIO_REPLAY_GAIN_ALBUM] = us_atof( ++p );
             }
             else if ( !strncasecmp(psz_comment, "REPLAYGAIN_TRACK_PEAK=", 22) )
             {
-                (*ppf_replay_peak)[AUDIO_REPLAY_GAIN_TRACK] = vlc_atof_c( ++p );
+                (*ppf_replay_peak)[AUDIO_REPLAY_GAIN_TRACK] = us_atof( ++p );
             }
         }
         else if( !strncasecmp(psz_comment, "CHAPTER", 7) )
@@ -524,9 +528,8 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
                 char *p = strchr( psz_comment, '=' );
                 p_seekpoint = getChapterEntry( i_chapt, &chapters_array );
                 if ( !p || ! p_seekpoint ) goto next_comment;
-                EnsureUTF8( ++p );
                 if ( ! p_seekpoint->psz_name )
-                    p_seekpoint->psz_name = strdup( p );
+                    p_seekpoint->psz_name = strdup( ++p );
             }
             else if( sscanf( psz_comment, "CHAPTER%u=", &i_chapt ) == 1 )
             {
@@ -536,13 +539,13 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
                 {
                     p_seekpoint = getChapterEntry( i_chapt, &chapters_array );
                     if ( ! p_seekpoint ) goto next_comment;
-                    p_seekpoint->i_time_offset = vlc_tick_from_sec(h * 3600 + m * 60 + s) + VLC_TICK_FROM_MS(ms);
+                    p_seekpoint->i_time_offset =
+                      (((int64_t)h * 3600 + (int64_t)m * 60 + (int64_t)s) * 1000 + ms) * 1000;
                 }
             }
         }
         else if( !strncasecmp(psz_comment, "cuesheet=", 9) )
         {
-            EnsureUTF8( &psz_comment[9] );
             xiph_ParseCueSheet( &hasMetaFlags, p_meta, &psz_comment[9], comment_size - 9,
                                 i_seekpoint, ppp_seekpoint );
         }
@@ -552,7 +555,6 @@ void vorbis_ParseComment( es_format_t *p_fmt, vlc_meta_t **pp_meta,
              * undocumented tags and replay gain ) */
             char *p = strchr( psz_comment, '=' );
             *p++ = '\0';
-            EnsureUTF8( p );
 
             for( int i = 0; psz_comment[i]; i++ )
                 if( psz_comment[i] >= 'a' && psz_comment[i] <= 'z' )

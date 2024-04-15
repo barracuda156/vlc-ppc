@@ -2,6 +2,7 @@
  * dummy.c
  *****************************************************************************
  * Copyright (C) 2001, 2002, 2004 VLC authors and VideoLAN
+ * $Id: d7aa646265a0a9857ccceef2723abe183cf3e693 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -42,9 +43,10 @@ vlc_module_begin ()
     set_description( N_("Dummy stream output") )
     set_shortname( N_( "Dummy" ))
     set_capability( "sout access", 0 )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_ACO )
     add_shortcut( "dummy" )
-    set_callback( Open )
+    set_callbacks( Open, NULL )
 vlc_module_end ()
 
 

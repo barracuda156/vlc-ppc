@@ -11,7 +11,7 @@ endif
 
 DEPS_mysofa += zlib $(DEPS_zlib)
 ifdef HAVE_WIN32
-DEPS_mysofa += winpthreads $(DEPS_winpthreads)
+DEPS_mysofa += pthreads $(DEPS_pthreads)
 endif
 
 $(TARBALLS)/libmysofa-$(MYSOFA_VERSION).tar.gz:
@@ -23,12 +23,9 @@ mysofa: libmysofa-$(MYSOFA_VERSION).tar.gz .sum-mysofa
 	$(UNPACK)
 	$(MOVE)
 
-MYSOFA_CONF := -DBUILD_TESTS=OFF
-
 .mysofa: mysofa toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(MYSOFA_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+	cd $< && rm -f CMakeCache.txt
+	cd $< && $(HOSTVARS) $(CMAKE) -DBUILD_TESTS=OFF
+	cd $< && $(CMAKEBUILD) . --target install
 	touch $@
 

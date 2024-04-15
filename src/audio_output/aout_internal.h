@@ -2,6 +2,7 @@
  * aout_internal.h : internal defines for audio output
  *****************************************************************************
  * Copyright (C) 2002 VLC authors and VideoLAN
+ * $Id: ee40a338a81930ac4ae2682e53f32f44cf32024a $
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *
@@ -23,13 +24,8 @@
 #ifndef LIBVLC_AOUT_INTERNAL_H
 # define LIBVLC_AOUT_INTERNAL_H 1
 
-# include <stdatomic.h>
-
 # include <vlc_atomic.h>
-# include <vlc_filter.h>
-# include <vlc_list.h>
 # include <vlc_viewpoint.h>
-# include "../clock/clock.h"
 
 /* Max input rate factor (1/4 -> 4) */
 # define AOUT_MAX_INPUT_RATE (4)
@@ -40,21 +36,35 @@ enum {
     AOUT_RESAMPLING_DOWN
 };
 
+struct aout_request_vout
+{
+    struct vout_thread_t  *(*pf_request_vout)( void *, struct vout_thread_t *,
+                                               const video_format_t *, bool );
+    void *p_private;
+};
+
 typedef struct aout_volume aout_volume_t;
-typedef struct vlc_aout_stream vlc_aout_stream;
+typedef struct aout_dev aout_dev_t;
 
 typedef struct
 {
     vlc_mutex_t lock;
     module_t *module; /**< Output plugin (or NULL if inactive) */
-    bool bitexact;
-
-    vlc_aout_stream *main_stream;
+    aout_filters_t *filters;
+    aout_volume_t *volume;
 
     struct
     {
         vlc_mutex_t lock;
-        struct vlc_list list;
+        char *device;
+        float volume;
+        signed char mute;
+    } req;
+
+    struct
+    {
+        vlc_mutex_t lock;
+        aout_dev_t *list;
         unsigned count;
     } dev;
 
@@ -65,12 +75,25 @@ typedef struct
         vlc_viewpoint_t value;
     } vp;
 
-    int requested_stereo_mode; /**< Requested stereo mode set by the user */
-    int requested_mix_mode; /**< Requested mix mode set by the user */
+    struct
+    {
+        vlc_tick_t end; /**< Last seen PTS */
+        unsigned resamp_start_drift; /**< Resampler drift absolute value */
+        int resamp_type; /**< Resampler mode (FIXME: redundant / resampling) */
+        bool discontinuity;
+    } sync;
 
-    struct vlc_audio_meter meter;
+    int initial_stereo_mode; /**< Initial stereo mode set by options */
 
-    vlc_atomic_rc_t rc;
+    audio_sample_format_t input_format;
+    audio_sample_format_t mixer_format;
+
+    aout_request_vout_t request_vout;
+    aout_filters_cfg_t filters_cfg;
+
+    atomic_uint buffers_lost;
+    atomic_uint buffers_played;
+    atomic_uchar restart;
 } aout_owner_t;
 
 typedef struct
@@ -79,15 +102,9 @@ typedef struct
     aout_owner_t   owner;
 } aout_instance_t;
 
-static inline aout_instance_t *aout_instance (audio_output_t *aout)
-{
-    return container_of(aout, aout_instance_t, output);
-}
-
 static inline aout_owner_t *aout_owner (audio_output_t *aout)
 {
-    aout_instance_t *instance = aout_instance(aout);
-    return &instance->owner;
+    return &((aout_instance_t *)aout)->owner;
 }
 
 /****************************************************************************
@@ -106,19 +123,18 @@ void aout_volume_Delete(aout_volume_t *);
 /* From output.c : */
 audio_output_t *aout_New (vlc_object_t *);
 #define aout_New(a) aout_New(VLC_OBJECT(a))
+void aout_Destroy (audio_output_t *);
 
-int aout_OutputNew(audio_output_t *aout, vlc_aout_stream *stream,
-                   audio_sample_format_t *fmt, int input_profile,
-                   audio_sample_format_t *filter_fmt,
+int aout_OutputNew(audio_output_t *, audio_sample_format_t *,
                    aout_filters_cfg_t *filters_cfg);
+int aout_OutputTimeGet(audio_output_t *, vlc_tick_t *);
+void aout_OutputPlay(audio_output_t *, block_t *);
+void aout_OutputPause( audio_output_t * p_aout, bool, vlc_tick_t );
+void aout_OutputFlush( audio_output_t * p_aout, bool );
 void aout_OutputDelete( audio_output_t * p_aout );
+void aout_OutputLock(audio_output_t *);
+void aout_OutputUnlock(audio_output_t *);
 
-vlc_audio_meter_plugin *
-aout_AddMeterPlugin(audio_output_t *aout, const char *chain,
-                    const struct vlc_audio_meter_plugin_owner *owner);
-
-void
-aout_RemoveMeterPlugin(audio_output_t *aout, vlc_audio_meter_plugin *plugin);
 
 /* From common.c : */
 void aout_FormatsPrint(vlc_object_t *, const char *,
@@ -126,45 +142,27 @@ void aout_FormatsPrint(vlc_object_t *, const char *,
                        const audio_sample_format_t *);
 #define aout_FormatsPrint(o, t, a, b) \
         aout_FormatsPrint(VLC_OBJECT(o), t, a, b)
+bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
+                              const char *var, const char *name, bool b_add );
 
 /* From dec.c */
 #define AOUT_DEC_SUCCESS 0
 #define AOUT_DEC_CHANGED 1
 #define AOUT_DEC_FAILED VLC_EGENERIC
 
-struct vlc_aout_stream_cfg
+int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
+                const audio_replay_gain_t *, const aout_request_vout_t *);
+void aout_DecDelete(audio_output_t *);
+int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
+void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
+void aout_DecChangePause(audio_output_t *, bool b_paused, vlc_tick_t i_date);
+void aout_DecFlush(audio_output_t *, bool wait);
+void aout_RequestRestart (audio_output_t *, unsigned);
+
+static inline void aout_InputRequestRestart(audio_output_t *aout)
 {
-    const audio_sample_format_t *fmt;
-    int profile;
-    struct vlc_clock_t *clock;
-    const char *str_id;
-    const audio_replay_gain_t *replay_gain;
-};
-
-vlc_aout_stream *vlc_aout_stream_New(audio_output_t *p_aout,
-                                     const struct vlc_aout_stream_cfg *cfg);
-void vlc_aout_stream_Delete(vlc_aout_stream *);
-int vlc_aout_stream_Play(vlc_aout_stream *stream, block_t *block);
-void vlc_aout_stream_GetResetStats(vlc_aout_stream *stream, unsigned *, unsigned *);
-void vlc_aout_stream_ChangePause(vlc_aout_stream *stream, bool b_paused, vlc_tick_t i_date);
-void vlc_aout_stream_ChangeRate(vlc_aout_stream *stream, float rate);
-void vlc_aout_stream_ChangeDelay(vlc_aout_stream *stream, vlc_tick_t delay);
-void vlc_aout_stream_Flush(vlc_aout_stream *stream);
-void vlc_aout_stream_Drain(vlc_aout_stream *stream);
-/* Contrary to other vlc_aout_stream_*() functions, this function can be called from
- * any threads */
-bool vlc_aout_stream_IsDrained(vlc_aout_stream *stream);
-/* Called from output.c */
-void vlc_aout_stream_NotifyTiming(vlc_aout_stream *stream, vlc_tick_t system_ts,
-                                  vlc_tick_t audio_ts);
-void vlc_aout_stream_NotifyDrained(vlc_aout_stream *stream);
-void vlc_aout_stream_NotifyGain(vlc_aout_stream *stream, float gain);
-
-void vlc_aout_stream_RequestRestart(vlc_aout_stream *stream, unsigned);
-void vlc_aout_stream_RequestRetiming(vlc_aout_stream *stream, vlc_tick_t system_ts,
-                                     vlc_tick_t audio_ts);
-
-void aout_InputRequestRestart(audio_output_t *aout);
+    aout_RequestRestart(aout, AOUT_RESTART_FILTERS);
+}
 
 static inline void aout_SetWavePhysicalChannels(audio_sample_format_t *fmt)
 {
@@ -180,23 +178,9 @@ static inline void aout_SetWavePhysicalChannels(audio_sample_format_t *fmt)
 }
 
 /* From filters.c */
-
-/* Extended version of aout_FiltersNew
- *
- * The clock, that is not mandatory, will be used to create a new slave clock
- * for the filter visualization plugins.
- */
-aout_filters_t *aout_FiltersNewWithClock(vlc_object_t *, const vlc_clock_t *,
-                                         const audio_sample_format_t *,
-                                         const audio_sample_format_t *,
-                                         const aout_filters_cfg_t *cfg) VLC_USED;
-void aout_FiltersResetClock(aout_filters_t *filters);
-void aout_FiltersSetClockDelay(aout_filters_t *filters, vlc_tick_t delay);
 bool aout_FiltersCanResample (aout_filters_t *filters);
-filter_t *aout_filter_Create(vlc_object_t *obj, const filter_owner_t *restrict owner,
-                             const char *type, const char *name,
-                             const audio_sample_format_t *infmt,
-                             const audio_sample_format_t *outfmt,
-                             config_chain_t *cfg, bool const_fmt);
+
+void aout_ChangeViewpoint(audio_output_t *aout,
+                          const vlc_viewpoint_t *p_viewpoint);
 
 #endif /* !LIBVLC_AOUT_INTERNAL_H */

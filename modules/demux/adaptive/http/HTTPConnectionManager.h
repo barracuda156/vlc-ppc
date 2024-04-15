@@ -62,7 +62,7 @@ namespace adaptive
                 virtual void cancel(AbstractChunkSource *) = 0;
 
                 virtual void updateDownloadRate(const ID &, size_t,
-                                                vlc_tick_t, vlc_tick_t) override;
+                                                mtime_t, mtime_t) override;
                 void setDownloadRateObserver(IDownloadRateObserver *);
 
             protected:
@@ -102,8 +102,8 @@ namespace adaptive
                 AbstractConnection * reuseConnection(ConnectionParams &);
                 Downloader * getDownloadQueue(const AbstractChunkSource *) const;
                 std::list<HTTPChunkBufferedSource *> cache;
-                size_t cache_total;
-                size_t cache_max;
+                unsigned cache_total;
+                unsigned cache_max;
         };
     }
 }

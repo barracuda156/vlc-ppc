@@ -2,6 +2,7 @@
  * subsdec.c : text subtitle decoder
  *****************************************************************************
  * Copyright (C) 2000-2006 VLC authors and VideoLAN
+ * $Id: 11ecfcd2ca7895b6edda378c15359174d9d0dfb8 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Samuel Hocevar <sam@zoy.org>
@@ -182,15 +183,17 @@ vlc_module_begin ()
     set_description( N_("Text subtitle decoder") )
     set_capability( "spu decoder", 50 )
     set_callbacks( OpenDecoder, CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
 
-    add_integer( "subsdec-align", -1, ALIGN_TEXT, ALIGN_LONGTEXT )
+    add_integer( "subsdec-align", -1, ALIGN_TEXT, ALIGN_LONGTEXT,
+                 false )
         change_integer_list( pi_justification, ppsz_justification_text )
     add_string( "subsdec-encoding", "",
-                ENCODING_TEXT, ENCODING_LONGTEXT )
+                ENCODING_TEXT, ENCODING_LONGTEXT, false )
         change_string_list( ppsz_encodings, ppsz_encoding_names )
     add_bool( "subsdec-autodetect-utf8", true,
-              AUTODETECT_UTF8_TEXT, AUTODETECT_UTF8_LONGTEXT )
+              AUTODETECT_UTF8_TEXT, AUTODETECT_UTF8_LONGTEXT, false )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -198,13 +201,13 @@ vlc_module_end ()
  *****************************************************************************/
 #define NO_BREAKING_SPACE  "&#160;"
 
-typedef struct
+struct decoder_sys_t
 {
     int                 i_align;          /* Subtitles alignment on the vout */
 
     vlc_iconv_t         iconv_handle;            /* handle to iconv instance */
     bool                b_autodetect_utf8;
-} decoder_sys_t;
+};
 
 
 static int             DecodeBlock   ( decoder_t *, block_t * );
@@ -222,7 +225,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    switch( p_dec->fmt_in->i_codec )
+    switch( p_dec->fmt_in.i_codec )
     {
         case VLC_CODEC_SUBT:
         case VLC_CODEC_ITU_T140:
@@ -248,12 +251,12 @@ static int OpenDecoder( vlc_object_t *p_this )
     char *var = NULL;
 
     /* First try demux-specified encoding */
-    if( p_dec->fmt_in->i_codec == VLC_CODEC_ITU_T140 )
+    if( p_dec->fmt_in.i_codec == VLC_CODEC_ITU_T140 )
         encoding = "UTF-8"; /* IUT T.140 is always using UTF-8 */
     else
-    if( p_dec->fmt_in->subs.psz_encoding && *p_dec->fmt_in->subs.psz_encoding )
+    if( p_dec->fmt_in.subs.psz_encoding && *p_dec->fmt_in.subs.psz_encoding )
     {
-        encoding = p_dec->fmt_in->subs.psz_encoding;
+        encoding = p_dec->fmt_in.subs.psz_encoding;
         msg_Dbg (p_dec, "trying demuxer-specified character encoding: %s",
                  encoding);
     }
@@ -364,7 +367,7 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
         return NULL;
 
     /* We cannot display a subpicture with no date */
-    if( p_block->i_pts == VLC_TICK_INVALID )
+    if( p_block->i_pts <= VLC_TICK_INVALID )
     {
         msg_Warn( p_dec, "subtitle without a date" );
         return NULL;
@@ -454,10 +457,10 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
     }
     p_spu->i_start    = p_block->i_pts;
     p_spu->i_stop     = p_block->i_pts + p_block->i_length;
-    p_spu->b_ephemer  = (p_block->i_length == VLC_TICK_INVALID);
+    p_spu->b_ephemer  = (p_block->i_length == 0);
     p_spu->b_absolute = false;
 
-    subtext_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
+    subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
 
     int i_inline_align = -1;
     p_spu_sys->region.p_segments = ParseSubtitles( &i_inline_align, psz_subtitle );
@@ -895,14 +898,14 @@ static text_segment_t* ParseSubtitles( int *pi_align, const char *psz_subtitle )
             }
             else if( !strncmp( psz_subtitle, "</", 2 ))
             {
-                char* psz_closetagname = GetTag( &psz_subtitle, true );
-                if ( psz_closetagname != NULL )
+                char* psz_tagname = GetTag( &psz_subtitle, true );
+                if ( psz_tagname != NULL )
                 {
-                    if ( !strcasecmp( psz_closetagname, "b" ) ||
-                         !strcasecmp( psz_closetagname, "i" ) ||
-                         !strcasecmp( psz_closetagname, "u" ) ||
-                         !strcasecmp( psz_closetagname, "s" ) ||
-                         !strcasecmp( psz_closetagname, "font" ) )
+                    if ( !strcasecmp( psz_tagname, "b" ) ||
+                         !strcasecmp( psz_tagname, "i" ) ||
+                         !strcasecmp( psz_tagname, "u" ) ||
+                         !strcasecmp( psz_tagname, "s" ) ||
+                         !strcasecmp( psz_tagname, "font" ) )
                     {
                         // A closing tag for one of the tags we handle, meaning
                         // we pushed a style onto the stack earlier
@@ -911,10 +914,10 @@ static text_segment_t* ParseSubtitles( int *pi_align, const char *psz_subtitle )
                     else
                     {
                         // Unknown closing tag. If it is closing an unknown tag, ignore it. Otherwise, display it
-                        if ( !HasTag( &p_tag_stack, psz_closetagname ) )
+                        if ( !HasTag( &p_tag_stack, psz_tagname ) )
                         {
                             AppendString( p_segment, "</" );
-                            AppendString( p_segment, psz_closetagname );
+                            AppendString( p_segment, psz_tagname );
                             AppendCharacter( p_segment, '>' );
                         }
                     }
@@ -922,7 +925,7 @@ static text_segment_t* ParseSubtitles( int *pi_align, const char *psz_subtitle )
                         psz_subtitle++;
                     if ( *psz_subtitle == '>' )
                         psz_subtitle++;
-                    free( psz_closetagname );
+                    free( psz_tagname );
                 }
                 else
                 {

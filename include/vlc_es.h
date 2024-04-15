@@ -2,6 +2,7 @@
  * vlc_es.h: Elementary stream formats descriptions
  *****************************************************************************
  * Copyright (C) 1999-2012 VLC authors and VideoLAN
+ * $Id: 3c8e04e1b15740166df2e0b2d9a651ffb2c5bc2f $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -25,6 +26,7 @@
 
 #include <vlc_common.h>
 #include <vlc_fourcc.h>
+#include <vlc_text_style.h>
 #include <vlc_viewpoint.h>
 
 /**
@@ -41,7 +43,7 @@
 
 struct video_palette_t
 {
-    int i_entries;                         /**< number of in-use palette entries */
+    int i_entries;      /**< to keep the compatibility with libavcodec's palette */
     uint8_t palette[VIDEO_PALETTE_COLORS_MAX][4];  /**< 4-byte RGBA/YUVA palette */
 };
 
@@ -153,24 +155,9 @@ struct audio_format_t
 /* Maximum number of unmapped channels */
 #define INPUT_CHAN_MAX              64
 
-static const uint16_t vlc_chan_maps[] =
-{
-    0,
-    AOUT_CHAN_CENTER,
-    AOUT_CHANS_2_0,
-    AOUT_CHANS_3_0,
-    AOUT_CHANS_4_0,
-    AOUT_CHANS_5_0,
-    AOUT_CHANS_5_1,
-    AOUT_CHANS_7_0,
-    AOUT_CHANS_7_1,
-    AOUT_CHANS_8_1,
-};
-
 /* Values available for i_chan_mode only */
 #define AOUT_CHANMODE_DUALMONO    0x1
 #define AOUT_CHANMODE_DOLBYSTEREO 0x2
-#define AOUT_CHANMODE_BINAURAL    0x4
 
 /**
  * Picture orientation.
@@ -182,10 +169,9 @@ typedef enum video_orientation_t
     ORIENT_BOTTOM_LEFT, /**< Flipped vertically */
     ORIENT_BOTTOM_RIGHT, /**< Rotated 180 degrees */
     ORIENT_LEFT_TOP, /**< Transposed */
-    ORIENT_LEFT_BOTTOM, /**< Rotated 90 degrees anti-clockwise */
-    ORIENT_RIGHT_TOP, /**< Rotated 90 degrees clockwise */
+    ORIENT_LEFT_BOTTOM, /**< Rotated 90 degrees clockwise */
+    ORIENT_RIGHT_TOP, /**< Rotated 90 degrees anti-clockwise */
     ORIENT_RIGHT_BOTTOM, /**< Anti-transposed */
-#define ORIENT_MAX ((size_t)ORIENT_RIGHT_BOTTOM)
 
     ORIENT_NORMAL      = ORIENT_TOP_LEFT,
     ORIENT_TRANSPOSED  = ORIENT_LEFT_TOP,
@@ -201,14 +187,14 @@ typedef enum video_orientation_t
 /** Convert enum video_orientation_t to EXIF */
 #define ORIENT_TO_EXIF(orient) ((0x76853421U >> (4 * (orient))) & 15)
 /** If the orientation is natural or mirrored */
-#define ORIENT_IS_MIRROR(orient) vlc_parity(orient)
+#define ORIENT_IS_MIRROR(orient) parity(orient)
 /** If the orientation swaps dimensions */
 #define ORIENT_IS_SWAP(orient) (((orient) & 4) != 0)
 /** Applies horizontal flip to an orientation */
 #define ORIENT_HFLIP(orient) ((orient) ^ 1)
 /** Applies vertical flip to an orientation */
 #define ORIENT_VFLIP(orient) ((orient) ^ 2)
-/** Applies 180 degree rotation to an orientation */
+/** Applies horizontal flip to an orientation */
 #define ORIENT_ROTATE_180(orient) ((orient) ^ 3)
 
 typedef enum video_transform_t
@@ -245,8 +231,6 @@ typedef enum video_multiview_mode_t
 
     /* Checkerboard pattern with left eye first. */
     MULTIVIEW_STEREO_CHECKERBOARD,
-
-#define MULTIVIEW_STEREO_MAX  MULTIVIEW_STEREO_CHECKERBOARD
 } video_multiview_mode_t;
 
 /**
@@ -289,7 +273,7 @@ typedef enum video_transfer_func_t
 {
     TRANSFER_FUNC_UNDEF,
     TRANSFER_FUNC_LINEAR,
-    TRANSFER_FUNC_SRGB /**< Gamma 2.2 */,
+    TRANSFER_FUNC_SRGB /*< Gamma 2.2 */,
     TRANSFER_FUNC_BT470_BG,
     TRANSFER_FUNC_BT470_M,
     TRANSFER_FUNC_BT709,
@@ -326,23 +310,14 @@ typedef enum video_color_space_t
 typedef enum video_chroma_location_t
 {
     CHROMA_LOCATION_UNDEF,
-    CHROMA_LOCATION_LEFT,   /**< Most common in MPEG-2 Video, H.264/265 */
-    CHROMA_LOCATION_CENTER, /**< Most common in MPEG-1 Video, JPEG */
+    CHROMA_LOCATION_LEFT,   /*< Most common in MPEG-2 Video, H.264/265 */
+    CHROMA_LOCATION_CENTER, /*< Most common in MPEG-1 Video, JPEG */
     CHROMA_LOCATION_TOP_LEFT,
     CHROMA_LOCATION_TOP_CENTER,
     CHROMA_LOCATION_BOTTOM_LEFT,
     CHROMA_LOCATION_BOTTOM_CENTER,
 #define CHROMA_LOCATION_MAX CHROMA_LOCATION_BOTTOM_CENTER
 } video_chroma_location_t;
-
-typedef enum video_color_range_t
-{
-    COLOR_RANGE_UNDEF,
-    COLOR_RANGE_FULL,
-    COLOR_RANGE_LIMITED,
-#define COLOR_RANGE_STUDIO COLOR_RANGE_LIMITED
-#define COLOR_RANGE_MAX    COLOR_RANGE_LIMITED
-} video_color_range_t;
 
 /**
  * video format description
@@ -367,16 +342,18 @@ struct video_format_t
     unsigned int i_frame_rate_base;              /**< frame rate denominator */
 
     uint32_t i_rmask, i_gmask, i_bmask;      /**< color masks for RGB chroma */
+    int i_rrshift, i_lrshift;
+    int i_rgshift, i_lgshift;
+    int i_rbshift, i_lbshift;
     video_palette_t *p_palette;              /**< video palette from demuxer */
     video_orientation_t orientation;                /**< picture orientation */
     video_color_primaries_t primaries;                  /**< color primaries */
     video_transfer_func_t transfer;                   /**< transfer function */
     video_color_space_t space;                        /**< YCbCr color space */
-    video_color_range_t color_range;            /**< 0-255 instead of 16-235 */
+    bool b_color_range_full;                    /**< 0-255 instead of 16-235 */
     video_chroma_location_t chroma_location;      /**< YCbCr chroma location */
 
     video_multiview_mode_t multiview_mode;        /** Multiview mode, 2D, 3D */
-    bool b_multiview_right_eye_first;   /** Multiview left or right eye first*/
 
     video_projection_mode_t projection_mode;            /**< projection mode */
     vlc_viewpoint_t pose;
@@ -392,15 +369,6 @@ struct video_format_t
         uint16_t MaxCLL;  /* max content light level */
         uint16_t MaxFALL; /* max frame average light level */
     } lighting;
-    struct {
-        uint8_t version_major;
-        uint8_t version_minor;
-        unsigned profile : 7;
-        unsigned level : 6;
-        unsigned rpu_present : 1;
-        unsigned el_present : 1;
-        unsigned bl_present : 1;
-    } dovi;
     uint32_t i_cubemap_padding; /**< padding in pixels of the cube map faces */
 };
 
@@ -461,14 +429,6 @@ static inline void video_format_AdjustColorSpace( video_format_t *p_fmt )
         else
             p_fmt->space = COLOR_SPACE_BT601;
     }
-
-    if ( p_fmt->color_range == COLOR_RANGE_UNDEF )
-    {
-        if ( vlc_fourcc_IsYUV(p_fmt->i_chroma) )
-            p_fmt->color_range = COLOR_RANGE_LIMITED;
-        else
-            p_fmt->color_range = COLOR_RANGE_FULL;
-    }
 }
 
 /**
@@ -494,14 +454,6 @@ VLC_API void video_format_Setup( video_format_t *, vlc_fourcc_t i_chroma,
  */
 VLC_API void video_format_CopyCrop( video_format_t *, const video_format_t * );
 
-static inline void video_format_CopyCropAr(video_format_t *dst,
-                                           const video_format_t *src)
-{
-    video_format_CopyCrop(dst, src);
-    dst->i_sar_num = src->i_sar_num;
-    dst->i_sar_den = src->i_sar_den;
-}
-
 /**
  * It will compute the crop/ar properties when scaling.
  */
@@ -509,7 +461,7 @@ VLC_API void video_format_ScaleCropAr( video_format_t *, const video_format_t * 
 
 /**
  * This function "normalizes" the formats orientation, by switching the a/r according to the orientation,
- * producing a format whose orientation is ORIENT_NORMAL. It makes a shallow copy (palette is not alloc'ed).
+ * producing a format whose orientation is ORIENT_NORMAL. It makes a shallow copy (pallette is not alloc'ed).
  */
 VLC_API void video_format_ApplyRotation(video_format_t * /*restrict*/ out,
                                         const video_format_t *in);
@@ -553,108 +505,6 @@ static inline video_transform_t transform_Inverse( video_transform_t transform )
             return transform;
     }
 }
-
-/**
- * Dolby Vision metadata description
- */
-enum vlc_dovi_reshape_method_t
-{
-    VLC_DOVI_RESHAPE_POLYNOMIAL = 0,
-    VLC_DOVI_RESHAPE_MMR = 1,
-};
-
-enum vlc_dovi_nlq_method_t
-{
-    VLC_DOVI_NLQ_NONE = -1,
-    VLC_DOVI_NLQ_LINEAR_DZ = 0,
-};
-
-#define VLC_ANCILLARY_ID_DOVI VLC_FOURCC('D','o','V','i')
-
-typedef struct vlc_video_dovi_metadata_t
-{
-    /* Common header fields */
-    uint8_t coef_log2_denom;
-    uint8_t bl_bit_depth;
-    uint8_t el_bit_depth;
-    enum vlc_dovi_nlq_method_t nlq_method_idc;
-
-    /* Colorspace metadata */
-    float nonlinear_offset[3];
-    float nonlinear_matrix[9];
-    float linear_matrix[9];
-    uint16_t source_min_pq; /* 12-bit PQ values */
-    uint16_t source_max_pq;
-
-    /**
-     * Do not reorder or modify the following structs, they are intentionally
-     * specified to be identical to AVDOVIReshapingCurve / AVDOVINLQParams.
-     */
-    struct vlc_dovi_reshape_t {
-        uint8_t num_pivots;
-        uint16_t pivots[9];
-        enum vlc_dovi_reshape_method_t mapping_idc[8];
-        uint8_t poly_order[8];
-        int64_t poly_coef[8][3];
-        uint8_t mmr_order[8];
-        int64_t mmr_constant[8];
-        int64_t mmr_coef[8][3][7];
-    } curves[3];
-
-    struct vlc_dovi_nlq_t {
-        uint8_t offset_depth; /* bit depth of offset value */
-        uint16_t offset;
-        uint64_t hdr_in_max;
-        uint64_t dz_slope;
-        uint64_t dz_threshold;
-    } nlq[3];
-} vlc_video_dovi_metadata_t;
-
-/**
- * HDR10+ Dynamic metadata (based on ATSC A/341 Amendment 2094-40)
- *
- * This is similar to SMPTE ST2094-40:2016, but omits the mastering display and
- * target display actual peak luminance LUTs, the rectangular boundaries and
- * ellipse coefficients, and support for multiple processing windows, as these
- * are intentionally left unused in this version of the specification.
- */
-
-#define VLC_ANCILLARY_ID_HDR10PLUS VLC_FOURCC('H','D','R','+')
-
-typedef struct vlc_video_hdr_dynamic_metadata_t
-{
-    uint8_t country_code;           /* ITU-T T.35 Annex A */
-    uint8_t application_version;
-    float targeted_luminance;       /* in cd/m² */
-
-    /* parameters for the first processing window (encompassing the frame) */
-    float maxscl[3];                /* in linearized range [0,1] */
-    float average_maxrgb;           /* in linearized range [0,1] */
-    uint8_t num_histogram;          /* in range [0,15] */
-    struct {
-        uint8_t percentage;         /* in range [1,100] */
-        float percentile;           /* in linearized range [0,1] */
-    } histogram[15];
-    float fraction_bright_pixels;/* in range [0,1] */
-    uint8_t tone_mapping_flag;
-    float knee_point_x;             /* in ootf range [0,1] */
-    float knee_point_y;             /* in ootf range [0,1] */
-    uint8_t num_bezier_anchors;     /* in range [1,15] */
-    float bezier_curve_anchors[15]; /* in range [0,1] */
-} vlc_video_hdr_dynamic_metadata_t;
-
-/**
- * Embedded ICC profiles
- */
-
-#define VLC_ANCILLARY_ID_ICC VLC_FOURCC('i','C','C','P')
-
-typedef struct vlc_icc_profile_t
-{
-    size_t size;
-    uint8_t data[]; /* binary profile data, see ICC.1:2022 (or later) */
-} vlc_icc_profile_t;
-
 /**
  * subtitles format description
  */
@@ -685,8 +535,8 @@ struct subs_format_t
     } dvb;
     struct
     {
-        uint8_t i_magazine; /* magazine value (3 bits), > 8 for any */
-        uint8_t i_page;     /* BCD packet address value (4+4 bits) */
+        int i_magazine;
+        int i_page;
     } teletext;
     struct
     {
@@ -694,6 +544,8 @@ struct subs_format_t
         /* Reorder depth of transport video, -1 for no reordering */
         int i_reorder_depth;
     } cc;
+
+    text_style_t *p_style; /* Default styles to use */
 };
 
 #define SPU_PALETTE_DEFINED  0xbeefbeef
@@ -752,7 +604,7 @@ struct es_format_t
     union {
         struct {
             audio_format_t  audio;    /**< description of audio format */
-            audio_replay_gain_t audio_replay_gain; /**< audio replay gain information */
+            audio_replay_gain_t audio_replay_gain; /*< audio replay gain information */
         };
         video_format_t video;     /**< description of video format */
         subs_format_t  subs;      /**< description of subtitle format */
@@ -812,71 +664,5 @@ static inline void es_format_Change( es_format_t *fmt, int i_cat, vlc_fourcc_t i
     es_format_Clean( fmt );
     es_format_Init( fmt, i_cat, i_codec );
 }
-
-/**
- * Increase the ES track id reference count.
- *
- * Any held ES tracks must be released with vlc_es_id_Release().
- *
- * @param es pointer to the ES id
- * @return the same ES pointer, for convenience
- */
-VLC_API vlc_es_id_t *
-vlc_es_id_Hold(vlc_es_id_t *es);
-
-/**
- * Decrease the ES track id reference count.
- *
- * @param id pointer to the ES track id
- */
-VLC_API void
-vlc_es_id_Release(vlc_es_id_t *id);
-
-/**
- * Get the ES track input id
- *
- * @param id pointer to the ES track id
- * @return the ES track input id (always valid)
- */
-VLC_API int
-vlc_es_id_GetInputId(vlc_es_id_t *id);
-
-/**
- * Return whether the ES track identifier is stable
- *
- * An string identifier is stable when it is certified to be the same across
- * different playback instances for the same ES track.
- *
- * @param id pointer to the ES track id
- * @return true if stable
- */
-VLC_API bool
-vlc_es_id_IsStrIdStable(vlc_es_id_t *id);
-
-/**
- * Get the unique string identifier
- *
- * This id could be used to identify a track across different playback
- * instances.  For example, it can be used to store a track selection
- * preference in a database.
- *
- * @warning Check with vlc_es_id_IsStrIdStable() if the ES track is stable
- * before saving it for a future usage.
- *
- * @param id pointer to the ES track id
- * @return the ES track string identifier, can't be NULL, valid until id is
- * released
- */
-VLC_API const char *
-vlc_es_id_GetStrId(vlc_es_id_t *id);
-
-/**
- * Get the ES category
- *
- * @param id pointer to the ES track id
- * @return the es track category (always valid)
- */
-VLC_API enum es_format_category_e
-vlc_es_id_GetCat(vlc_es_id_t *id);
 
 #endif

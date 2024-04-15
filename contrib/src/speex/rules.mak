@@ -1,7 +1,7 @@
 # speex
 
 SPEEX_VERSION := 1.2.1
-SPEEX_URL := $(XIPH)/speex/speex-$(SPEEX_VERSION).tar.gz
+SPEEX_URL := http://downloads.us.xiph.org/releases/speex/speex-$(SPEEX_VERSION).tar.gz
 
 PKGS += speex
 ifeq ($(call need_pkg,"speex >= 1.0.5"),)
@@ -15,7 +15,6 @@ $(TARBALLS)/speex-$(SPEEX_VERSION).tar.gz:
 
 speex: speex-$(SPEEX_VERSION).tar.gz .sum-speex
 	$(UNPACK)
-	$(call pkg_static,"speex.pc.in")
 	$(MOVE)
 
 SPEEX_CONF := --disable-binaries
@@ -30,8 +29,8 @@ SPEEX_CONF += --disable-neon
 endif
 
 .speex: speex
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(SPEEX_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) $(SPEEX_CONF)
+	cd $< && $(MAKE)
+	$(call pkg_static,"speex.pc")
+	cd $< && $(MAKE) install
 	touch $@

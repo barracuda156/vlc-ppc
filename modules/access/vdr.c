@@ -80,14 +80,15 @@ static void Close( vlc_object_t * );
     "Default frame rate for chapter import." )
 
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_shortname( N_("VDR") )
     set_help( HELP_TEXT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
     set_description( N_("VDR recordings") )
     add_integer( "vdr-chapter-offset", 0,
-        CHAPTER_OFFSET_TEXT, CHAPTER_OFFSET_LONGTEXT )
+        CHAPTER_OFFSET_TEXT, CHAPTER_OFFSET_LONGTEXT, true )
     add_float_with_range( "vdr-fps", 25, 1, 1000,
-        FPS_TEXT, FPS_LONGTEXT )
+        FPS_TEXT, FPS_LONGTEXT, true )
     set_capability( "access", 60 )
     add_shortcut( "vdr" )
     add_shortcut( "directory" )
@@ -105,7 +106,7 @@ vlc_module_end ()
 
 TYPEDEF_ARRAY( uint64_t, size_array_t );
 
-typedef struct
+struct access_sys_t
 {
     /* file sizes of all parts */
     size_array_t file_sizes;
@@ -127,7 +128,7 @@ typedef struct
 
     /* file format: true=TS, false=PES */
     bool b_ts_format;
-} access_sys_t;
+};
 
 #define CURRENT_FILE_SIZE ARRAY_VAL(p_sys->file_sizes, p_sys->i_current_file)
 #define FILE_SIZE(pos)    ARRAY_VAL(p_sys->file_sizes, pos)
@@ -266,6 +267,7 @@ static int Control( stream_t *p_access, int i_query, va_list args )
     access_sys_t *p_sys = p_access->p_sys;
     input_title_t ***ppp_title;
     int i;
+    int64_t *pi64;
     vlc_meta_t *p_meta;
 
     switch( i_query )
@@ -282,8 +284,9 @@ static int Control( stream_t *p_access, int i_query, va_list args )
             break;
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) =
-                VLC_TICK_FROM_MS(var_InheritInteger( p_access, "file-caching" ));
+            pi64 = va_arg( args, int64_t * );
+            *pi64 = INT64_C(1000)
+                  * var_InheritInteger( p_access, "file-caching" );
             break;
 
         case STREAM_SET_PAUSE_STATE:
@@ -815,7 +818,7 @@ static void ImportMarks( stream_t *p_access )
         return;
     }
     p_marks->psz_name = strdup( _("VDR Cut Marks") );
-    p_marks->i_length = i_frame_count * (vlc_tick_t)( CLOCK_FREQ / p_sys->fps );
+    p_marks->i_length = i_frame_count * (int64_t)( CLOCK_FREQ / p_sys->fps );
 
     uint64_t *offsetv = NULL;
 
@@ -861,7 +864,7 @@ static void ImportMarks( stream_t *p_access )
         seekpoint_t *sp = vlc_seekpoint_New();
         if( !sp )
             continue;
-        sp->i_time_offset = i_frame * (vlc_tick_t)( CLOCK_FREQ / p_sys->fps );
+        sp->i_time_offset = i_frame * (int64_t)( CLOCK_FREQ / p_sys->fps );
         sp->psz_name = strdup( line );
 
         TAB_APPEND( p_marks->i_seekpoint, p_marks->seekpoint, sp );

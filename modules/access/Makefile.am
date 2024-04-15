@@ -5,8 +5,8 @@ AM_CPPFLAGS += -I$(srcdir)/access
 
 ### Files ###
 
-libdata_plugin_la_SOURCES = access/data.c
-access_LTLIBRARIES += libdata_plugin.la
+libattachment_plugin_la_SOURCES = access/attachment.c
+access_LTLIBRARIES += libattachment_plugin.la
 
 libdcp_plugin_la_SOURCES = access/dcp/dcpparser.h access/dcp/dcp.cpp access/dcp/dcpparser.cpp access/dcp/dcpdecrypt.cpp
 if HAVE_ASDCP
@@ -21,12 +21,10 @@ endif
 
 libfilesystem_plugin_la_SOURCES = access/fs.h access/file.c access/directory.c access/fs.c
 libfilesystem_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
-access_LTLIBRARIES += libfilesystem_plugin.la
-
-if HAVE_EMSCRIPTEN
-libemjsfile_plugin_la_SOURCES = access/emjsfile.c
-access_LTLIBRARIES += libemjsfile_plugin.la
+if HAVE_WIN32
+libfilesystem_plugin_la_LIBADD = -lshlwapi
 endif
+access_LTLIBRARIES += libfilesystem_plugin.la
 
 libidummy_plugin_la_SOURCES = access/idummy.c
 access_LTLIBRARIES += libidummy_plugin.la
@@ -110,7 +108,7 @@ EXTRA_LTLIBRARIES += libdc1394_plugin.la
 
 libdv1394_plugin_la_SOURCES = access/dv.c
 libdv1394_plugin_la_CFLAGS = $(AM_CFLAGS) $(DV1394_CFLAGS)
-libdv1394_plugin_la_LIBADD = $(DV1394_LIBS)
+libdv1394_plugin_la_LIBADD = $(DV1394_LIBS) $(LIBPTHREAD)
 libdv1394_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
 access_LTLIBRARIES += $(LTLIBdv1394)
 EXTRA_LTLIBRARIES += libdv1394_plugin.la
@@ -120,6 +118,7 @@ liblinsys_hdsdi_plugin_la_SOURCES = \
 	access/linsys/linsys_sdivideo.h \
 	access/linsys/linsys_hdsdi.c
 liblinsys_hdsdi_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
+liblinsys_hdsdi_plugin_la_LIBADD = $(LIBPTHREAD)
 liblinsys_sdi_plugin_la_SOURCES = access/linsys/linsys_sdi.c access/linsys/linsys_sdi.h
 liblinsys_sdi_plugin_la_CFLAGS = $(AM_CFLAGS) $(LINSYS_SDI_CFLAGS)
 liblinsys_sdi_plugin_la_LIBADD = $(LINSYS_SDI_LIBS)
@@ -127,16 +126,9 @@ liblinsys_sdi_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
 access_LTLIBRARIES += $(LTLIBlinsys_hdsdi) $(LTLIBlinsys_sdi)
 EXTRA_LTLIBRARIES += liblinsys_hdsdi_plugin.la liblinsys_sdi_plugin.la
 
-libdecklink_plugin_la_SOURCES = access/decklink.cpp access/sdi.c access/sdi.h access/vlc_decklink.h
+libdecklink_plugin_la_SOURCES = access/decklink.cpp access/sdi.c access/sdi.h
 libdecklink_plugin_la_CXXFLAGS = $(AM_CXXFLAGS) $(CPPFLAGS_decklink)
-libdecklink_plugin_la_LIBADD = $(LIBS_decklink)
-if HAVE_WIN32
-libdecklink_plugin_la_LIBADD += $(LIBCOM)
-libdecklink_plugin_la_CXXFLAGS += $(LIBCOMCXXFLAGS)
-endif
-if HAVE_LINUX
-libdecklink_plugin_la_LIBADD += $(LIBDL)
-endif
+libdecklink_plugin_la_LIBADD = $(LIBS_decklink) $(LIBDL) -lpthread
 if HAVE_DECKLINK
 access_LTLIBRARIES += libdecklink_plugin.la
 endif
@@ -150,7 +142,6 @@ libv4l2_plugin_la_SOURCES = \
 	access/v4l2/linux/v4l2-common.h \
 	access/v4l2/linux/v4l2-controls.h \
 	access/v4l2/v4l2.c \
-	access/v4l2/buffers.c \
 	access/v4l2/video.c \
 	access/v4l2/vbi.c \
 	access/v4l2/demux.c \
@@ -161,16 +152,14 @@ libv4l2_plugin_la_SOURCES = \
 	access/v4l2/v4l2.h
 libv4l2_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/access/v4l2
 libv4l2_plugin_la_CFLAGS = $(AM_CFLAGS) $(ZVBI_CFLAGS)
-libv4l2_plugin_la_LIBADD = $(LIBDL) $(LIBM) $(ZVBI_LIBS)
+libv4l2_plugin_la_LIBADD = $(LIBDL) $(LIBM) $(ZVBI_LIBS) $(LIBPTHREAD)
 if HAVE_V4L2
 access_LTLIBRARIES += libv4l2_plugin.la
 endif
 
 libdshow_plugin_la_SOURCES = access/dshow/vlc_dshow.h access/dshow/dshow.cpp access/dshow/access.h \
 	access/dshow/filter.cpp access/dshow/filter.h access/dshow/crossbar.cpp ../src/win32/mta_holder.h
-libdshow_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -DSTRSAFE_NO_DEPRECATE
-libdshow_plugin_la_CXXFLAGS = $(AM_CXXFLAGS) $(LIBCOMCXXFLAGS)
-libdshow_plugin_la_LIBADD = $(LIBCOM) -luuid -lstrmiids -lksuser
+libdshow_plugin_la_LIBADD = $(LIBCOM) -loleaut32 -luuid -lstrmiids -lksuser
 if HAVE_WIN32_DESKTOP
 access_LTLIBRARIES += libdshow_plugin.la
 endif
@@ -186,39 +175,16 @@ if HAVE_XCB
 access_LTLIBRARIES += libxcb_screen_plugin.la
 endif
 
-libwl_screenshooter_plugin_la_SOURCES = \
-	access/screen/wayland.c
-nodist_libwl_screenshooter_plugin_la_SOURCES = \
-	access/screen/screenshooter-protocol.c
-libwl_screenshooter_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) -Iaccess/screen
-libwl_screenshooter_plugin_la_CFLAGS = $(WAYLAND_CLIENT_CFLAGS)
-libwl_screenshooter_plugin_la_LIBADD = $(WAYLAND_CLIENT_LIBS) $(LIBM)
-EXTRA_DIST += access/screen/screenshooter.xml
-CLEANFILES += $(nodist_libwl_screenshooter_plugin_la_SOURCES)
-if HAVE_WAYLAND
-BUILT_SOURCES += access/screen/screenshooter-client-protocol.h
-access_LTLIBRARIES += libwl_screenshooter_plugin.la
-endif
-
-libscreen_win_plugin_la_SOURCES = access/screen/screen.c access/screen/screen.h \
-	access/screen/dxgi.cpp
-libscreen_win_plugin_la_CXXFLAGS = $(AM_CXXFLAGS) $(LIBCOMCXXFLAGS)
-libscreen_win_plugin_la_LIBADD = libd3d11_common.la $(LIBCOM) -luuid
-if HAVE_WINSTORE
-libscreen_win_plugin_la_LIBADD += -ld3d11
-endif
+libscreen_plugin_la_SOURCES = access/screen/screen.c access/screen/screen.h
+libscreen_plugin_la_LDFLAGS = $(AM_LDFLAGS)
 if HAVE_WIN32_DESKTOP
-libscreen_win_plugin_la_SOURCES += access/screen/win32.c
-libscreen_win_plugin_la_LIBADD += -lgdi32
+libscreen_plugin_la_SOURCES += access/screen/win32.c
+libscreen_plugin_la_LIBADD = -lgdi32
+access_LTLIBRARIES += libscreen_plugin.la
 endif
-if HAVE_WIN32
-access_LTLIBRARIES += libscreen_win_plugin.la
-endif
-
 if HAVE_MAC_SCREEN
-libscreen_plugin_la_SOURCES = access/screen/screen.c access/screen/screen.h \
-	access/screen/mac.c
-libscreen_plugin_la_LDFLAGS = $(AM_LDFLAGS) "-Wl,-framework,OpenGL,-framework,ApplicationServices"
+libscreen_plugin_la_SOURCES += access/screen/mac.c
+libscreen_plugin_la_LDFLAGS += "-Wl,-framework,OpenGL,-framework,ApplicationServices"
 access_LTLIBRARIES += libscreen_plugin.la
 endif
 
@@ -239,10 +205,9 @@ EXTRA_LTLIBRARIES += libvnc_plugin.la
 
 ### Optical media ###
 
-libcdda_plugin_la_SOURCES = access/cdda.c access/disc_helper.h access/vcd/cdrom.c access/vcd/cdrom.h \
-                            access/vcd/cdrom_internals.h misc/webservices/json.c misc/webservices/json.h \
-                            misc/webservices/json_helper.h misc/webservices/musicbrainz.c \
-                            misc/webservices/musicbrainz.h
+libcdda_plugin_la_SOURCES = access/cdda.c access/vcd/cdrom.c access/vcd/cdrom.h access/vcd/cdrom_internals.h \
+                            misc/webservices/json.c misc/webservices/json.h misc/webservices/json_helper.h \
+                            misc/webservices/musicbrainz.c misc/webservices/musicbrainz.h
 libcdda_plugin_la_CFLAGS = $(AM_CFLAGS) $(LIBCDDB_CFLAGS)
 libcdda_plugin_la_LIBADD = $(LIBCDDB_LIBS) $(LIBM)
 libcdda_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
@@ -287,7 +252,7 @@ endif
 access_LTLIBRARIES += $(LTLIBdvdread)
 EXTRA_LTLIBRARIES += libdvdread_plugin.la
 
-liblibbluray_plugin_la_SOURCES = access/bluray.c demux/mpeg/timestamps.h
+liblibbluray_plugin_la_SOURCES = access/bluray.c
 liblibbluray_plugin_la_CFLAGS = $(AM_CFLAGS) $(BLURAY_CFLAGS)
 liblibbluray_plugin_la_LIBADD = $(BLURAY_LIBS)
 liblibbluray_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
@@ -314,9 +279,8 @@ if HAVE_WIN32_DESKTOP
 # Work-around automake bug:
 # Use an import library for C++ to retain C linker on other platforms.
 libbda_la_SOURCES = access/dtv/bdadefs.h access/dtv/bdagraph.cpp access/dtv/bdagraph.hpp
-libbda_la_CXXFLAGS = $(AM_CXXFLAGS) $(LIBCOMCXXFLAGS)
 libbda_la_LDFLAGS = -static
-libbda_la_LIBADD = -lstrmiids $(LIBCOM) -luuid
+libbda_la_LIBADD = -lstrmiids $(LIBCOM) -loleaut32 -luuid
 noinst_LTLIBRARIES += libbda.la
 
 libdtv_plugin_la_DEPENDENCIES = libbda.la
@@ -347,10 +311,6 @@ libftp_plugin_la_SOURCES = access/ftp.c
 libftp_plugin_la_LIBADD = $(SOCKET_LIBS)
 access_LTLIBRARIES += libftp_plugin.la
 
-libgopher_plugin_la_SOURCES = access/gopher.c
-libgopher_plugin_la_LIBADD = $(SOCKET_LIBS)
-access_LTLIBRARIES += libgopher_plugin.la
-
 libhttp_plugin_la_SOURCES = access/http.c
 libhttp_plugin_la_LIBADD = $(SOCKET_LIBS)
 access_LTLIBRARIES += libhttp_plugin.la
@@ -375,23 +335,26 @@ libaccess_mms_plugin_la_CFLAGS = $(AM_CFLAGS)
 libaccess_mms_plugin_la_LIBADD = $(SOCKET_LIBS)
 access_LTLIBRARIES += libaccess_mms_plugin.la
 
-libsmbc_plugin_la_SOURCES = access/samba.c access/smb_common.h
-libsmbc_plugin_la_CFLAGS = $(AM_CFLAGS) $(SMBCLIENT_CFLAGS)
-libsmbc_plugin_la_LIBADD = $(SMBCLIENT_LIBS)
-libsmbc_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
-access_LTLIBRARIES += $(LTLIBsmbc)
-EXTRA_LTLIBRARIES += libsmbc_plugin.la
+libsmb_plugin_la_SOURCES = access/smb.c access/smb_common.h
+libsmb_plugin_la_CFLAGS = $(AM_CFLAGS) $(SMBCLIENT_CFLAGS)
+libsmb_plugin_la_LIBADD = $(SMBCLIENT_LIBS)
+if HAVE_WIN32
+libsmb_plugin_la_LIBADD += -lmpr -lnetapi32
+endif
+libsmb_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
+access_LTLIBRARIES += $(LTLIBsmb)
+EXTRA_LTLIBRARIES += libsmb_plugin.la
 
 libdsm_plugin_la_SOURCES = access/dsm/access.c access/dsm/sd.c access/smb_common.h
 libdsm_plugin_la_CFLAGS = $(AM_CFLAGS) $(DSM_CFLAGS)
-libdsm_plugin_la_LIBADD = $(DSM_LIBS) libvlc_access_cache.la
-if HAVE_DSM
-access_LTLIBRARIES += libdsm_plugin.la
-endif
+libdsm_plugin_la_LIBADD = $(DSM_LIBS)
+libdsm_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
+access_LTLIBRARIES += $(LTLIBdsm)
+EXTRA_LTLIBRARIES += libdsm_plugin.la
 
 libsmb2_plugin_la_SOURCES = access/smb2.c
 libsmb2_plugin_la_CFLAGS = $(AM_CFLAGS) $(SMB2_CFLAGS)
-libsmb2_plugin_la_LIBADD = $(SMB2_LIBS) $(SOCKET_LIBS) libvlc_access_cache.la
+libsmb2_plugin_la_LIBADD = $(SMB2_LIBS) $(SOCKET_LIBS)
 libsmb2_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
 if HAVE_DSM
 libsmb2_plugin_la_CFLAGS += $(DSM_CFLAGS) -DHAVE_DSM
@@ -405,20 +368,8 @@ libtcp_plugin_la_LIBADD = $(SOCKET_LIBS)
 access_LTLIBRARIES += libtcp_plugin.la
 
 libudp_plugin_la_SOURCES = access/udp.c
-libudp_plugin_la_LIBADD = $(SOCKET_LIBS)
+libudp_plugin_la_LIBADD = $(SOCKET_LIBS) $(LIBPTHREAD)
 access_LTLIBRARIES += libudp_plugin.la
-
-libamt_plugin_la_SOURCES = access/amt.c
-libamt_plugin_la_LIBADD = $(SOCKET_LIBS)
-access_LTLIBRARIES += libamt_plugin.la
-
-libunc_plugin_la_SOURCES = access/unc.c access/smb_common.h
-libunc_plugin_la_LIBADD = -lmpr -lnetapi32
-if HAVE_WIN32
-if !HAVE_WINSTORE
-access_LTLIBRARIES += libunc_plugin.la
-endif
-endif
 
 libsftp_plugin_la_SOURCES = access/sftp.c
 libsftp_plugin_la_CFLAGS = $(AM_CFLAGS) $(SFTP_CFLAGS)
@@ -434,6 +385,19 @@ libnfs_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
 access_LTLIBRARIES += $(LTLIBnfs)
 EXTRA_LTLIBRARIES += libnfs_plugin.la
 
+libaccess_realrtsp_plugin_la_SOURCES = \
+	access/rtsp/access.c \
+	access/rtsp/rtsp.c access/rtsp/rtsp.h \
+	access/rtsp/real.c access/rtsp/real.h \
+	access/rtsp/real_rmff.c access/rtsp/real_rmff.h \
+	access/rtsp/real_sdpplin.c access/rtsp/real_sdpplin.h \
+	access/rtsp/real_asmrp.c
+libaccess_realrtsp_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
+libaccess_realrtsp_plugin_la_LIBADD = $(SOCKET_LIBS)
+libaccess_realrtsp_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
+access_LTLIBRARIES += $(LTLIBaccess_realrtsp)
+EXTRA_LTLIBRARIES += libaccess_realrtsp_plugin.la
+
 libavio_plugin_la_SOURCES = access/avio.c access/avio.h
 libavio_plugin_la_CFLAGS = $(AM_CFLAGS) $(AVFORMAT_CFLAGS) $(AVUTIL_CFLAGS)
 libavio_plugin_la_LDFLAGS = $(AM_LDFLAGS) $(SYMBOLIC_LDFLAGS)
@@ -445,7 +409,7 @@ endif
 endif
 
 libsatip_plugin_la_SOURCES = access/satip.c
-libsatip_plugin_la_LIBADD = $(SOCKET_LIBS)
+libsatip_plugin_la_LIBADD = $(SOCKET_LIBS) $(LIBPTHREAD)
 access_LTLIBRARIES += libsatip_plugin.la
 
 ### Misc ###
@@ -462,7 +426,7 @@ EXTRA_LTLIBRARIES += libaccess_mtp_plugin.la
 
 ### SRT ###
 
-libaccess_srt_plugin_la_SOURCES = access/srt.c access/srt_common.c access/srt_common.h
+libaccess_srt_plugin_la_SOURCES = access/srt.c access/srt_common.c access/srt_common.h dummy.cpp
 libaccess_srt_plugin_la_CFLAGS = $(AM_CFLAGS) $(SRT_CFLAGS)
 libaccess_srt_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(SRT_CPPFLAGS)
 libaccess_srt_plugin_la_LIBADD = $(SRT_LIBS)
@@ -473,15 +437,6 @@ EXTRA_LTLIBRARIES += libaccess_srt_plugin.la
 ### RIST ###
 
 librist_plugin_la_SOURCES = access/rist.c access/rist.h
-librist_plugin_la_CFLAGS = $(AM_CFLAGS) $(RIST_CFLAGS)
-librist_plugin_la_LIBADD = $(RIST_LIBS) $(SOCKET_LIBS)
-librist_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(accessdir)'
-access_LTLIBRARIES += $(LTLIBrist)
-EXTRA_LTLIBRARIES += librist_plugin.la
-
-### TOOLS ###
-
-libvlc_access_cache_la_SOURCES = access/cache.c access/cache.h
-libvlc_access_cache_la_LIBADD = $(LTLIBVLCCORE)
-libvlc_access_cache_la_LDFLAGS = -static
-noinst_LTLIBRARIES += libvlc_access_cache.la
+librist_plugin_la_CFLAGS = $(AM_CFLAGS)
+librist_plugin_la_LIBADD = $(SOCKET_LIBS)
+access_LTLIBRARIES += librist_plugin.la

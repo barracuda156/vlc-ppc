@@ -40,26 +40,29 @@
  * Module descriptor
  *****************************************************************************/
 static int  Open (vlc_object_t *);
-static void Close(encoder_t *);
+static void Close(vlc_object_t *);
 
 vlc_module_begin ()
     set_description(N_("H.265/HEVC encoder (x265)"))
-    set_capability("video encoder", 200)
-    set_callback(Open)
+    set_capability("encoder", 200)
+    set_callbacks(Open, Close)
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_VCODEC)
 vlc_module_end ()
 
-typedef struct
+struct encoder_sys_t
 {
     x265_encoder    *h;
     x265_param      param;
 
-    unsigned        frame_count;
+    vlc_tick_t      i_initial_delay;
+
+    vlc_tick_t      dts;
     vlc_tick_t      initial_date;
 #ifndef NDEBUG
     vlc_tick_t      start;
 #endif
-} encoder_sys_t;
+};
 
 static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
 {
@@ -70,10 +73,10 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
 
     if (likely(p_pict)) {
         pic.pts = p_pict->date;
-        if (unlikely(p_sys->initial_date == VLC_TICK_INVALID)) {
+        if (unlikely(p_sys->initial_date == 0)) {
             p_sys->initial_date = p_pict->date;
 #ifndef NDEBUG
-            p_sys->start = vlc_tick_now();
+            p_sys->start = mdate();
 #endif
         }
 
@@ -103,12 +106,12 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
     memcpy(p_block->p_buffer, nal[0].payload, i_out);
 
     /* This isn't really valid for streams with B-frames */
-    p_block->i_length = vlc_tick_from_samples(
-                p_enc->fmt_in.video.i_frame_rate_base,
-                p_enc->fmt_in.video.i_frame_rate );
+    p_block->i_length = CLOCK_FREQ *
+        p_enc->fmt_in.video.i_frame_rate_base /
+            p_enc->fmt_in.video.i_frame_rate;
 
     p_block->i_pts = p_sys->initial_date + pic.poc * p_block->i_length;
-    p_block->i_dts = p_sys->initial_date + p_sys->frame_count++ * p_block->i_length;
+    p_block->i_dts = p_sys->initial_date + p_sys->dts++ * p_block->i_length;
 
     switch (pic.sliceType)
     {
@@ -126,8 +129,8 @@ static block_t *Encode(encoder_t *p_enc, picture_t *p_pict)
     }
 
 #ifndef NDEBUG
-    msg_Dbg(p_enc, "%zu bytes (frame %u, %.2ffps)", p_block->i_buffer,
-        p_sys->frame_count, (float)p_sys->frame_count * CLOCK_FREQ / (vlc_tick_now() - p_sys->start));
+    msg_Dbg(p_enc, "%zu bytes (frame %"PRId64", %.2ffps)", p_block->i_buffer,
+        p_sys->dts, (float)p_sys->dts * CLOCK_FREQ / (mdate() - p_sys->start));
 #endif
 
     return p_block;
@@ -143,7 +146,7 @@ static int  Open (vlc_object_t *p_this)
 
     p_enc->fmt_out.i_cat = VIDEO_ES;
     p_enc->fmt_out.i_codec = VLC_CODEC_HEVC;
-    p_sys = malloc(sizeof(encoder_sys_t));
+    p_enc->p_sys = p_sys = malloc(sizeof(encoder_sys_t));
     if (!p_sys)
         return VLC_ENOMEM;
 
@@ -202,7 +205,7 @@ static int  Open (vlc_object_t *p_this)
     uint32_t i_nal;
     if (x265_encoder_headers(p_sys->h, &nal, &i_nal) < 0) {
         msg_Err(p_enc, "cannot get x265 headers");
-        Close(p_enc);
+        Close(VLC_OBJECT(p_enc));
         return VLC_EGENERIC;
     }
 
@@ -214,7 +217,7 @@ static int  Open (vlc_object_t *p_this)
 
     uint8_t *p_extra = p_enc->fmt_out.p_extra = malloc(i_extra);
     if (!p_extra) {
-        Close(p_enc);
+        Close(VLC_OBJECT(p_enc));
         return VLC_ENOMEM;
     }
 
@@ -223,22 +226,19 @@ static int  Open (vlc_object_t *p_this)
         p_extra += nal[i].sizeBytes;
     }
 
-    p_sys->frame_count = 0;
-    p_sys->initial_date = VLC_TICK_INVALID;
+    p_sys->dts = 0;
+    p_sys->initial_date = 0;
+    p_sys->i_initial_delay = 0;
 
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = Close,
-        .encode_video = Encode,
-    };
-    p_enc->ops = &ops;
-    p_enc->p_sys = p_sys;
+    p_enc->pf_encode_video = Encode;
+    p_enc->pf_encode_audio = NULL;
 
     return VLC_SUCCESS;
 }
 
-static void Close(encoder_t *p_enc)
+static void Close(vlc_object_t *p_this)
 {
+    encoder_t     *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys = p_enc->p_sys;
 
     x265_encoder_close(p_sys->h);

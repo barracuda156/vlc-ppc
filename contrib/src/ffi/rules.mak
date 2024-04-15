@@ -17,8 +17,6 @@ ffi: libffi-$(FFI_VERSION).tar.gz .sum-ffi
 
 .ffi: ffi
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) install
 	touch $@

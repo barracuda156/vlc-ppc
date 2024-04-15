@@ -9,11 +9,11 @@
 void *lfind(const void *key, const void *base, size_t *nmemb,
             size_t size, int(*cmp)(const void *, const void *))
 {
-    for (size_t i = 0; i < *nmemb; ++i)
+    for (int i = 0; i < *nmemb; ++i)
     {
-        const void *elem = (const char*)base + i * size;
+        const void *elem = base + i * size;
         if (!cmp(key, elem))
-            return (void*)elem;
+            return elem;
     }
     return NULL;
 }

@@ -2,6 +2,7 @@
  * algo_ivtc.c : IVTC (inverse telecine) algorithm for the VLC deinterlacer
  *****************************************************************************
  * Copyright (C) 2010-2011 the VideoLAN team
+ * $Id: f75783f52544c20fb34facda469bf060008e5164 $
  *
  * Author: Juha Jeronen <juha.jeronen@jyu.fi>
  *
@@ -22,6 +23,10 @@
 
 #ifdef HAVE_CONFIG_H
 #   include "config.h"
+#endif
+
+#ifdef CAN_COMPILE_MMXEXT
+#   include "mmx.h"
 #endif
 
 #include <stdint.h>
@@ -1453,7 +1458,7 @@ static bool IVTCOutputOrDropFrame( filter_t *p_filter, picture_t *p_dst )
     /* Note that picture_Copy() copies the PTS, too. Apply timestamp mangling
        now, if any was needed.
     */
-    if( t_final != VLC_TICK_INVALID )
+    if( t_final > VLC_TICK_INVALID )
         p_dst->date = t_final;
 
     return true;

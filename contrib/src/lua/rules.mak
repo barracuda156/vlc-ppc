@@ -1,7 +1,6 @@
-# Lua 5.4
+# Lua 5.1
 
-LUA_SHORTVERSION := 5.4
-LUA_VERSION := $(LUA_SHORTVERSION).4
+LUA_VERSION := 5.1.4
 LUA_URL := http://www.lua.org/ftp/lua-$(LUA_VERSION).tar.gz
 
 # Reverse priority order
@@ -27,52 +26,12 @@ endif
 
 # Feel free to add autodetection if you need to...
 PKGS += lua luac
-PKGS_TOOLS += luac
 PKGS_ALL += luac
-
-LUAC_IF_NOT_CROSS =
-ifndef HAVE_CROSS_COMPILE
-LUAC_IF_NOT_CROSS += luac
-endif
-
-ifeq ($(call need_pkg,"lua >= 5.1"),)
-PKGS_FOUND += lua $(LUAC_IF_NOT_CROSS)
-else
 ifeq ($(call need_pkg,"lua5.2"),)
-PKGS_FOUND += lua $(LUAC_IF_NOT_CROSS)
-else
+PKGS_FOUND += lua luac
+endif
 ifeq ($(call need_pkg,"lua5.1"),)
-PKGS_FOUND += lua $(LUAC_IF_NOT_CROSS)
-endif
-endif
-endif
-
-ifeq ($(shell $(HOST)-luac -v 2>/dev/null | head -1 | sed  -E 's/Lua ([0-9]+).([0-9]+).*/\1.\2/'),$(LUA_SHORTVERSION))
-PKGS_FOUND += luac
-endif
-ifeq ($(shell $(HOST)-luac -v 2>/dev/null | head -1 | sed  -E 's/Lua ([0-9]+).([0-9]+).*/\1.\2/'),5.2)
-PKGS_FOUND += luac
-endif
-
-
-LUA_MAKEFLAGS := \
-	$(HOSTTOOLS) \
-	AR="$(AR) rcu" \
-	MYCFLAGS="$(CFLAGS) $(PIC)" \
-	MYLDFLAGS="$(LDFLAGS) $(PIC)" \
-	CPPFLAGS="$(CPPFLAGS) $(PIC)"
-
-# Make sure we do not use the cross-compiler when building
-# the native luac for the host.
-LUA_BUILD_MAKEFLAGS := \
-	$(BUILDTOOLS) \
-	AR="$(BUILDAR) rcu" \
-	MYCFLAGS="$(BUILDCFLAGS)" \
-	MYLDFLAGS="$(BUILDLDFLAGS)" \
-	CPPFLAGS="$(BUILDCPPFLAGS)"
-
-ifdef HAVE_WIN32
-	LUA_MAKEFLAGS += EXE_EXT=.exe
+PKGS_FOUND += lua luac
 endif
 
 $(TARBALLS)/lua-$(LUA_VERSION).tar.gz:
@@ -82,55 +41,69 @@ $(TARBALLS)/lua-$(LUA_VERSION).tar.gz:
 
 lua: lua-$(LUA_VERSION).tar.gz .sum-lua
 	$(UNPACK)
-	$(APPLY) $(SRC)/lua/Disable-dynamic-library-loading-support.patch
-	$(APPLY) $(SRC)/lua/Avoid-usage-of-localeconv.patch
-	$(APPLY) $(SRC)/lua/Create-an-import-library-needed-for-lld.patch
-	$(APPLY) $(SRC)/lua/Disable-system-and-popen-for-windows-store-builds.patch
-	$(APPLY) $(SRC)/lua/Add-version-to-library-name.patch
-	$(APPLY) $(SRC)/lua/Add-a-Makefile-variable-to-override-the-strip-tool.patch
-	$(APPLY) $(SRC)/lua/Create-and-install-a-.pc-file.patch
-	$(APPLY) $(SRC)/lua/Add-EXE_EXT-to-allow-specifying-binary-extension.patch
-	$(APPLY) $(SRC)/lua/Do-not-use-log2f-with-too-old-Android-API-level.patch
-	$(APPLY) $(SRC)/lua/Do-not-use-large-file-offsets-with-too-old-Android-A.patch
-	$(APPLY) $(SRC)/lua/Enforce-always-using-64bit-integers-floats.patch
+	$(APPLY) $(SRC)/lua/lua-noreadline.patch
+	$(APPLY) $(SRC)/lua/no-dylibs.patch
+	$(APPLY) $(SRC)/lua/luac-32bits.patch
+	$(APPLY) $(SRC)/lua/no-localeconv.patch
+	$(APPLY) $(SRC)/lua/lua-ios-support.patch
+	$(APPLY) $(SRC)/lua/implib.patch
+ifdef HAVE_WINSTORE
+	$(APPLY) $(SRC)/lua/lua-winrt.patch
+endif
+ifdef HAVE_DARWIN_OS
+	(cd $(UNPACK_DIR) && \
+	sed -e 's%gcc%$(CC)%' \
+		-e 's%LDFLAGS=%LDFLAGS=$(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)%' \
+		-i.orig src/Makefile)
+endif
+ifdef HAVE_SOLARIS
+	(cd $(UNPACK_DIR) && \
+	sed -e 's%LIBS="-ldl"$$%LIBS="-ldl" MYLDFLAGS="$(EXTRA_LDFLAGS)"%' \
+		-i.orig src/Makefile)
+endif
+ifdef HAVE_WIN32
+	cd $(UNPACK_DIR) && sed -i.orig -e 's/lua luac/lua.exe luac.exe/' Makefile
+endif
+	cd $(UNPACK_DIR)/src && sed -i.orig \
+		-e 's%CC=%#CC=%' \
+		-e 's%= *strip%=$(STRIP)%' \
+		-e 's%= *ranlib%= $(RANLIB)%' \
+		-e 's%AR= *ar%AR= $(AR)%' \
+		Makefile
 	$(MOVE)
 
 .lua: lua
-	$(MAKE) -C $< $(LUA_TARGET) $(LUA_MAKEFLAGS)
+	cd $< && $(HOSTVARS_PIC) $(MAKE) $(LUA_TARGET)
 ifdef HAVE_WIN32
-	$(MAKE) -C $< -C src liblua$(LUA_SHORTVERSION).a $(LUA_MAKEFLAGS)
+	cd $< && $(HOSTVARS) $(MAKE) -C src liblua.a
 endif
-
-	$(MAKE) -C $< install \
-		INSTALL_INC="$(PREFIX)/include/lua$(LUA_SHORTVERSION)" \
-		INSTALL_TOP="$(PREFIX)" \
-		$(LUA_MAKEFLAGS)
+	cd $< && $(HOSTVARS) $(MAKE) install INSTALL_TOP="$(PREFIX)"
 ifdef HAVE_WIN32
-	$(RANLIB) "$(PREFIX)/lib/liblua$(LUA_SHORTVERSION).a"
+	cd $< && $(RANLIB) "$(PREFIX)/lib/liblua.a"
 endif
-
-	# Configure scripts might search for lua >= 5.4 or lua5.4 so expose both
-	cp "$(PREFIX)/lib/pkgconfig/lua.pc" "$(PREFIX)/lib/pkgconfig/lua$(LUA_SHORTVERSION).pc"
+	mkdir -p -- "$(PREFIX)/lib/pkgconfig"
+	sed "s#^prefix=.*#prefix=$(PREFIX)#" $</etc/lua.pc > "$(PREFIX)/lib/pkgconfig/lua.pc"
 	touch $@
-
-# Luac (lua bytecode compiler)
-#
-# If lua from contribs is used, luac has to be used from contribs
-# as well to match the custom patched lua we use in contribs.
 
 .sum-luac: .sum-lua
 	touch $@
 
-# DO NOT use the same intermediate directory as the lua target
-luac: UNPACK_DIR=luac-$(LUA_VERSION)
+ifdef HAVE_WIN32
+ifndef HAVE_CROSS_COMPILE
+LUACVARS=CPPFLAGS="-DLUA_DL_DLL"
+endif
+endif
+
 luac: lua-$(LUA_VERSION).tar.gz .sum-luac
-	$(RM) -Rf $@ $(UNPACK_DIR) && mkdir -p $(UNPACK_DIR)
-	tar $(TAR_VERBOSE)xzfo $< -C $(UNPACK_DIR) --strip-components=1
-	$(APPLY) $(SRC)/lua/Enforce-always-using-64bit-integers-floats.patch
-	$(MOVE)
+	# DO NOT use the same intermediate directory as the lua target
+	rm -Rf -- $@-$(LUA_VERSION) $@
+	mkdir -- $@-$(LUA_VERSION)
+	tar -x -v -z -o -C $@-$(LUA_VERSION) --strip-components=1 -f $<
+	(cd luac-$(LUA_VERSION) && patch -p1) < $(SRC)/lua/luac-32bits.patch
+	mv luac-$(LUA_VERSION) luac
 
 .luac: luac
-	$(MAKE) -C $< $(LUA_BUILD_MAKEFLAGS) generic
+	cd $< && $(LUACVARS) $(MAKE) generic
 	mkdir -p -- $(BUILDBINDIR)
 	install -m 0755 -s -- $</src/luac $(BUILDBINDIR)/$(HOST)-luac
 	touch $@

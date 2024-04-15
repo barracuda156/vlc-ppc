@@ -2,6 +2,7 @@
  * win32_window.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 55de6043df4fc36ee7796d1b8893de9ff95bf8d1 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -26,9 +27,6 @@
 
 #include "../src/generic_window.hpp"
 #include "../src/os_window.hpp"
-
-#include <vlc_window.h>
-
 #include <windows.h>
 #include <ole2.h>   // LPDROPTARGET
 
@@ -39,7 +37,7 @@ class Win32Window: public OSWindow
 public:
     Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
                  HINSTANCE hInst, HWND hParentWindow,
-                 bool dragDrop,
+                 bool dragDrop, bool playOnDrop,
                  Win32Window *pParentWindow, GenericWindow::WindowType_t );
     virtual ~Win32Window();
 
@@ -61,18 +59,14 @@ public:
     /// Toggle the window on top
     virtual void toggleOnTop( bool onTop ) const;
 
-    /// Set the window handler
-    void setOSHandle( vlc_window_t *pWnd ) const {
-        pWnd->type = VLC_WINDOW_TYPE_HWND;
-        pWnd->info.has_double_click = true;
-        pWnd->handle.hwnd = m_hWnd;
-    }
-
     /// Getter for the window handle
     HWND getHandle() const { return m_hWnd; }
 
+    /// Getter for the window handle
+    void* getOSHandle() const { return (void*) m_hWnd; }
+
     /// reparent the window
-    void reparent( OSWindow* parent, int x, int y, int w, int h );
+    void reparent( void* OSHandle, int x, int y, int w, int h );
 
     /// invalidate a window surface
     bool invalidateRect( int x, int y, int w, int h ) const;
@@ -88,6 +82,8 @@ private:
     LPDROPTARGET m_pDropTarget;
     /// Indicates whether the window is layered
     mutable bool m_isLayered;
+    /// Parent window
+    Win32Window *m_pParent;
     /// window type
     GenericWindow::WindowType_t m_type;
 

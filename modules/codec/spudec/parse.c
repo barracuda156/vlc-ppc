@@ -2,6 +2,7 @@
  * parse.c: SPU parser
  *****************************************************************************
  * Copyright (C) 2000-2001, 2005, 2006 VLC authors and VideoLAN
+ * $Id: ee09b31cdb36067e0dd599e9259289bdb380bc3b $
  *
  * Authors: Sam Hocevar <sam@zoy.org>
  *          Laurent Aimar <fenrir@via.ecp.fr>
@@ -31,6 +32,7 @@
 
 #include <vlc_common.h>
 #include <vlc_codec.h>
+#include <vlc_input.h>
 
 #include "spudec.h"
 
@@ -69,7 +71,7 @@ typedef struct
 } subpicture_data_t;
 
 static int  ParseControlSeq( decoder_t *, vlc_tick_t i_pts,
-                             void(*pf_queue)(decoder_t *, subpicture_t *) );
+                             int(*pf_queue)(decoder_t *, subpicture_t *) );
 static int  ParseRLE       ( decoder_t *, subpicture_data_t *,
                              const spu_properties_t *, uint16_t * );
 static int  Render         ( decoder_t *, subpicture_t *, const uint16_t *,
@@ -119,7 +121,7 @@ static void ParsePXCTLI( decoder_t *p_dec, const subpicture_data_t *p_spu_data,
         if(p_palette->i_entries +4 >= VIDEO_PALETTE_COLORS_MAX)
             break;
 
-        if( p_dec->fmt_in->subs.spu.palette[0] == SPU_PALETTE_DEFINED )
+        if( p_dec->fmt_in.subs.spu.palette[0] == SPU_PALETTE_DEFINED )
         {
             /* Lookup the CLUT palette for the YUV values */
             uint8_t idx[4];
@@ -129,7 +131,7 @@ static void ParsePXCTLI( decoder_t *p_dec, const subpicture_data_t *p_spu_data,
             idx[1] = (i_color >>  8)&0x0f;
             idx[2] = (i_color >>  4)&0x0f;
             idx[3] = i_color&0x0f;
-            CLUTIdxToYUV( &p_dec->fmt_in->subs, idx, yuv );
+            CLUTIdxToYUV( &p_dec->fmt_in.subs, idx, yuv );
 
             /* Process the contrast */
             alpha[3] = (i_contrast >> 12)&0x0f;
@@ -194,7 +196,7 @@ static void ParsePXCTLI( decoder_t *p_dec, const subpicture_data_t *p_spu_data,
 static void OutputPicture( decoder_t *p_dec,
                            const subpicture_data_t *p_spu_data,
                            const spu_properties_t *p_spu_properties,
-                           void(*pf_queue)(decoder_t *, subpicture_t *) )
+                           int(*pf_queue)(decoder_t *, subpicture_t *) )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     subpicture_t *p_spu;
@@ -205,9 +207,9 @@ static void OutputPicture( decoder_t *p_dec,
     if( !p_spu ) return;
 
     p_spu->i_original_picture_width =
-        p_dec->fmt_in->subs.spu.i_original_frame_width;
+        p_dec->fmt_in.subs.spu.i_original_frame_width;
     p_spu->i_original_picture_height =
-        p_dec->fmt_in->subs.spu.i_original_frame_height;
+        p_dec->fmt_in.subs.spu.i_original_frame_height;
     p_spu->i_start = p_spu_properties->i_start;
     p_spu->i_stop = p_spu_properties->i_stop;
     p_spu->b_ephemer = p_spu_properties->b_ephemer;
@@ -216,7 +218,7 @@ static void OutputPicture( decoder_t *p_dec,
     if( p_spu->i_stop <= p_spu->i_start && !p_spu->b_ephemer )
     {
         /* This subtitle will live for 5 seconds or until the next subtitle */
-        p_spu->i_stop = p_spu->i_start + VLC_TICK_FROM_MS(500 * 11);
+        p_spu->i_stop = p_spu->i_start + (vlc_tick_t)500 * 11000;
         p_spu->b_ephemer = true;
     }
 
@@ -316,7 +318,7 @@ static int Validate( decoder_t *p_dec, unsigned i_index,
  * This function parses the SPU packet and, if valid, sends it to the
  * video output.
  *****************************************************************************/
-void ParsePacket( decoder_t *p_dec, void(*pf_queue)(decoder_t *, subpicture_t *) )
+void ParsePacket( decoder_t *p_dec, int(*pf_queue)(decoder_t *, subpicture_t *) )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -333,7 +335,7 @@ void ParsePacket( decoder_t *p_dec, void(*pf_queue)(decoder_t *, subpicture_t *)
  * subtitles format, see http://sam.zoy.org/doc/dvd/subtitles/index.html
  *****************************************************************************/
 static int ParseControlSeq( decoder_t *p_dec, vlc_tick_t i_pts,
-                            void(*pf_queue)(decoder_t *, subpicture_t *) )
+                            int(*pf_queue)(decoder_t *, subpicture_t *) )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -388,7 +390,7 @@ static int ParseControlSeq( decoder_t *p_dec, vlc_tick_t i_pts,
             b_cmd_offset = false;
             b_cmd_alpha = false;
             /* Get the control sequence date */
-            date = VLC_TICK_FROM_MS(GetWBE( &p_sys->buffer[i_index] ) * 11);
+            date = (vlc_tick_t)GetWBE( &p_sys->buffer[i_index] ) * 11000;
 
             /* Next offset */
             i_cur_seq = i_index;
@@ -437,7 +439,7 @@ static int ParseControlSeq( decoder_t *p_dec, vlc_tick_t i_pts,
                 return VLC_EGENERIC;
             }
 
-            if( p_dec->fmt_in->subs.spu.palette[0] == SPU_PALETTE_DEFINED )
+            if( p_dec->fmt_in.subs.spu.palette[0] == SPU_PALETTE_DEFINED )
             {
                 uint8_t idx[4];
 
@@ -448,7 +450,7 @@ static int ParseControlSeq( decoder_t *p_dec, vlc_tick_t i_pts,
                 idx[2] = (p_sys->buffer[i_index+2]>>4)&0x0f;
                 idx[3] = (p_sys->buffer[i_index+2])&0x0f;
 
-                CLUTIdxToYUV( &p_dec->fmt_in->subs, idx, spu_data_cmd.pi_yuv );
+                CLUTIdxToYUV( &p_dec->fmt_in.subs, idx, spu_data_cmd.pi_yuv );
             }
 
             i_index += 3;

@@ -2,6 +2,7 @@
  * qsv.c: mpeg4-part10/mpeg2 video encoder using Intel Media SDK
  *****************************************************************************
  * Copyright (C) 2013 VideoLabs
+ * $Id: 9c0841c87d7e8076761ba40485b461fc44d37586 $
  *
  * Authors: Julien 'Lta' BALLET <contact@lta.io>
  *
@@ -31,29 +32,26 @@
 #include <vlc_plugin.h>
 #include <vlc_picture.h>
 #include <vlc_codec.h>
-#include <vlc_picture_pool.h>
-#include <vlc_list.h>
-
 
 #include <mfx/mfxvideo.h>
-#include "../demux/mpeg/timestamps.h"
 
 #define SOUT_CFG_PREFIX     "sout-qsv-"
 
-#define QSV_HAVE_CO2 (MFX_VERSION_MAJOR > 1 || (MFX_VERSION_MAJOR == 1 && MFX_VERSION_MINOR >= 6))
-
-/* Default wait on libavcodec */
-#define QSV_SYNCPOINT_WAIT  (1000)
+/* Default wait on Intel Media SDK SyncOperation. Almost useless when async-depth >= 2 */
+#define QSV_SYNCPOINT_WAIT  (420)
 /* Encoder input synchronization busy wait loop time */
-#define QSV_BUSYWAIT_TIME   VLC_HARD_MIN_SLEEP
+#define QSV_BUSYWAIT_TIME   (10000)
 /* The SDK doesn't have a default bitrate, so here's one. */
 #define QSV_BITRATE_DEFAULT (842)
+
+/* Makes x a multiple of 'align'. 'align' must be a power of 2 */
+#define QSV_ALIGN(align, x)     (((x)+(align)-1)&~((align)-1))
 
 /*****************************************************************************
  * Modules descriptor
  *****************************************************************************/
 static int      Open(vlc_object_t *);
-static void     Close(encoder_t *);
+static void     Close(vlc_object_t *);
 
 #define SW_IMPL_TEXT N_("Enable software mode")
 #define SW_IMPL_LONGTEXT N_("Allow the use of the Intel Media SDK software " \
@@ -107,7 +105,7 @@ static void     Close(encoder_t *);
 #define QP_TEXT N_("Quantization parameter")
 #define QP_LONGTEXT N_("Quantization parameter for all types of frames. " \
     "This parameters sets qpi, qpp and qpb. It has less precedence than " \
-    "the forementioned parameters. Used only if rc_method is 'qp'.")
+    "the forementionned parameters. Used only if rc_method is 'qp'.")
 
 #define QPI_TEXT N_("Quantization parameter for I-frames")
 #define QPI_LONGTEXT N_("Quantization parameter for I-frames. This parameter " \
@@ -130,7 +128,7 @@ static void     Close(encoder_t *);
 #define ACCURACY_LONGTEXT N_("Tolerance in percentage of the 'avbr' " \
     " (Average Variable BitRate) method. (e.g. 10 with a bitrate of 800 " \
     " kbps means the encoder tries not to  go above 880 kbps and under " \
-    " 730 kbps. The targeted accuracy is only reached after a certain " \
+    " 730 kbps. The targeted accuracy is only reached after a certained " \
     " convergence period. See the convergence parameter")
 
 #define CONVERGENCE_TEXT N_("Convergence time of 'avbr' RateControl")
@@ -145,6 +143,7 @@ static void     Close(encoder_t *);
     "by the codec standard.")
 
 #define NUM_REF_FRAME_TEXT N_("Number of reference frames")
+#define NUM_REF_FRAME_LONGTEXT N_("Number of reference frames")
 
 #define ASYNC_DEPTH_TEXT N_("Number of parallel operations")
 #define ASYNC_DEPTH_LONGTEXT N_("Defines the number of parallel " \
@@ -152,97 +151,94 @@ static void     Close(encoder_t *);
      "numbers may result on better throughput depending on hardware. " \
      "MPEG2 needs at least 1 here.")
 
-static const int profile_h264_list[] =
-      { MFX_PROFILE_UNKNOWN, MFX_PROFILE_AVC_CONSTRAINED_BASELINE, MFX_PROFILE_AVC_MAIN,
+static const int const profile_h264_list[] =
+      { 0, MFX_PROFILE_AVC_BASELINE, MFX_PROFILE_AVC_MAIN,
       MFX_PROFILE_AVC_EXTENDED, MFX_PROFILE_AVC_HIGH };
 static const char *const profile_h264_text[] =
-    { N_("Undefined"), N_("baseline"), N_("main"), N_("extended"), N_("high") };
+    { "decide", "baseline", "main", "extended", "high" };
 
-static const int profile_mpeg2_list[] =
-    { MFX_PROFILE_UNKNOWN, MFX_PROFILE_MPEG2_SIMPLE, MFX_PROFILE_MPEG2_MAIN,
+static const int const profile_mpeg2_list[] =
+    { 0, MFX_PROFILE_MPEG2_SIMPLE, MFX_PROFILE_MPEG2_MAIN,
       MFX_PROFILE_MPEG2_HIGH };
 static const char *const profile_mpeg2_text[] =
-    { N_("Undefined"), N_("simple"), N_("main"), N_("high") };
+    { "decide", "simple", "main", "high" };
 
-static const int level_h264_list[] =
-    { MFX_LEVEL_UNKNOWN, MFX_LEVEL_AVC_1, MFX_LEVEL_AVC_1b, MFX_LEVEL_AVC_12,
-      MFX_LEVEL_AVC_13, MFX_LEVEL_AVC_2, MFX_LEVEL_AVC_21, MFX_LEVEL_AVC_22,
-      MFX_LEVEL_AVC_3, MFX_LEVEL_AVC_31, MFX_LEVEL_AVC_32, MFX_LEVEL_AVC_4,
-      MFX_LEVEL_AVC_41, MFX_LEVEL_AVC_42, MFX_LEVEL_AVC_5, MFX_LEVEL_AVC_51,
-      MFX_LEVEL_AVC_52};
+static const int const level_h264_list[] =
+    { 0, 10, 9, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41,   42,   50, 51, 52};
 static const char *const level_h264_text[] =
-    { N_("Undefined"), "1", "1.1b", "1.2", "1.3", "2", "2.1", "2.2", "3", "3.1",
+    { "decide", "1", "1.1b", "1.2", "1.3", "2", "2.1", "2.2", "3", "3.1",
       "3.2", "4", "4.1",   "4.2",   "5", "5.1", "5.2" };
 
-static const int level_mpeg2_list[] =
-    { MFX_LEVEL_UNKNOWN, MFX_LEVEL_MPEG2_LOW, MFX_LEVEL_MPEG2_MAIN,
+static const int const level_mpeg2_list[] =
+    { 0, MFX_LEVEL_MPEG2_LOW, MFX_LEVEL_MPEG2_MAIN,
       MFX_LEVEL_MPEG2_HIGH, MFX_LEVEL_MPEG2_HIGH1440 };
 static const char *const level_mpeg2_text[] =
-    { N_("Undefined"), N_("low"), N_("main"), N_("high"), N_("high1440") };
+    { "decide", "low", "main", "high", "high1440" };
 
-static const int target_usage_list[] =
-    { MFX_TARGETUSAGE_UNKNOWN, MFX_TARGETUSAGE_BEST_QUALITY, MFX_TARGETUSAGE_BALANCED,
+static const int const target_usage_list[] =
+    { 0, MFX_TARGETUSAGE_BEST_QUALITY, MFX_TARGETUSAGE_BALANCED,
       MFX_TARGETUSAGE_BEST_SPEED };
 static const char *const target_usage_text[] =
-    { N_("Undefined"), N_("quality"), N_("balanced"), N_("speed") };
+    { "decide", "quality", "balanced", "speed" };
 
-static const int rc_method_list[] =
+static const int const rc_method_list[] =
     { MFX_RATECONTROL_CBR, MFX_RATECONTROL_VBR,
       MFX_RATECONTROL_CQP, MFX_RATECONTROL_AVBR};
 static const char *const rc_method_text[] =
     { "cbr", "vbr", "qp", "avbr" };
 
 vlc_module_begin ()
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_VCODEC)
     set_description(N_("Intel QuickSync Video encoder for MPEG4-Part10/MPEG2 (aka H.264/H.262)"))
     set_shortname("qsv")
-    set_capability("video encoder", 0)
-    set_callback(Open)
+    set_capability("encoder", 0)
+    set_callbacks(Open, Close)
 
-    add_bool(SOUT_CFG_PREFIX "software", false, SW_IMPL_TEXT, SW_IMPL_LONGTEXT)
+    add_bool(SOUT_CFG_PREFIX "software", false, SW_IMPL_TEXT, SW_IMPL_LONGTEXT, true)
 
-    add_string(SOUT_CFG_PREFIX "h264-profile", "unspecified" , PROFILE_TEXT, PROFILE_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "h264-profile", "unspecified" , PROFILE_TEXT, PROFILE_LONGTEXT, false)
         change_string_list(profile_h264_text, profile_h264_text)
 
-    add_string(SOUT_CFG_PREFIX "h264-level", "unspecified", LEVEL_TEXT, LEVEL_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "h264-level", "unspecified", LEVEL_TEXT, LEVEL_LONGTEXT, false)
         change_string_list(level_h264_text, level_h264_text)
 
-    add_string(SOUT_CFG_PREFIX "mpeg2-profile", "unspecified", PROFILE_TEXT, PROFILE_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "mpeg2-profile", "unspecified", PROFILE_TEXT, PROFILE_LONGTEXT, false)
         change_string_list(profile_mpeg2_text, profile_mpeg2_text)
 
-    add_string(SOUT_CFG_PREFIX "mpeg2-level", "unspecified", LEVEL_TEXT, LEVEL_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "mpeg2-level", "unspecified", LEVEL_TEXT, LEVEL_LONGTEXT, false)
         change_string_list(level_mpeg2_text, level_mpeg2_text)
 
-    add_integer(SOUT_CFG_PREFIX "gop-size", 32, GOP_SIZE_TEXT, GOP_SIZE_LONGTEXT)
-    add_integer(SOUT_CFG_PREFIX "gop-refdist", 4, GOP_REF_DIST_TEXT, GOP_REF_DIST_LONGTEXT)
-    add_integer(SOUT_CFG_PREFIX "idr-interval", 0, IDR_INTERVAL_TEXT, IDR_INTERVAL_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "gop-size", 32, GOP_SIZE_TEXT, GOP_SIZE_LONGTEXT, true)
+    add_integer(SOUT_CFG_PREFIX "gop-refdist", 4, GOP_REF_DIST_TEXT, GOP_REF_DIST_LONGTEXT, true)
+    add_integer(SOUT_CFG_PREFIX "idr-interval", 0, IDR_INTERVAL_TEXT, IDR_INTERVAL_LONGTEXT, true)
 
-    add_string(SOUT_CFG_PREFIX "target-usage", "quality", TARGET_USAGE_TEXT, TARGET_USAGE_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "target-usage", "quality", TARGET_USAGE_TEXT, TARGET_USAGE_LONGTEXT, false)
         change_string_list(target_usage_text, target_usage_text)
 
-    add_string(SOUT_CFG_PREFIX "rc-method", "vbr", RATE_CONTROL_TEXT, RATE_CONTROL_LONGTEXT)
+    add_string(SOUT_CFG_PREFIX "rc-method", "vbr", RATE_CONTROL_TEXT, RATE_CONTROL_LONGTEXT, true)
         change_string_list(rc_method_text, rc_method_text)
 
-    add_integer(SOUT_CFG_PREFIX "qp", 0, QP_TEXT, QP_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "qp", 0, QP_TEXT, QP_LONGTEXT, true)
         change_integer_range(0, 51)
-    add_integer(SOUT_CFG_PREFIX "qpi", 0, QPI_TEXT, QPI_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "qpi", 0, QPI_TEXT, QPI_LONGTEXT, true)
         change_integer_range(0, 51)
-    add_integer(SOUT_CFG_PREFIX "qpp", 0, QPP_TEXT, QPP_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "qpp", 0, QPP_TEXT, QPP_LONGTEXT, true)
         change_integer_range(0, 51)
-    add_integer(SOUT_CFG_PREFIX "qpb", 0, QPB_TEXT, QPB_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "qpb", 0, QPB_TEXT, QPB_LONGTEXT, true)
         change_integer_range(0, 51)
 
-    add_integer(SOUT_CFG_PREFIX "bitrate-max", 0, MAX_BITRATE_TEXT, MAX_BITRATE_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "bitrate-max", 0, MAX_BITRATE_TEXT, MAX_BITRATE_LONGTEXT, true)
 
-    add_integer(SOUT_CFG_PREFIX "accuracy", 0, ACCURACY_TEXT, ACCURACY_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "accuracy", 0, ACCURACY_TEXT, ACCURACY_LONGTEXT, true)
         change_integer_range(0, 100)
 
-    add_integer(SOUT_CFG_PREFIX "convergence", 0, CONVERGENCE_TEXT, CONVERGENCE_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "convergence", 0, CONVERGENCE_TEXT, CONVERGENCE_LONGTEXT, true)
 
-    add_integer(SOUT_CFG_PREFIX "num-slice", 0, NUM_SLICE_TEXT, NUM_SLICE_LONGTEXT)
-    add_integer(SOUT_CFG_PREFIX "num-ref-frame", 0, NUM_REF_FRAME_TEXT, NULL)
+    add_integer(SOUT_CFG_PREFIX "num-slice", 0, NUM_SLICE_TEXT, NUM_SLICE_LONGTEXT, true)
+    add_integer(SOUT_CFG_PREFIX "num-ref-frame", 0, NUM_REF_FRAME_TEXT, NUM_REF_FRAME_LONGTEXT, true)
 
-    add_integer(SOUT_CFG_PREFIX "async-depth", 4, ASYNC_DEPTH_TEXT, ASYNC_DEPTH_LONGTEXT)
+    add_integer(SOUT_CFG_PREFIX "async-depth", 4, ASYNC_DEPTH_TEXT, ASYNC_DEPTH_LONGTEXT, true)
         change_integer_range(1, 32)
 
 vlc_module_end ()
@@ -259,52 +255,85 @@ static const char *const sout_options[] = {
 };
 
 // Frame pool for QuickSync video encoder with Intel Media SDK's format frames.
-typedef struct _QSVFrame
+typedef struct qsv_frame_pool_t
 {
-    struct _QSVFrame  *next;
-    picture_t         *pic;
-    mfxFrameSurface1  surface;
-    mfxEncodeCtrl     enc_ctrl;
-    int               used;
-} QSVFrame;
+    mfxFrameInfo          fmt;            // IntelMediaSDK format info.
+    mfxFrameSurface1      *frames;        // An allocated array of 'size' frames.
+    size_t                size;           // The number of frame in the pool.
+} qsv_frame_pool_t;
 
 typedef struct async_task_t
 {
-    struct vlc_list  fifo;
     mfxBitstream     bs;                  // Intel's bitstream structure.
-    mfxSyncPoint     *syncp;              // Async Task Sync Point.
+    mfxSyncPoint     syncp;               // Async Task Sync Point.
     block_t          *block;              // VLC's block structure to be returned by Encode.
 } async_task_t;
 
-typedef struct
+struct encoder_sys_t
 {
     mfxSession       session;             // Intel Media SDK Session.
     mfxVideoParam    params;              // Encoding parameters.
-    QSVFrame         *work_frames;        // IntelMediaSDK's frame pool.
+    mfxIMPL          impl;                // Actual implementation (hw/sw).
+    qsv_frame_pool_t frames;              // IntelMediaSDK's frame pool.
     uint64_t         dts_warn_counter;    // DTS warning counter for rate-limiting of msg;
-    uint64_t         busy_warn_counter;   // Device Busy warning counter for rate-limiting of msg;
+    uint64_t         busy_warn_counter;   // Device Bussy warning counter for rate-limiting of msg;
     uint64_t         async_depth;         // Number of parallel encoding operations.
-    struct vlc_list  packets;             // FIFO of queued packets
+    uint64_t         first_task;          // The next sync point to be synchronized.
+    async_task_t     *tasks;              // The async encoding tasks.
     vlc_tick_t       offset_pts;          // The pts of the first frame, to avoid conversion overflow.
     vlc_tick_t       last_dts;            // The dts of the last frame, to interpolate over buggy dts
-
-    picture_pool_t   *input_pool;         // pool of pictures to feed the decoder
-                                          //  as it doesn't like constantly changing buffers
-} encoder_sys_t;
+};
 
 static block_t *Encode(encoder_t *, picture_t *);
 
 
-static void clear_unused_frames(encoder_sys_t *sys)
+static inline vlc_tick_t qsv_timestamp_to_mtime(int64_t mfx_ts)
 {
-    QSVFrame *cur = sys->work_frames;
-    while (cur) {
-        if (cur->used && !cur->surface.Data.Locked) {
-            picture_Release(cur->pic);
-            cur->used = 0;
-        }
-        cur = cur->next;
+    return mfx_ts / INT64_C(9) * INT64_C(100);
+}
+
+static inline uint64_t qsv_mtime_to_timestamp(vlc_tick_t vlc_ts)
+{
+    return vlc_ts / UINT64_C(100) * UINT64_C(9);
+}
+
+/*
+ * Create a new frame pool with 'size' frames in it. Pools cannot be resized.
+ */
+static int qsv_frame_pool_Init(qsv_frame_pool_t *pool,
+                               mfxFrameAllocRequest *request,
+                               uint64_t async_depth)
+{
+    size_t size = request->NumFrameSuggested + async_depth;
+
+    pool->frames = calloc(size, sizeof(mfxFrameSurface1));
+    if (unlikely(!pool->frames))
+        return VLC_ENOMEM;
+
+    pool->size = size;
+    memcpy(&pool->fmt, &request->Info, sizeof(request->Info));
+
+    for (size_t i = 0; i < size; i++) {
+        memcpy(&pool->frames[i].Info, &request->Info, sizeof(request->Info));
+        pool->frames[i].Data.Pitch = QSV_ALIGN(32, request->Info.Width);
     }
+
+    return VLC_SUCCESS;
+}
+
+/*
+ * Destroys a pool frame. Only call this function after a MFXClose
+ * call since we doesn't check for Locked frames.
+ */
+static void qsv_frame_pool_Destroy(qsv_frame_pool_t *pool)
+{
+    for (size_t i = 0; i < pool->size; i++) {
+        picture_t *pic = (picture_t *) pool->frames[i].Data.MemId;
+        if (pic)
+            picture_Release(pic);
+    }
+
+    free(pool->frames);
 }
 
 /*
@@ -312,38 +341,40 @@ static void clear_unused_frames(encoder_sys_t *sys)
  * necessary associates the new picture with it and return the frame.
  * Returns 0 if there's an error.
  */
-static int get_free_frame(encoder_sys_t *sys, QSVFrame **out)
+static mfxFrameSurface1 *qsv_frame_pool_Get(encoder_sys_t *sys, picture_t *pic)
 {
-    QSVFrame *frame, **last;
+    qsv_frame_pool_t *pool = &sys->frames;
+    for (size_t i = 0; i < pool->size; i++) {
+        mfxFrameSurface1 *frame = &pool->frames[i];
+        if (frame->Data.Locked)
+            continue;
+        if (frame->Data.MemId)
+            picture_Release((picture_t *)frame->Data.MemId);
 
-    clear_unused_frames(sys);
+        frame->Data.MemId     = pic;
+        frame->Data.Y         = pic->p[0].p_pixels;
+        frame->Data.U         = pic->p[1].p_pixels;
+        frame->Data.V         = pic->p[1].p_pixels + 1;
+        frame->Data.TimeStamp = qsv_mtime_to_timestamp(pic->date - sys->offset_pts);
 
-    frame = sys->work_frames;
-    last  = &sys->work_frames;
-    while (frame) {
-        if (!frame->used) {
-            *out = frame;
-            frame->used = 1;
-            return VLC_SUCCESS;
-        }
+        // Specify picture structure at runtime.
+        if (pic->b_progressive)
+            frame->Info.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        else if (pic->b_top_field_first)
+            frame->Info.PicStruct = MFX_PICSTRUCT_FIELD_TFF;
+        else
+            frame->Info.PicStruct = MFX_PICSTRUCT_FIELD_BFF;
 
-        last  = &frame->next;
-        frame = frame->next;
+        picture_Hold(pic);
+
+        return frame;
     }
 
-    frame = calloc(1,sizeof(QSVFrame));
-    if (unlikely(frame==NULL))
-        return VLC_ENOMEM;
-    *last = frame;
-
-    *out = frame;
-    frame->used = 1;
-
-    return VLC_SUCCESS;
+    return NULL;
 }
 
 static uint64_t qsv_params_get_value(const char *const *text,
-                                     const int *list,
+                                     const int const *list,
                                      size_t size, char *sel)
 {
     size_t result = 0;
@@ -351,6 +382,7 @@ static uint64_t qsv_params_get_value(const char *const *text,
     if (unlikely(!sel))
         return list[0];
 
+    size /= sizeof(list[0]);
     for (size_t i = 0; i < size; i++)
         if (!strcmp(sel, text[i])) {
             result = i;
@@ -369,41 +401,13 @@ static int Open(vlc_object_t *this)
     encoder_sys_t *sys = NULL;
 
     mfxStatus sts = MFX_ERR_NONE;
-    mfxFrameAllocRequest alloc_request = { 0 };
-    uint8_t sps_buf[128];
-    uint8_t pps_buf[128];
+    mfxFrameAllocRequest alloc_request;
     mfxExtCodingOptionSPSPPS headers;
-    mfxExtCodingOption co = {
-        .Header.BufferId = MFX_EXTBUFF_CODING_OPTION,
-        .Header.BufferSz = sizeof(co),
-        .PicTimingSEI = MFX_CODINGOPTION_ON,
-    };
-#if QSV_HAVE_CO2
-    mfxExtCodingOption2 co2 = {
-        .Header.BufferId = MFX_EXTBUFF_CODING_OPTION2,
-        .Header.BufferSz = sizeof(co2),
-    };
-#endif
-    mfxExtBuffer *init_params[] =
-    {
-        (mfxExtBuffer*)&co,
-#if QSV_HAVE_CO2
-        (mfxExtBuffer*)&co2,
-#endif
-    };
-    mfxExtBuffer *extended_params[] = {
-        (mfxExtBuffer*)&headers,
-        (mfxExtBuffer*)&co,
-#if QSV_HAVE_CO2
-        (mfxExtBuffer*)&co2,
-#endif
-    };
-    mfxVersion    ver = { { 1, 1 } };
-    mfxIMPL       impl;
-    mfxVideoParam param_out = { 0 };
+    mfxExtBuffer *extended_params[1] = {(mfxExtBuffer *)&headers};
 
     uint8_t *p_extra;
     size_t i_extra;
+    uint8_t nals[128];
 
     if (enc->fmt_out.i_codec != VLC_CODEC_H264 &&
         enc->fmt_out.i_codec != VLC_CODEC_MPGV && !enc->obj.force)
@@ -421,67 +425,63 @@ static int Open(vlc_object_t *this)
         return VLC_ENOMEM;
 
     /* Initialize dispatcher, it will loads the actual SW/HW Implementation */
-    sts = MFXInit(MFX_IMPL_AUTO_ANY, &ver, &sys->session);
+    sts = MFXInit(MFX_IMPL_AUTO, 0, &sys->session);
 
     if (sts != MFX_ERR_NONE) {
-        if (sts == MFX_ERR_UNSUPPORTED)
-            msg_Err(enc, "Intel Media SDK implementation not supported, is your card plugged?");
-        else
-            msg_Err(enc, "Unable to find an Intel Media SDK implementation (%d).", sts);
+        msg_Err(enc, "Unable to find an Intel Media SDK implementation.");
         free(sys);
         return VLC_EGENERIC;
     }
 
-    vlc_list_init(&sys->packets);
-
     config_ChainParse(enc, SOUT_CFG_PREFIX, sout_options, enc->p_cfg);
 
     /* Checking if we are on software and are allowing it */
-    MFXQueryIMPL(sys->session, &impl);
-    if (!var_InheritBool(enc, SOUT_CFG_PREFIX "software") && (impl & MFX_IMPL_SOFTWARE)) {
+    MFXQueryIMPL(sys->session, &sys->impl);
+    if (!var_InheritBool(enc, SOUT_CFG_PREFIX "software") && (sys->impl & MFX_IMPL_SOFTWARE)) {
         msg_Err(enc, "No hardware implementation found and software mode disabled");
-        goto error;
+        free(sys);
+        return VLC_EGENERIC;
     }
 
     msg_Dbg(enc, "Using Intel QuickSync Video %s implementation",
-        impl & MFX_IMPL_HARDWARE ? "hardware" : "software");
+        sys->impl & MFX_IMPL_HARDWARE ? "hardware" : "software");
+
+    /* Vlc module configuration */
+    enc->p_sys                         = sys;
+    enc->fmt_in.i_codec                = VLC_CODEC_NV12; // Intel Media SDK requirement
+    enc->fmt_in.video.i_chroma         = VLC_CODEC_NV12;
+    enc->fmt_in.video.i_bits_per_pixel = 12;
 
     /* Input picture format description */
     sys->params.mfx.FrameInfo.FrameRateExtN = enc->fmt_in.video.i_frame_rate;
     sys->params.mfx.FrameInfo.FrameRateExtD = enc->fmt_in.video.i_frame_rate_base;
     sys->params.mfx.FrameInfo.FourCC        = MFX_FOURCC_NV12;
     sys->params.mfx.FrameInfo.ChromaFormat  = MFX_CHROMAFORMAT_YUV420;
-    sys->params.mfx.FrameInfo.Width         = vlc_align(enc->fmt_in.video.i_width, 16);
-    sys->params.mfx.FrameInfo.Height        = vlc_align(enc->fmt_in.video.i_height, 32);
+    sys->params.mfx.FrameInfo.Width         = QSV_ALIGN(16, enc->fmt_in.video.i_width);
+    sys->params.mfx.FrameInfo.Height        = QSV_ALIGN(32, enc->fmt_in.video.i_height);
     sys->params.mfx.FrameInfo.CropW         = enc->fmt_in.video.i_visible_width;
     sys->params.mfx.FrameInfo.CropH         = enc->fmt_in.video.i_visible_height;
-    sys->params.mfx.FrameInfo.PicStruct     = MFX_PICSTRUCT_PROGRESSIVE;
-    sys->params.mfx.FrameInfo.AspectRatioH  = enc->fmt_in.video.i_sar_num;
-    sys->params.mfx.FrameInfo.AspectRatioW  = enc->fmt_in.video.i_sar_den;
-    sys->params.mfx.FrameInfo.BitDepthChroma = 8; /* for VLC_CODEC_NV12 */
-    sys->params.mfx.FrameInfo.BitDepthLuma   = 8; /* for VLC_CODEC_NV12 */
+    sys->params.mfx.FrameInfo.PicStruct     = MFX_PICSTRUCT_UNKNOWN;
 
     /* Parsing options common to all RC methods and codecs */
-    sys->params.IOPattern = MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
-    sys->params.IOPattern |= MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+    sys->params.IOPattern       = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
     sys->params.AsyncDepth      = var_InheritInteger(enc, SOUT_CFG_PREFIX "async-depth");
-    sys->params.mfx.GopOptFlag  = 1; /* TODO */
     sys->params.mfx.GopPicSize  = var_InheritInteger(enc, SOUT_CFG_PREFIX "gop-size");
     sys->params.mfx.GopRefDist  = var_InheritInteger(enc, SOUT_CFG_PREFIX "gop-refdist");
     sys->params.mfx.IdrInterval = var_InheritInteger(enc, SOUT_CFG_PREFIX "idr-interval");
     sys->params.mfx.NumSlice    = var_InheritInteger(enc, SOUT_CFG_PREFIX "num-slice");
     sys->params.mfx.NumRefFrame = var_InheritInteger(enc, SOUT_CFG_PREFIX "num-ref-frame");
     sys->params.mfx.TargetUsage = qsv_params_get_value(target_usage_text,
-        target_usage_list, ARRAY_SIZE(target_usage_list),
+        target_usage_list, sizeof(target_usage_list),
         var_InheritString(enc, SOUT_CFG_PREFIX "target-usage"));
 
     if (enc->fmt_out.i_codec == VLC_CODEC_H264) {
         sys->params.mfx.CodecId = MFX_CODEC_AVC;
         sys->params.mfx.CodecProfile = qsv_params_get_value(profile_h264_text,
-            profile_h264_list, ARRAY_SIZE(profile_h264_list),
+            profile_h264_list, sizeof(profile_h264_list),
             var_InheritString(enc, SOUT_CFG_PREFIX "h264-profile"));
         sys->params.mfx.CodecLevel = qsv_params_get_value(level_h264_text,
-            level_h264_list, ARRAY_SIZE(level_h264_list),
+            level_h264_list, sizeof(level_h264_list),
             var_InheritString(enc, SOUT_CFG_PREFIX "h264-level"));
         msg_Dbg(enc, "Encoder in H264 mode, with profile %d and level %d",
             sys->params.mfx.CodecProfile, sys->params.mfx.CodecLevel);
@@ -489,21 +489,19 @@ static int Open(vlc_object_t *this)
     } else {
         sys->params.mfx.CodecId = MFX_CODEC_MPEG2;
         sys->params.mfx.CodecProfile = qsv_params_get_value(profile_mpeg2_text,
-            profile_mpeg2_list, ARRAY_SIZE(profile_mpeg2_list),
+            profile_mpeg2_list, sizeof(profile_mpeg2_list),
             var_InheritString(enc, SOUT_CFG_PREFIX "mpeg2-profile"));
         sys->params.mfx.CodecLevel = qsv_params_get_value(level_mpeg2_text,
-            level_mpeg2_list, ARRAY_SIZE(level_mpeg2_list),
+            level_mpeg2_list, sizeof(level_mpeg2_list),
             var_InheritString(enc, SOUT_CFG_PREFIX "mpeg2-level"));
         msg_Dbg(enc, "Encoder in MPEG2 mode, with profile %d and level %d",
             sys->params.mfx.CodecProfile, sys->params.mfx.CodecLevel);
     }
-    param_out.mfx.CodecId = sys->params.mfx.CodecId;
 
     char *psz_rc = var_InheritString(enc, SOUT_CFG_PREFIX "rc-method");
-    msg_Dbg(enc, "Encoder using '%s' Rate Control method",
-            psz_rc ? psz_rc : rc_method_text[0]);
+    msg_Dbg(enc, "Encoder using '%s' Rate Control method", psz_rc );
     sys->params.mfx.RateControlMethod = qsv_params_get_value(rc_method_text,
-        rc_method_list, ARRAY_SIZE(rc_method_list), psz_rc );
+        rc_method_list, sizeof(rc_method_list), psz_rc );
 
     if (sys->params.mfx.RateControlMethod == MFX_RATECONTROL_CQP) {
         sys->params.mfx.QPI = sys->params.mfx.QPB = sys->params.mfx.QPP =
@@ -526,40 +524,6 @@ static int Open(vlc_object_t *this)
             sys->params.mfx.MaxKbps = var_InheritInteger(enc, SOUT_CFG_PREFIX "bitrate-max");
     }
 
-    sts = MFXVideoENCODE_Query(sys->session, &sys->params, &param_out);
-    if ( sts < MFX_ERR_NONE )
-    {
-        msg_Err(enc, "Unsupported encoding parameters (%d)", sts);
-        goto error;
-    }
-
-    if ( sys->params.mfx.RateControlMethod != param_out.mfx.RateControlMethod )
-    {
-        msg_Err(enc, "Unsupported control method %d got %d", sys->params.mfx.RateControlMethod, param_out.mfx.RateControlMethod);
-        goto error;
-    }
-
-    if (MFXVideoENCODE_Query(sys->session, &sys->params, &sys->params) < 0)
-    {
-        msg_Err(enc, "Error querying encoder params");
-        goto error;
-    }
-
-    /* Request number of surface needed and creating frame pool */
-    if (MFXVideoENCODE_QueryIOSurf(sys->session, &sys->params, &alloc_request)!= MFX_ERR_NONE)
-    {
-        msg_Err(enc, "Failed to query for allocation");
-        goto error;
-    }
-
-    sys->params.ExtParam    = (mfxExtBuffer**)&init_params;
-    sys->params.NumExtParam =
-#if QSV_HAVE_CO2
-            2;
-#else
-            1;
-#endif
-
     /* Initializing MFX_Encoder */
     sts = MFXVideoENCODE_Init(sys->session, &sys->params);
     if (sts == MFX_ERR_NONE)
@@ -573,21 +537,18 @@ static int Open(vlc_object_t *this)
 
     /* Querying PPS/SPS Headers, BufferSizeInKB, ... */
     memset(&headers, 0, sizeof(headers));
+    memset(&nals, 0, sizeof(nals));
     headers.Header.BufferId = MFX_EXTBUFF_CODING_OPTION_SPSPPS;
     headers.Header.BufferSz = sizeof(headers);
-    headers.PPSBufSize      = sizeof(pps_buf);
-    headers.SPSBufSize      = sizeof(sps_buf);
-    headers.SPSBuffer       = sps_buf;
-    headers.PPSBuffer       = pps_buf;
+    headers.SPSBufSize      = headers.PPSBufSize = 64;
+    headers.SPSBuffer       = nals;
+    headers.PPSBuffer       = nals + 64;
     sys->params.ExtParam    = (mfxExtBuffer **)&extended_params;
-    sys->params.NumExtParam =
-#if QSV_HAVE_CO2
-            3;
-#else
-            2;
-#endif
+    sys->params.NumExtParam = 1;
 
     MFXVideoENCODE_GetVideoParam(sys->session, &sys->params);
+    sys->params.NumExtParam = 0;
+    sys->params.ExtParam = NULL;
 
     i_extra = headers.SPSBufSize + headers.PPSBufSize;
     p_extra = malloc(i_extra);
@@ -601,51 +562,42 @@ static int Open(vlc_object_t *this)
     enc->fmt_out.i_extra = i_extra;
 
     sys->async_depth = sys->params.AsyncDepth;
-
-    /* Vlc module configuration */
-    enc->fmt_in.i_codec                = VLC_CODEC_NV12; // Intel Media SDK requirement
-    enc->fmt_in.video.i_chroma         = VLC_CODEC_NV12;
-    enc->fmt_in.video.i_bits_per_pixel = 12;
-    // require aligned pictures on input, a filter may be added before the encoder
-    enc->fmt_in.video.i_width          = sys->params.mfx.FrameInfo.Width;
-    enc->fmt_in.video.i_height         = sys->params.mfx.FrameInfo.Height;
-
-    sys->input_pool = picture_pool_NewFromFormat( &enc->fmt_in.video, 18 );
-    if (sys->input_pool == NULL)
-    {
-        msg_Err(enc, "Failed to create the internal pool");
+    sys->tasks = calloc(sys->async_depth, sizeof(async_task_t));
+    if (unlikely(!sys->tasks))
         goto nomem;
-    }
 
-    static const struct vlc_encoder_operations ops =
-    {
-        .close = Close,
-        .encode_video = Encode,
-    };
-    enc->ops = &ops;
-    enc->p_sys = sys;
+    /* Request number of surface needed and creating frame pool */
+    if (MFXVideoENCODE_QueryIOSurf(sys->session, &sys->params, &alloc_request)!= MFX_ERR_NONE)
+        goto error;
+    if (qsv_frame_pool_Init(&sys->frames, &alloc_request, sys->async_depth) != VLC_SUCCESS)
+        goto nomem;
+    msg_Dbg(enc, "Requested %d surfaces for work", alloc_request.NumFrameSuggested);
+
+    enc->pf_encode_video = Encode;
 
     return VLC_SUCCESS;
 
  error:
-    Close(enc);
+    Close(this);
     return VLC_EGENERIC;
  nomem:
-    Close(enc);
+    Close(this);
     return VLC_ENOMEM;
 }
 
-static void Close(encoder_t *enc)
+static void Close(vlc_object_t *this)
 {
+    encoder_t *enc = (encoder_t *)this;
     encoder_sys_t *sys = enc->p_sys;
 
     MFXVideoENCODE_Close(sys->session);
     MFXClose(sys->session);
     /* if (enc->fmt_out.p_extra) */
     /*     free(enc->fmt_out.p_extra); */
-    assert(vlc_list_is_empty(&sys->packets));
-    if (sys->input_pool)
-        picture_pool_Release(sys->input_pool);
+    if (sys->frames.size)
+        qsv_frame_pool_Destroy(&sys->frames);
+    if (sys->tasks)
+        free(sys->tasks);
     free(sys);
 }
 
@@ -654,7 +606,7 @@ static void Close(encoder_t *enc)
  */
 static void qsv_set_block_flags(block_t *block, uint16_t frame_type)
 {
-    if (frame_type & MFX_FRAMETYPE_IDR)
+    if ((frame_type & MFX_FRAMETYPE_IDR) || (frame_type & MFX_FRAMETYPE_REF))
         block->i_flags = BLOCK_FLAG_TYPE_I;
     else if ((frame_type & MFX_FRAMETYPE_P) || (frame_type & MFX_FRAMETYPE_I))
         block->i_flags = BLOCK_FLAG_TYPE_P;
@@ -669,8 +621,8 @@ static void qsv_set_block_flags(block_t *block, uint16_t frame_type)
  */
 static void qsv_set_block_ts(encoder_t *enc, encoder_sys_t *sys, block_t *block, mfxBitstream *bs)
 {
-    block->i_pts = FROM_SCALE_NZ(bs->TimeStamp) + sys->offset_pts;
-    block->i_dts = FROM_SCALE_NZ(bs->DecodeTimeStamp) + sys->offset_pts;
+    block->i_pts = qsv_timestamp_to_mtime(bs->TimeStamp) + sys->offset_pts;
+    block->i_dts = qsv_timestamp_to_mtime(bs->DecodeTimeStamp) + sys->offset_pts;
 
     /* HW encoder (with old driver versions) and some parameters
        combinations doesn't set the DecodeTimeStamp field so we warn
@@ -685,20 +637,11 @@ static void qsv_set_block_ts(encoder_t *enc, encoder_sys_t *sys, block_t *block,
 static block_t *qsv_synchronize_block(encoder_t *enc, async_task_t *task)
 {
     encoder_sys_t *sys = enc->p_sys;
-    mfxStatus sts;
 
     /* Synchronize and fill block_t. If the SyncOperation fails we leak :-/ (or we can segfault, ur choice) */
-    do {
-        sts = MFXVideoCORE_SyncOperation(sys->session, *task->syncp, QSV_SYNCPOINT_WAIT);
-    } while (sts == MFX_WRN_IN_EXECUTION);
-    if (sts != MFX_ERR_NONE) {
-        msg_Err(enc, "SyncOperation failed (%d), outputting garbage data. "
-                "Updating your drivers and/or changing the encoding settings might resolve this", sts);
-        return NULL;
-    }
-    if (task->bs.DataLength == 0)
-    {
-        msg_Dbg(enc, "Empty encoded block");
+    if (MFXVideoCORE_SyncOperation(sys->session, task->syncp, QSV_SYNCPOINT_WAIT) != MFX_ERR_NONE) {
+        msg_Err(enc, "SyncOperation failed, outputting garbage data. "
+                "Updating your drivers and/or changing the encoding settings might resolve this");
         return NULL;
     }
     block_t *block = task->block;
@@ -709,75 +652,27 @@ static block_t *qsv_synchronize_block(encoder_t *enc, async_task_t *task)
     qsv_set_block_flags(block, task->bs.FrameType);
 
     /* msg_Dbg(enc, "block->i_pts = %lld, block->i_dts = %lld", block->i_pts, block->i_dts); */
-    /* msg_Dbg(enc, "FrameType = %#.4x, TimeStamp = %lld (pts %lld), DecodeTimeStamp = %lld syncp=0x%x",*/
-    /*         task->bs.FrameType, task->bs.TimeStamp, block->i_pts, task->bs.DecodeTimeStamp, *task->syncp); */
+    /* msg_Dbg(enc, "FrameType = %#.4x, TimeStamp (pts) = %lld, DecodeTimeStamp = %lld", */
+    /*         task->bs.FrameType, task->bs.TimeStamp, task->bs.DecodeTimeStamp); */
 
     /* Copied from x264.c: This isn't really valid for streams with B-frames */
-    block->i_length = vlc_tick_from_samples( enc->fmt_in.video.i_frame_rate_base,
-                                             enc->fmt_in.video.i_frame_rate );
+    block->i_length = CLOCK_FREQ *
+        enc->fmt_in.video.i_frame_rate_base /
+        enc->fmt_in.video.i_frame_rate;
 
     // Buggy DTS (value comes from experiments)
     if (task->bs.DecodeTimeStamp < -10000)
         block->i_dts = sys->last_dts + block->i_length;
     sys->last_dts = block->i_dts;
-
-    task->bs.DataLength = task->bs.DataOffset = 0;
     return block;
 }
 
-static int submit_frame(encoder_t *enc, picture_t *pic, QSVFrame **new_frame)
+static void qsv_queue_encode_picture(encoder_t *enc, async_task_t *task,
+                                     picture_t *pic)
 {
     encoder_sys_t *sys = enc->p_sys;
-    QSVFrame *qf = NULL;
-    int ret = get_free_frame(sys, &qf);
-    if (ret != VLC_SUCCESS) {
-        msg_Warn(enc, "Unable to find an unlocked surface in the pool");
-        return ret;
-    }
-
-    qf->pic = picture_pool_Get( sys->input_pool );
-    if (unlikely(!qf->pic))
-    {
-        msg_Warn(enc, "Unable to find an unlocked surface in the pool");
-        qf->used = 0;
-        return ret;
-    }
-    picture_Copy( qf->pic, pic );
-
-    assert(qf->pic->p[0].p_pixels + (qf->pic->p[0].i_pitch * qf->pic->p[0].i_lines) == qf->pic->p[1].p_pixels);
-
-    qf->surface.Info = sys->params.mfx.FrameInfo;
-
-    // Specify picture structure at runtime.
-    if (pic->b_progressive)
-        qf->surface.Info.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
-    else if (pic->b_top_field_first)
-        qf->surface.Info.PicStruct = MFX_PICSTRUCT_FIELD_TFF;
-    else
-        qf->surface.Info.PicStruct = MFX_PICSTRUCT_FIELD_BFF;
-
-    //qf->surface.Data.Pitch = vlc_align(qf->surface.Info.Width, 16);
-
-    qf->surface.Data.PitchLow  = qf->pic->p[0].i_pitch;
-    qf->surface.Data.Y         = qf->pic->p[0].p_pixels;
-    qf->surface.Data.UV        = qf->pic->p[1].p_pixels;
-
-    qf->surface.Data.TimeStamp = TO_SCALE_NZ(pic->date - sys->offset_pts);
-
-    *new_frame = qf;
-
-    return VLC_SUCCESS;
-}
-
-static async_task_t *encode_frame(encoder_t *enc, picture_t *pic)
-{
-    encoder_sys_t *sys = enc->p_sys;
-    mfxStatus sts = MFX_ERR_MEMORY_ALLOC;
-    QSVFrame *qsv_frame = NULL;
-    mfxFrameSurface1 *surf = NULL;
-    async_task_t *task = calloc(1, sizeof(*task));
-    if (unlikely(task == NULL))
-        goto done;
+    mfxStatus sts;
+    mfxFrameSurface1 *frame = NULL;
 
     if (pic) {
         /* To avoid qsv -> vlc timestamp conversion overflow, we use timestamp relative
@@ -786,39 +681,29 @@ static async_task_t *encode_frame(encoder_t *enc, picture_t *pic)
         if (!sys->offset_pts) // First frame
             sys->offset_pts = pic->date;
 
-        if (submit_frame(enc, pic, &qsv_frame) != VLC_SUCCESS)
-        {
+        frame = qsv_frame_pool_Get(sys, pic);
+        if (!frame) {
             msg_Warn(enc, "Unable to find an unlocked surface in the pool");
-            goto done;
+            return;
         }
-    }
-
-    if (!(task->syncp = calloc(1, sizeof(*task->syncp)))) {
-        msg_Err(enc, "Unable to allocate syncpoint for encoder output");
-        goto done;
     }
 
     /* Allocate block_t and prepare mfxBitstream for encoder */
     if (!(task->block = block_Alloc(sys->params.mfx.BufferSizeInKB * 1000))) {
         msg_Err(enc, "Unable to allocate block for encoder output");
-        goto done;
+        return;
     }
     memset(&task->bs, 0, sizeof(task->bs));
-    task->bs.MaxLength = task->block->i_buffer;
+    task->bs.MaxLength = sys->params.mfx.BufferSizeInKB * 1000;
     task->bs.Data = task->block->p_buffer;
 
-    if (qsv_frame) {
-        surf = &qsv_frame->surface;
-    }
-
     for (;;) {
-        sts = MFXVideoENCODE_EncodeFrameAsync(sys->session, 0, surf, &task->bs, task->syncp);
-        if (sts != MFX_WRN_DEVICE_BUSY && sts != MFX_WRN_IN_EXECUTION)
+        sts = MFXVideoENCODE_EncodeFrameAsync(sys->session, 0, frame, &task->bs, &task->syncp);
+        if (sts != MFX_WRN_DEVICE_BUSY)
             break;
         if (sys->busy_warn_counter++ % 16 == 0)
-            msg_Dbg(enc, "Device is busy, let's wait and retry %d", sts);
-        if (sts == MFX_WRN_DEVICE_BUSY)
-            vlc_tick_sleep(QSV_BUSYWAIT_TIME);
+            msg_Dbg(enc, "Device is busy, let's wait and retry");
+        msleep(QSV_BUSYWAIT_TIME);
     }
 
     // msg_Dbg(enc, "Encode async status: %d, Syncpoint = %tx", sts, (ptrdiff_t)task->syncp);
@@ -832,15 +717,6 @@ static async_task_t *encode_frame(encoder_t *enc, picture_t *pic)
         msg_Err(enc, "Encoder not ready or error (%d), trying a reset...", sts);
         MFXVideoENCODE_Reset(sys->session, &sys->params);
     }
-
-done:
-    if (sts < MFX_ERR_NONE || (task != NULL && !task->syncp)) {
-        if (task->block != NULL)
-            block_Release(task->block);
-        free(task);
-        task = NULL;
-    }
-    return task;
 }
 
 /*
@@ -854,30 +730,32 @@ static block_t *Encode(encoder_t *this, picture_t *pic)
 {
     encoder_t     *enc = (encoder_t *)this;
     encoder_sys_t *sys = enc->p_sys;
-    async_task_t     *task;
+    async_task_t  *task = NULL;
     block_t       *block = NULL;
 
-    if (likely(pic != NULL))
-    {
-        task = encode_frame( enc, pic );
-        if (likely(task != NULL))
-            vlc_list_append(&sys->packets, &task->fifo);
-    }
+    if (pic) {
+        /* Finds an available SyncPoint */
+        for (size_t i = 0; i < sys->async_depth; i++)
+            if ((sys->tasks + (i + sys->first_task) % sys->async_depth)->syncp == 0) {
+                task = sys->tasks + (i + sys->first_task) % sys->async_depth;
+                break;
+            }
+    } else
+        /* If !pic, we are emptying encoder and tasks, so we force the SyncOperation */
+        msg_Dbg(enc, "Emptying encoder");
 
-    size_t fifo_count = 0;
-    vlc_list_foreach( task, &sys->packets, fifo )
-        fifo_count++;
+    /* There is no available task, we need to synchronize */
+    if (!task) {
+        task = sys->tasks + sys->first_task;
 
-    if ( fifo_count == (sys->async_depth + 1) ||
-         (!pic && fifo_count))
-    {
-        task = vlc_list_first_entry_or_null(&sys->packets, async_task_t, fifo);
-        assert(task->syncp != 0);
-        vlc_list_remove(&task->fifo);
         block = qsv_synchronize_block( enc, task );
-        free(task->syncp);
-        free(task);
+
+        /* Reset the task now it has been synchronized and advances first_task pointer */
+        task->syncp = 0;
+        sys->first_task = (sys->first_task + 1) % sys->async_depth;
     }
+
+    qsv_queue_encode_picture( enc, task, pic );
 
     return block;
 }

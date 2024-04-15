@@ -30,6 +30,11 @@ DASHStream::DASHStream(demux_t *demux)
 {
 }
 
+block_t * DASHStream::checkBlock(block_t *p_block, bool)
+{
+    return p_block;
+}
+
 AbstractDemuxer *DASHStream::newDemux(vlc_object_t *p_obj, const StreamFormat &format,
                                       es_out_t *out, AbstractSourceStream *source) const
 {
@@ -42,7 +47,7 @@ AbstractDemuxer *DASHStream::newDemux(vlc_object_t *p_obj, const StreamFormat &f
             break;
 
         case StreamFormat::Type::WebM:
-            ret = new Demuxer(p_obj, "mkv_trusted", out, source);
+            ret = new Demuxer(p_obj, "mkv", out, source);
             break;
 
         case StreamFormat::Type::WebVTT:

@@ -23,14 +23,12 @@ aribb24: aribb24-$(ARIBB24_VERSION).tar.gz .sum-aribb24
 	$(call pkg_static,"src/aribb24.pc.in")
 	$(MOVE)
 
-DEPS_aribb24 = png $(DEPS_png)
+DEPS_aribb24 = png
 
 .aribb24: aribb24
 	$(REQUIRE_GPL)
 	$(REQUIRE_GNUV3)
 	cd $< && $(SHELL) ./bootstrap
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF)
+	cd $< && $(MAKE) && $(MAKE) install
 	touch $@

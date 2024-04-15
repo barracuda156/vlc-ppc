@@ -2,6 +2,7 @@
  * matroska_segment.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id: ada76dca0d1d1be21adbaa6adbeb44d98a95fd14 $
  *
  * Authors: Filip Roséen <filip@videolabs.io>
  *
@@ -29,8 +30,6 @@
 #include <vector>
 #include <map>
 #include <limits>
-
-namespace mkv {
 
 class matroska_segment_c;
 
@@ -125,7 +124,5 @@ class SegmentSeeker
         cluster_positions_t _cluster_positions;
         cluster_map_t       _clusters;
 };
-
-} // namespace
 
 #endif /* include-guard */

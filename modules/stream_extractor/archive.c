@@ -2,6 +2,7 @@
  * archive.c: libarchive based stream filter
  *****************************************************************************
  * Copyright (C) 2016 VLC authors and VideoLAN
+ * $Id: af69a29094c5c07eb42945959d4fd36669954937 $
  *
  * Authors: Filip Roséen <filip@atch.se>
  *
@@ -47,6 +48,7 @@ static  int DirectoryOpen( vlc_object_t* );
 static void DirectoryClose( vlc_object_t* );
 
 vlc_module_begin()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_STREAM_FILTER )
     set_capability( "stream_directory", 99 )
     set_description( N_( "libarchive based stream directory" ) )
@@ -129,7 +131,7 @@ static int libarchive_jump_cb( libarchive_t* p_arc, void* p_obj_current,
 
 
 static la_int64_t libarchive_skip_cb( libarchive_t* p_arc, void* p_obj,
-                                      la_int64_t i_request )
+  off_t i_request )
 {
     VLC_UNUSED( p_arc );
 
@@ -362,7 +364,7 @@ static int archive_seek_subentry( private_sys_t* p_sys, char const* psz_subentry
         case ARCHIVE_WARN:
             msg_Warn( p_sys->p_obj,
               "libarchive: %s", archive_error_string( p_arc ) );
-            /* fall through */
+
         case ARCHIVE_EOF:
         case ARCHIVE_FATAL:
         case ARCHIVE_RETRY:
@@ -452,10 +454,7 @@ static int probe( stream_t* source )
     } const magicbytes[] = {
         /* keep heaviest at top */
         { 257, 5, "ustar" },              //TAR
-#if ARCHIVE_VERSION_NUMBER >= 3004000
-        { 0,   8, "Rar!\x1A\x07\x01" },   //RAR5.0
-#endif
-        { 0,   7, "Rar!\x1A\x07" },       //RAR4.x
+        { 0,   7, "Rar!\x1A\x07" },       //RAR
         { 0,   6, "7z\xBC\xAF\x27\x1C" }, //7z
         { 0,   4, "xar!" },               //XAR
         { 0,   4, "PK\x03\x04" },         //ZIP
@@ -546,22 +545,11 @@ static int ReadDir( stream_directory_t* p_directory, input_item_node_t* p_node )
         if( unlikely( !mrl ) )
             break;
 
-        input_item_t *p_item;
         if( vlc_readdir_helper_additem( &rdh, mrl, path, NULL, ITEM_TYPE_FILE,
-                                        ITEM_LOCAL, &p_item ) )
+                                        ITEM_LOCAL ) )
         {
             free( mrl );
             break;
-        }
-        if ( p_item )
-        {
-            time_t mtime = archive_entry_mtime( entry );
-            if( mtime >= 0 )
-                input_item_AddStat( p_item, "mtime", mtime );
-
-            int64_t size = archive_entry_size( entry );
-            if( size >= 0 )
-                input_item_AddStat( p_item, "size", size );
         }
         free( mrl );
 
@@ -656,11 +644,12 @@ static int Seek( stream_extractor_t* p_extractor, uint64_t i_req )
             "intrinsic seek failed: '%s' (falling back to dumb seek)",
             archive_error_string( p_sys->p_archive ) );
 
-        uint64_t i_skip = i_req - p_sys->i_offset;
+        uint64_t i_offset = p_sys->i_offset;
+        uint64_t i_skip   = i_req - i_offset;
 
-        /* RECREATE LIBARCHIVE HANDLE IF WE ARE SEEKING BACKWARDS */
+        /* RECREATE LIBARCHIE HANDLE IF WE ARE SEEKING BACKWARDS */
 
-        if( i_req < p_sys->i_offset )
+        if( i_req < i_offset )
         {
             if( archive_extractor_reset( p_extractor ) )
             {
@@ -669,6 +658,7 @@ static int Seek( stream_extractor_t* p_extractor, uint64_t i_req )
             }
 
             i_skip = i_req;
+            i_offset = 0;
         }
 
         if( archive_skip_decompressed( p_extractor, i_skip ) )

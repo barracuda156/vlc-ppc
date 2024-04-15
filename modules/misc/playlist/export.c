@@ -2,6 +2,7 @@
  * export.c :  Playlist export module
  *****************************************************************************
  * Copyright (C) 2004-2009 the VideoLAN team
+ * $Id: 2aa57f0b7a9c85355f5344b7a0fa1d7447b0d6a1 $
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *
@@ -44,29 +45,30 @@ int xspf_export_playlist( vlc_object_t *p_intf );
  *****************************************************************************/
 vlc_module_begin ()
 
+    set_category( CAT_PLAYLIST )
     set_subcategory( SUBCAT_PLAYLIST_EXPORT )
     add_submodule ()
         set_description( N_("M3U playlist export") )
         add_shortcut( "export-m3u" )
         set_capability( "playlist export" , 0 )
-        set_callback( Export_M3U  )
+        set_callbacks( Export_M3U , NULL )
 
     add_submodule ()
         set_description( N_("M3U8 playlist export") )
         add_shortcut( "export-m3u8" )
         set_capability( "playlist export" , 0 )
-        set_callback( Export_M3U8 )
+        set_callbacks( Export_M3U8, NULL )
 
     add_submodule ()
         set_description( N_("XSPF playlist export") )
         add_shortcut( "export-xspf" )
         set_capability( "playlist export" , 0 )
-        set_callback( xspf_export_playlist  )
+        set_callbacks( xspf_export_playlist , NULL )
 
     add_submodule ()
         set_description( N_("HTML playlist export") )
         add_shortcut( "export-html" )
         set_capability( "playlist export", 0 )
-        set_callback( Export_HTML )
+        set_callbacks( Export_HTML, NULL )
 
 vlc_module_end ()

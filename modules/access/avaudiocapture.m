@@ -85,7 +85,7 @@ typedef struct demux_sys_t
         p_avcapture = p_demux;
 
         date_Init(&date, 44100, 1);
-        date_Set(&date, VLC_TICK_0);
+        date_Set(&date, 0);
     }
     return self;
 }
@@ -160,8 +160,8 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
             return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t *) =
-            VLC_TICK_FROM_MS(var_InheritInteger(p_demux, "live-caching"));
+            *va_arg(args, int64_t *) =
+            INT64_C(1000) * var_InheritInteger(p_demux, "live-caching");
             return VLC_SUCCESS;
 
         default:
@@ -340,8 +340,9 @@ static void Close(vlc_object_t *p_this)
 vlc_module_begin ()
 set_shortname(N_("AVFoundation Audio Capture"))
 set_description(N_("AVFoundation audio capture module."))
+set_category(CAT_INPUT)
 set_subcategory(SUBCAT_INPUT_ACCESS)
 add_shortcut("qtsound")
-set_capability("access", 0)
+set_capability("access_demux", 0)
 set_callbacks(Open, Close)
 vlc_module_end ()

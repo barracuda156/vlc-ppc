@@ -22,7 +22,6 @@
 #endif
 
 #include <assert.h>
-#include <stdatomic.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -31,7 +30,8 @@
 #include <vlc_meta.h>
 #include <vlc_url.h>
 
-#include <vlc_player.h>
+#include <vlc/vlc.h>
+#include <vlc_input.h>
 #include <vlc_fingerprinter.h>
 #include "webservices/acoustid.h"
 #include "../stream_out/chromaprint_data.h"
@@ -43,10 +43,6 @@
 struct fingerprinter_sys_t
 {
     vlc_thread_t thread;
-    vlc_player_t *player;
-    vlc_player_listener_id *listener_id;
-
-    atomic_bool abort;
 
     struct
     {
@@ -54,11 +50,10 @@ struct fingerprinter_sys_t
         vlc_mutex_t         lock;
     } incoming, results;
 
-    vlc_cond_t              incoming_cond;
-
     struct
     {
         vlc_array_t         queue;
+        vlc_mutex_t         lock;
         vlc_cond_t          cond;
         bool                b_working;
     } processing;
@@ -73,6 +68,7 @@ static void *Run(void *);
  * Module descriptor
  ****************************************************************************/
 vlc_module_begin ()
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_shortname(N_("acoustid"))
     set_description(N_("Track fingerprinter (based on Acoustid)"))
@@ -89,13 +85,14 @@ static int EnqueueRequest( fingerprinter_thread_t *f, fingerprint_request_t *r )
     fingerprinter_sys_t *p_sys = f->p_sys;
     vlc_mutex_lock( &p_sys->incoming.lock );
     int i_ret = vlc_array_append( &p_sys->incoming.queue, r );
-    vlc_cond_signal( &p_sys->incoming_cond );
     vlc_mutex_unlock( &p_sys->incoming.lock );
     return i_ret;
 }
 
 static void QueueIncomingRequests( fingerprinter_sys_t *p_sys )
 {
+    vlc_mutex_lock( &p_sys->incoming.lock );
+
     for( size_t i = vlc_array_count( &p_sys->incoming.queue ); i > 0 ; i-- )
     {
         fingerprint_request_t *r = vlc_array_item_at_index( &p_sys->incoming.queue, i - 1 );
@@ -103,6 +100,7 @@ static void QueueIncomingRequests( fingerprinter_sys_t *p_sys )
             fingerprint_request_Delete( r );
     }
     vlc_array_clear( &p_sys->incoming.queue );
+    vlc_mutex_unlock(&p_sys->incoming.lock);
 }
 
 static fingerprint_request_t * GetResult( fingerprinter_thread_t *f )
@@ -131,17 +129,25 @@ static void ApplyResult( fingerprint_request_t *p_r, size_t i_resultid )
     vlc_mutex_unlock( &p_item->lock );
 }
 
-static void player_on_state_changed(vlc_player_t *player,
-                                    enum vlc_player_state new_state,
-                                    void *p_user_data)
+static int InputEventHandler( vlc_object_t *p_this, char const *psz_cmd,
+                              vlc_value_t oldval, vlc_value_t newval,
+                              void *p_data )
 {
-    VLC_UNUSED(player);
-    fingerprinter_sys_t *p_sys = p_user_data;
-    if (new_state == VLC_PLAYER_STATE_STOPPED)
+    VLC_UNUSED( psz_cmd );
+    VLC_UNUSED( oldval );
+    input_thread_t *p_input = (input_thread_t *) p_this;
+    fingerprinter_sys_t *p_sys = (fingerprinter_sys_t *) p_data;
+    if( newval.i_int == INPUT_EVENT_STATE )
     {
-        p_sys->processing.b_working = false;
-        vlc_cond_signal( &p_sys->processing.cond );
+        if( var_GetInteger( p_input, "state" ) >= PAUSE_S )
+        {
+            vlc_mutex_lock( &p_sys->processing.lock );
+            p_sys->processing.b_working = false;
+            vlc_cond_signal( &p_sys->processing.cond );
+            vlc_mutex_unlock( &p_sys->processing.lock );
+        }
     }
+    return VLC_SUCCESS;
 }
 
 static void DoFingerprint( fingerprinter_thread_t *p_fingerprinter,
@@ -166,6 +172,8 @@ static void DoFingerprint( fingerprinter_thread_t *p_fingerprinter,
 
     input_item_AddOption( p_item, psz_sout_option, VLC_INPUT_OPTION_TRUSTED );
     free( psz_sout_option );
+    input_item_AddOption( p_item, "vout=dummy", VLC_INPUT_OPTION_TRUSTED );
+    input_item_AddOption( p_item, "aout=dummy", VLC_INPUT_OPTION_TRUSTED );
     if ( fp->i_duration )
     {
         if ( asprintf( &psz_sout_option, "stop-time=%u", fp->i_duration ) == -1 )
@@ -178,36 +186,43 @@ static void DoFingerprint( fingerprinter_thread_t *p_fingerprinter,
     }
     input_item_SetURI( p_item, psz_uri ) ;
 
+    input_thread_t *p_input = input_Create( p_fingerprinter, p_item, "fingerprinter", NULL, NULL );
+    input_item_Release( p_item );
+
+    if( p_input == NULL )
+        return;
+
     chromaprint_fingerprint_t chroma_fingerprint;
 
     chroma_fingerprint.psz_fingerprint = NULL;
     chroma_fingerprint.i_duration = fp->i_duration;
 
-    var_Create( p_fingerprinter, "fingerprint-data", VLC_VAR_ADDRESS );
-    var_SetAddress( p_fingerprinter, "fingerprint-data", &chroma_fingerprint );
+    var_Create( p_input, "fingerprint-data", VLC_VAR_ADDRESS );
+    var_SetAddress( p_input, "fingerprint-data", &chroma_fingerprint );
 
-    vlc_player_t *player = p_fingerprinter->p_sys->player;
-    vlc_player_Lock(player);
+    var_AddCallback( p_input, "intf-event", InputEventHandler, p_fingerprinter->p_sys );
 
-    p_fingerprinter->p_sys->processing.b_working = true;
-
-    int ret = vlc_player_SetCurrentMedia(player, p_item);
-    if (ret == VLC_SUCCESS)
-        ret = vlc_player_Start(player);
-    input_item_Release(p_item);
-
-    if (ret == VLC_SUCCESS)
+    if( input_Start( p_input ) != VLC_SUCCESS )
     {
+        var_DelCallback( p_input, "intf-event", InputEventHandler, p_fingerprinter->p_sys );
+        input_Close( p_input );
+    }
+    else
+    {
+        p_fingerprinter->p_sys->processing.b_working = true;
         while( p_fingerprinter->p_sys->processing.b_working )
-            vlc_player_CondWait(player,
-                                &p_fingerprinter->p_sys->processing.cond);
+        {
+            vlc_cond_wait( &p_fingerprinter->p_sys->processing.cond,
+                           &p_fingerprinter->p_sys->processing.lock );
+        }
+        var_DelCallback( p_input, "intf-event", InputEventHandler, p_fingerprinter->p_sys );
+        input_Stop( p_input );
+        input_Close( p_input );
 
         fp->psz_fingerprint = chroma_fingerprint.psz_fingerprint;
         if( !fp->i_duration ) /* had not given hint */
             fp->i_duration = chroma_fingerprint.i_duration;
     }
-
-    vlc_player_Unlock(player);
 }
 
 /*****************************************************************************
@@ -223,39 +238,11 @@ static int Open(vlc_object_t *p_this)
 
     p_fingerprinter->p_sys = p_sys;
 
-    var_Create(p_fingerprinter, "vout", VLC_VAR_STRING);
-    var_SetString(p_fingerprinter, "vout", "dummy");
-    var_Create(p_fingerprinter, "aout", VLC_VAR_STRING);
-    var_SetString(p_fingerprinter, "aout", "dummy");
-    p_sys->player = vlc_player_New(VLC_OBJECT(p_fingerprinter),
-                                   VLC_PLAYER_LOCK_NORMAL, NULL, NULL );
-    if (!p_sys->player)
-    {
-        free(p_sys);
-        return VLC_ENOMEM;
-    }
-
-    static const struct vlc_player_cbs cbs = {
-        .on_state_changed = player_on_state_changed,
-    };
-
-    vlc_player_Lock(p_sys->player);
-    p_sys->listener_id =
-        vlc_player_AddListener(p_sys->player, &cbs, p_fingerprinter->p_sys);
-    vlc_player_Unlock(p_sys->player);
-    if (!p_sys->listener_id)
-    {
-        vlc_player_Delete(p_sys->player);
-        free(p_sys);
-        return VLC_ENOMEM;
-    }
-
-    atomic_init( &p_sys->abort, false );
     vlc_array_init( &p_sys->incoming.queue );
     vlc_mutex_init( &p_sys->incoming.lock );
-    vlc_cond_init( &p_sys->incoming_cond );
 
     vlc_array_init( &p_sys->processing.queue );
+    vlc_mutex_init( &p_sys->processing.lock );
     vlc_cond_init( &p_sys->processing.cond );
 
     vlc_array_init( &p_sys->results.queue );
@@ -266,7 +253,8 @@ static int Open(vlc_object_t *p_this)
     p_fingerprinter->pf_apply = ApplyResult;
 
     var_Create( p_fingerprinter, "results-available", VLC_VAR_BOOL );
-    if( vlc_clone( &p_sys->thread, Run, p_fingerprinter ) )
+    if( vlc_clone( &p_sys->thread, Run, p_fingerprinter,
+                   VLC_THREAD_PRIORITY_LOW ) )
     {
         msg_Err( p_fingerprinter, "cannot spawn fingerprinter thread" );
         goto error;
@@ -288,10 +276,7 @@ static void Close(vlc_object_t *p_this)
     fingerprinter_thread_t   *p_fingerprinter = (fingerprinter_thread_t*) p_this;
     fingerprinter_sys_t *p_sys = p_fingerprinter->p_sys;
 
-    vlc_mutex_lock( &p_sys->incoming.lock );
-    atomic_store_explicit( &p_sys->abort, true, memory_order_relaxed );
-    vlc_cond_signal( &p_sys->incoming_cond );
-    vlc_mutex_unlock( &p_sys->incoming.lock );
+    vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
 
     CleanSys( p_sys );
@@ -303,19 +288,18 @@ static void CleanSys( fingerprinter_sys_t *p_sys )
     for ( size_t i = 0; i < vlc_array_count( &p_sys->incoming.queue ); i++ )
         fingerprint_request_Delete( vlc_array_item_at_index( &p_sys->incoming.queue, i ) );
     vlc_array_clear( &p_sys->incoming.queue );
+    vlc_mutex_destroy( &p_sys->incoming.lock );
 
     for ( size_t i = 0; i < vlc_array_count( &p_sys->processing.queue ); i++ )
         fingerprint_request_Delete( vlc_array_item_at_index( &p_sys->processing.queue, i ) );
     vlc_array_clear( &p_sys->processing.queue );
+    vlc_mutex_destroy( &p_sys->processing.lock );
+    vlc_cond_destroy( &p_sys->processing.cond );
 
     for ( size_t i = 0; i < vlc_array_count( &p_sys->results.queue ); i++ )
         fingerprint_request_Delete( vlc_array_item_at_index( &p_sys->results.queue, i ) );
     vlc_array_clear( &p_sys->results.queue );
-
-    vlc_player_Lock(p_sys->player);
-    vlc_player_RemoveListener(p_sys->player, p_sys->listener_id);
-    vlc_player_Unlock(p_sys->player);
-    vlc_player_Delete(p_sys->player);
+    vlc_mutex_destroy( &p_sys->results.lock );
 }
 
 static void fill_metas_with_results( fingerprint_request_t *p_r, acoustid_fingerprint_t *p_f )
@@ -344,40 +328,33 @@ static void fill_metas_with_results( fingerprint_request_t *p_r, acoustid_finger
  *****************************************************************************/
 static void *Run( void *opaque )
 {
-    vlc_thread_set_name("vlc-fingerprint");
-
     fingerprinter_thread_t *p_fingerprinter = opaque;
     fingerprinter_sys_t *p_sys = p_fingerprinter->p_sys;
+
+    vlc_mutex_lock( &p_sys->processing.lock );
+    mutex_cleanup_push( &p_sys->processing.lock );
 
     /* main loop */
     for (;;)
     {
-        vlc_mutex_lock( &p_sys->incoming.lock );
-
-        while( vlc_array_count( &p_sys->incoming.queue ) == 0 )
-        {
-            if( atomic_load_explicit( &p_sys->abort, memory_order_relaxed ) )
-            {
-                vlc_mutex_unlock( &p_sys->incoming.lock );
-                return NULL;
-            }
-            vlc_cond_wait( &p_sys->incoming_cond, &p_sys->incoming.lock );
-        }
+        msleep( CLOCK_FREQ );
 
         QueueIncomingRequests( p_sys );
 
-        vlc_mutex_unlock( &p_sys->incoming.lock );
+        vlc_testcancel();
 
         bool results_available = false;
         while( vlc_array_count( &p_sys->processing.queue ) )
         {
+            int canc = vlc_savecancel();
             fingerprint_request_t *p_data = vlc_array_item_at_index( &p_sys->processing.queue, 0 );
 
             char *psz_uri = input_item_GetURI( p_data->p_item );
             if ( psz_uri != NULL )
             {
-                 acoustid_fingerprint_t acoustid_print = {0};
+                 acoustid_fingerprint_t acoustid_print;
 
+                 memset( &acoustid_print , 0, sizeof (acoustid_print) );
                 /* overwrite with hint, as in this case, fingerprint's session will be truncated */
                 if ( p_data->i_duration )
                      acoustid_print.i_duration = p_data->i_duration;
@@ -396,6 +373,7 @@ static void *Run( void *opaque )
                     free( acoustid_print.results.p_results );
                 free( acoustid_print.psz_fingerprint );
             }
+            vlc_restorecancel(canc);
 
             /* copy results */
             vlc_mutex_lock( &p_sys->results.lock );
@@ -410,8 +388,7 @@ static void *Run( void *opaque )
             // cancellation, so remove it immediately
             vlc_array_remove( &p_sys->processing.queue, 0 );
 
-            if( atomic_load_explicit( &p_sys->abort, memory_order_relaxed ) )
-                return NULL;
+            vlc_testcancel();
         }
 
         if ( results_available )
@@ -420,5 +397,6 @@ static void *Run( void *opaque )
         }
     }
 
+    vlc_cleanup_pop();
     vlc_assert_unreachable();
 }

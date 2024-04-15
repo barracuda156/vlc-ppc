@@ -46,7 +46,7 @@
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
-typedef struct
+struct decoder_sys_t
 {
     dca_state_t     *p_libdca; /* libdca internal structure */
     bool            b_dynrng; /* see below */
@@ -56,7 +56,7 @@ typedef struct
 
     uint8_t         pi_chan_table[AOUT_CHAN_MAX]; /* channel reordering */
     bool            b_synced;
-} decoder_sys_t;
+};
 
 #define DYNRNG_TEXT N_("DTS dynamic range compression")
 #define DYNRNG_LONGTEXT N_( \
@@ -67,10 +67,11 @@ typedef struct
     "listening room.")
 
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
     set_shortname( "DCA" )
     set_description( N_("DTS Coherent Acoustics audio decoder") )
-    add_bool( "dts-dynrng", true, DYNRNG_TEXT, DYNRNG_LONGTEXT )
+    add_bool( "dts-dynrng", true, DYNRNG_TEXT, DYNRNG_LONGTEXT, false )
     set_capability( "audio decoder", 60 )
     set_callbacks( Open, Close )
 vlc_module_end ()
@@ -250,11 +251,11 @@ static int Open( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_DTS
-     || p_dec->fmt_in->audio.i_rate == 0
-     || p_dec->fmt_in->audio.i_physical_channels == 0
-     || p_dec->fmt_in->audio.i_bytes_per_frame == 0
-     || p_dec->fmt_in->audio.i_frame_length == 0 )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_DTS
+     || p_dec->fmt_in.audio.i_rate == 0
+     || p_dec->fmt_in.audio.i_physical_channels == 0
+     || p_dec->fmt_in.audio.i_bytes_per_frame == 0
+     || p_dec->fmt_in.audio.i_frame_length == 0 )
         return VLC_EGENERIC;
 
     /* Allocate the memory needed to store the module's structure */
@@ -266,8 +267,8 @@ static int Open( vlc_object_t *p_this )
     p_sys->b_dontwarn = 0;
 
     /* We'll do our own downmixing, thanks. */
-    p_sys->i_nb_channels = aout_FormatNbChannels( &p_dec->fmt_in->audio );
-    if( channels_vlc2dca( &p_dec->fmt_in->audio, &p_sys->i_flags )
+    p_sys->i_nb_channels = aout_FormatNbChannels( &p_dec->fmt_in.audio );
+    if( channels_vlc2dca( &p_dec->fmt_in.audio, &p_sys->i_flags )
         != VLC_SUCCESS )
     {
         msg_Warn( p_this, "unknown sample format!" );
@@ -294,10 +295,10 @@ static int Open( vlc_object_t *p_this )
     };
 
     aout_CheckChannelReorder( pi_channels_in, NULL,
-                              p_dec->fmt_in->audio.i_physical_channels,
+                              p_dec->fmt_in.audio.i_physical_channels,
                               p_sys->pi_chan_table );
 
-    p_dec->fmt_out.audio = p_dec->fmt_in->audio;
+    p_dec->fmt_out.audio = p_dec->fmt_in.audio;
     p_dec->fmt_out.audio.i_format = VLC_CODEC_FL32;
     p_dec->fmt_out.i_codec = p_dec->fmt_out.audio.i_format;
 

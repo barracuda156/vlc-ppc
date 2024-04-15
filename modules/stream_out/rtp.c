@@ -40,7 +40,6 @@
 #include <vlc_url.h>
 #include <vlc_network.h>
 #include <vlc_fs.h>
-#include <vlc_queue.h>
 #include <vlc_rand.h>
 #include <vlc_memstream.h>
 #ifdef HAVE_SRTP
@@ -50,7 +49,6 @@
 #endif
 
 #include "rtp.h"
-#include "sdp_helper.h"
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -103,6 +101,16 @@
 #define DESC_LONGTEXT N_( \
     "This allows you to give a short description with details about the stream, " \
     "that will be announced in the SDP (Session Descriptor)." )
+#define URL_TEXT N_("Session URL")
+#define URL_LONGTEXT N_( \
+    "This allows you to give a URL with more details about the stream " \
+    "(often the website of the streaming organization), that will " \
+    "be announced in the SDP (Session Descriptor)." )
+#define EMAIL_TEXT N_("Session email")
+#define EMAIL_LONGTEXT N_( \
+    "This allows you to give a contact mail address for the stream, that will " \
+    "be announced in the SDP (Session Descriptor)." )
+
 #define PORT_TEXT N_("Port")
 #define PORT_LONGTEXT N_( \
     "This allows you to specify the base port for the RTP streaming." )
@@ -178,60 +186,75 @@ static void Close( vlc_object_t * );
 vlc_module_begin ()
     set_shortname( N_("RTP"))
     set_description( N_("RTP stream output") )
-    set_capability( "sout output", 0 )
-    add_shortcut( "rtp" )
+    set_capability( "sout stream", 0 )
+    add_shortcut( "rtp", "vod" )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_STREAM )
 
     add_string( SOUT_CFG_PREFIX "dst", "", DEST_TEXT,
-                DEST_LONGTEXT )
+                DEST_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "sdp", "", SDP_TEXT,
-                SDP_LONGTEXT )
+                SDP_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "mux", "", MUX_TEXT,
-                MUX_LONGTEXT )
-    add_bool( SOUT_CFG_PREFIX "sap", false, SAP_TEXT, SAP_LONGTEXT )
+                MUX_LONGTEXT, true )
+    add_bool( SOUT_CFG_PREFIX "sap", false, SAP_TEXT, SAP_LONGTEXT,
+              true )
 
     add_string( SOUT_CFG_PREFIX "name", "", NAME_TEXT,
-                NAME_LONGTEXT )
-    add_string( SOUT_CFG_PREFIX "cat", "", CAT_TEXT, CAT_LONGTEXT )
+                NAME_LONGTEXT, true )
+    add_string( SOUT_CFG_PREFIX "cat", "", CAT_TEXT, CAT_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "description", "", DESC_TEXT,
-                DESC_LONGTEXT )
-    add_obsolete_string( SOUT_CFG_PREFIX "url" ) /* since 4.0.0 */
-    add_obsolete_string( SOUT_CFG_PREFIX "email" ) /* since 4.0.0 */
+                DESC_LONGTEXT, true )
+    add_string( SOUT_CFG_PREFIX "url", "", URL_TEXT,
+                URL_LONGTEXT, true )
+    add_string( SOUT_CFG_PREFIX "email", "", EMAIL_TEXT,
+                EMAIL_LONGTEXT, true )
     add_obsolete_string( SOUT_CFG_PREFIX "phone" ) /* since 3.0.0 */
 
     add_string( SOUT_CFG_PREFIX "proto", "udp", PROTO_TEXT,
-                PROTO_LONGTEXT )
+                PROTO_LONGTEXT, false )
         change_string_list( ppsz_protos, ppsz_protocols )
     add_integer( SOUT_CFG_PREFIX "port", 5004, PORT_TEXT,
-                 PORT_LONGTEXT )
+                 PORT_LONGTEXT, true )
     add_integer( SOUT_CFG_PREFIX "port-audio", 0, PORT_AUDIO_TEXT,
-                 PORT_AUDIO_LONGTEXT )
+                 PORT_AUDIO_LONGTEXT, true )
     add_integer( SOUT_CFG_PREFIX "port-video", 0, PORT_VIDEO_TEXT,
-                 PORT_VIDEO_LONGTEXT )
+                 PORT_VIDEO_LONGTEXT, true )
 
     add_integer( SOUT_CFG_PREFIX "ttl", -1, TTL_TEXT,
-                 TTL_LONGTEXT )
+                 TTL_LONGTEXT, true )
     add_bool( SOUT_CFG_PREFIX "rtcp-mux", false,
-              RTCP_MUX_TEXT, RTCP_MUX_LONGTEXT )
-    add_integer( SOUT_CFG_PREFIX "caching", MS_FROM_VLC_TICK(DEFAULT_PTS_DELAY),
-                 CACHING_TEXT, CACHING_LONGTEXT )
-    add_integer( "rtsp-timeout", 60, RTSP_TIMEOUT_TEXT,
-                 RTSP_TIMEOUT_LONGTEXT )
-    add_string( "sout-rtsp-user", "",
-                RTSP_USER_TEXT, RTSP_USER_LONGTEXT )
-    add_password("sout-rtsp-pwd", "", RTSP_PASS_TEXT, RTSP_PASS_LONGTEXT)
+              RTCP_MUX_TEXT, RTCP_MUX_LONGTEXT, false )
+    add_integer( SOUT_CFG_PREFIX "caching", DEFAULT_PTS_DELAY / 1000,
+                 CACHING_TEXT, CACHING_LONGTEXT, true )
 
 #ifdef HAVE_SRTP
     add_string( SOUT_CFG_PREFIX "key", "",
-                SRTP_KEY_TEXT, SRTP_KEY_LONGTEXT )
+                SRTP_KEY_TEXT, SRTP_KEY_LONGTEXT, false )
     add_string( SOUT_CFG_PREFIX "salt", "",
-                SRTP_SALT_TEXT, SRTP_SALT_LONGTEXT )
+                SRTP_SALT_TEXT, SRTP_SALT_LONGTEXT, false )
 #endif
 
     add_bool( SOUT_CFG_PREFIX "mp4a-latm", false, RFC3016_TEXT,
-                 RFC3016_LONGTEXT )
+                 RFC3016_LONGTEXT, false )
 
     set_callbacks( Open, Close )
+
+    add_submodule ()
+    set_shortname( N_("RTSP VoD" ) )
+    set_description( N_("RTSP VoD server") )
+    set_category( CAT_SOUT )
+    set_subcategory( SUBCAT_SOUT_VOD )
+    set_capability( "vod server", 10 )
+    set_callbacks( OpenVoD, CloseVoD )
+    add_shortcut( "rtsp" )
+    add_integer( "rtsp-timeout", 60, RTSP_TIMEOUT_TEXT,
+                 RTSP_TIMEOUT_LONGTEXT, true )
+    add_string( "sout-rtsp-user", "",
+                RTSP_USER_TEXT, RTSP_USER_LONGTEXT, true )
+    add_password( "sout-rtsp-pwd", "",
+                  RTSP_PASS_TEXT, RTSP_PASS_LONGTEXT, true )
+
 vlc_module_end ()
 
 /*****************************************************************************
@@ -239,20 +262,22 @@ vlc_module_end ()
  *****************************************************************************/
 static const char *const ppsz_sout_options[] = {
     "dst", "name", "cat", "port", "port-audio", "port-video", "*sdp", "ttl",
-    "mux", "sap", "description", "proto", "rtcp-mux", "caching",
+    "mux", "sap", "description", "url", "email",
+    "proto", "rtcp-mux", "caching",
 #ifdef HAVE_SRTP
     "key", "salt",
 #endif
     "mp4a-latm", NULL
 };
 
-static void *Add( sout_stream_t *, const es_format_t * );
-static void  Del( sout_stream_t *, void * );
-static int   Send( sout_stream_t *, void *, block_t * );
-
-static void *MuxAdd( sout_stream_t *, const es_format_t * );
-static void  MuxDel( sout_stream_t *, void * );
-static int   MuxSend( sout_stream_t *, void *, block_t * );
+static sout_stream_id_sys_t *Add( sout_stream_t *, const es_format_t * );
+static void              Del ( sout_stream_t *, sout_stream_id_sys_t * );
+static int               Send( sout_stream_t *, sout_stream_id_sys_t *,
+                               block_t* );
+static sout_stream_id_sys_t *MuxAdd( sout_stream_t *, const es_format_t * );
+static void              MuxDel ( sout_stream_t *, sout_stream_id_sys_t * );
+static int               MuxSend( sout_stream_t *, sout_stream_id_sys_t *,
+                                  block_t* );
 
 static sout_access_out_t *GrabberCreate( sout_stream_t *p_sout );
 static void* ThreadSend( void * );
@@ -264,7 +289,10 @@ static int SapSetup( sout_stream_t *p_stream );
 static int FileSetup( sout_stream_t *p_stream );
 static int HttpSetup( sout_stream_t *p_stream, const vlc_url_t * );
 
-typedef struct
+static int64_t rtp_init_ts( const vod_media_t *p_media,
+                            const char *psz_vod_session );
+
+struct sout_stream_sys_t
 {
     /* SDP */
     char    *psz_sdp;
@@ -286,8 +314,8 @@ typedef struct
 
     /* RTSP NPT and timestamp computations */
     vlc_tick_t   i_npt_zero;    /* when NPT=0 packet is sent */
-    vlc_tick_t   i_pts_zero;    /* predicts PTS of NPT=0 packet */
-    vlc_tick_t   i_pts_offset;  /* matches actual PTS to prediction */
+    int64_t      i_pts_zero;    /* predicts PTS of NPT=0 packet */
+    int64_t      i_pts_offset;  /* matches actual PTS to prediction */
     vlc_mutex_t  lock_ts;
 
     /* */
@@ -299,6 +327,10 @@ typedef struct
     bool      rtcp_mux;
     bool      b_latm;
 
+    /* VoD */
+    vod_media_t *p_vod_media;
+    char     *psz_vod_session;
+
     /* in case we do TS/PS over rtp */
     sout_mux_t        *p_mux;
     sout_access_out_t *p_grab;
@@ -308,7 +340,7 @@ typedef struct
     vlc_mutex_t      lock_es;
     int              i_es;
     sout_stream_id_sys_t **es;
-} sout_stream_sys_t;
+};
 
 typedef struct rtp_sink_t
 {
@@ -343,8 +375,6 @@ struct sout_stream_id_sys_t
     /* Packets sinks */
     vlc_thread_t      thread;
     vlc_mutex_t       lock_sink;
-    vlc_queue_t       queue;
-    bool              dead;
     int               sinkc;
     rtp_sink_t       *sinkv;
     rtsp_stream_id_t *rtsp_id;
@@ -353,32 +383,8 @@ struct sout_stream_id_sys_t
         vlc_thread_t  thread;
     } listen;
 
-    vlc_tick_t        i_caching;
-};
-
-static int Control(sout_stream_t *stream, int query, va_list args)
-{
-    (void) stream;
-
-    switch (query)
-    {
-        case SOUT_STREAM_IS_SYNCHRONOUS:
-            *va_arg(args, bool *) = true;
-            break;
-
-        default:
-            return VLC_EGENERIC;
-    }
-
-    return VLC_SUCCESS;
-}
-
-static const struct sout_stream_operations stream_ops = {
-    Add, Del, Send, Control, NULL, NULL,
-};
-
-static const struct sout_stream_operations mux_ops = {
-    MuxAdd, MuxDel, MuxSend, Control, NULL, NULL,
+    block_fifo_t     *p_fifo;
+    int64_t           i_caching;
 };
 
 /*****************************************************************************
@@ -471,7 +477,33 @@ static int Open( vlc_object_t *p_this )
     free (psz);
     var_Create (p_this, "dccp-service", VLC_VAR_STRING);
 
-    if( p_sys->psz_destination == NULL && !b_rtsp )
+    p_sys->p_vod_media = NULL;
+    p_sys->psz_vod_session = NULL;
+
+    if (! strcmp(p_stream->psz_name, "vod"))
+    {
+        /* The VLM stops all instances before deleting a media, so this
+         * reference will remain valid during the lifetime of the rtp
+         * stream output. */
+        p_sys->p_vod_media = var_InheritAddress(p_stream, "vod-media");
+
+        if (p_sys->p_vod_media != NULL)
+        {
+            p_sys->psz_vod_session = var_InheritString(p_stream, "vod-session");
+            if (p_sys->psz_vod_session == NULL)
+            {
+                msg_Err(p_stream, "missing VoD session");
+                free(p_sys);
+                return VLC_EGENERIC;
+            }
+
+            const char *mux = vod_get_mux(p_sys->p_vod_media);
+            var_SetString(p_stream, SOUT_CFG_PREFIX "mux", mux);
+        }
+    }
+
+    if( p_sys->psz_destination == NULL && !b_rtsp
+        && p_sys->p_vod_media == NULL )
     {
         msg_Err( p_stream, "missing destination and not in RTSP mode" );
         free( p_sys );
@@ -489,11 +521,12 @@ static int Open( vlc_object_t *p_this )
 
     /* NPT=0 time will be determined when we packetize the first packet
      * (of any ES). But we want to be able to report rtptime in RTSP
-     * without waiting. So until then,
+     * without waiting (and already did in the VoD case). So until then,
      * we use an arbitrary reference PTS for timestamp computations, and
      * then actual PTS will catch up using offsets. */
     p_sys->i_npt_zero = VLC_TICK_INVALID;
-    p_sys->i_pts_zero = vlc_tick_now();
+    p_sys->i_pts_zero = rtp_init_ts(p_sys->p_vod_media,
+                                    p_sys->psz_vod_session);
     p_sys->i_es = 0;
     p_sys->es   = NULL;
     p_sys->rtsp = NULL;
@@ -522,33 +555,48 @@ static int Open( vlc_object_t *p_this )
         {
             msg_Err( p_stream, "unsupported muxer type for RTP (only TS/PS)" );
             free( psz );
+            vlc_mutex_destroy( &p_sys->lock_sdp );
+            vlc_mutex_destroy( &p_sys->lock_ts );
+            vlc_mutex_destroy( &p_sys->lock_es );
+            free( p_sys->psz_vod_session );
             free( p_sys->psz_destination );
             free( p_sys );
             return VLC_EGENERIC;
         }
 
         p_sys->p_grab = GrabberCreate( p_stream );
-        p_sys->p_mux = sout_MuxNew( p_sys->p_grab, psz );
+        p_sys->p_mux = sout_MuxNew( p_stream->p_sout, psz, p_sys->p_grab );
         free( psz );
 
         if( p_sys->p_mux == NULL )
         {
             msg_Err( p_stream, "cannot create muxer" );
             sout_AccessOutDelete( p_sys->p_grab );
+            vlc_mutex_destroy( &p_sys->lock_sdp );
+            vlc_mutex_destroy( &p_sys->lock_ts );
+            vlc_mutex_destroy( &p_sys->lock_es );
+            free( p_sys->psz_vod_session );
             free( p_sys->psz_destination );
             free( p_sys );
             return VLC_EGENERIC;
         }
 
         p_sys->packet = NULL;
-        p_stream->ops = &mux_ops;
+
+        p_stream->pf_add  = MuxAdd;
+        p_stream->pf_del  = MuxDel;
+        p_stream->pf_send = MuxSend;
     }
     else
     {
-        p_sys->p_mux = NULL;
-        p_sys->p_grab = NULL;
-        p_stream->ops = &stream_ops;
+        p_sys->p_mux    = NULL;
+        p_sys->p_grab   = NULL;
+
+        p_stream->pf_add    = Add;
+        p_stream->pf_del    = Del;
+        p_stream->pf_send   = Send;
     }
+    p_stream->pace_nocontrol = true;
 
     if( var_GetBool( p_stream, SOUT_CFG_PREFIX"sap" ) )
         SDPHandleUrl( p_stream, "sap://" );
@@ -616,6 +664,10 @@ static void Close( vlc_object_t * p_this )
     if( p_sys->rtsp != NULL )
         RtspUnsetup( p_sys->rtsp );
 
+    vlc_mutex_destroy( &p_sys->lock_sdp );
+    vlc_mutex_destroy( &p_sys->lock_ts );
+    vlc_mutex_destroy( &p_sys->lock_es );
+
     if( p_sys->p_httpd_file )
         httpd_FileDelete( p_sys->p_httpd_file );
 
@@ -629,6 +681,7 @@ static void Close( vlc_object_t * p_this )
         unlink( p_sys->psz_sdp_file );
         free( p_sys->psz_sdp_file );
     }
+    free( p_sys->psz_vod_session );
     free( p_sys->psz_destination );
     free( p_sys );
 }
@@ -683,7 +736,7 @@ static void SDPHandleUrl( sout_stream_t *p_stream, const char *psz_url )
             var_SetInteger( p_stream, "rtsp-port", url.i_port );
         }
 
-        p_sys->rtsp = RtspSetup( VLC_OBJECT(p_stream), url.psz_path );
+        p_sys->rtsp = RtspSetup( VLC_OBJECT(p_stream), NULL, url.psz_path );
         if( p_sys->rtsp == NULL )
             msg_Err( p_stream, "cannot export SDP as RTSP" );
     }
@@ -742,7 +795,7 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
      * output chain with two different RTSP URLs if you need to handle this
      * scenario.
      */
-    bool inclport;
+    int inclport;
 
     vlc_mutex_lock( &p_sys->lock_es );
     if( unlikely(p_sys->i_es == 0 || (rtsp_url != NULL && !p_sys->es[0]->rtsp_id)) )
@@ -750,7 +803,7 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
 
     if( p_sys->psz_destination != NULL )
     {
-        inclport = true;
+        inclport = 1;
 
         /* Oh boy, this is really ugly! */
         dstlen = sizeof( dst );
@@ -763,10 +816,10 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
     }
     else
     {
-        inclport = false;
+        inclport = 0;
 
         /* Check against URL format rtsp://[<ipv6>]:<port>/<path> */
-        bool ipv6 = rtsp_url != NULL && strnlen( rtsp_url, 7+1 ) > 7
+        bool ipv6 = rtsp_url != NULL && strlen( rtsp_url ) > 7
                     && rtsp_url[7] == '[';
 
         /* Dummy destination address for RTSP */
@@ -785,10 +838,10 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
 
     /* TODO: a=source-filter */
     if( p_sys->rtcp_mux )
-        vlc_memstream_puts(&sdp, "a=rtcp-mux\r\n");
+        sdp_AddAttribute( &sdp, "rtcp-mux", NULL );
 
     if( rtsp_url != NULL )
-        vlc_memstream_printf(&sdp, "a=control:%s\r\n", rtsp_url);
+        sdp_AddAttribute ( &sdp, "control", "%s", rtsp_url );
 
     const char *proto = "RTP/AVP"; /* protocol */
     if( rtsp_url == NULL )
@@ -829,47 +882,31 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
                 continue;
         }
 
-        vlc_memstream_printf(&sdp, "m=%s %u %s %"PRIu8"\r\n", mime_major,
-                             inclport ? id->i_port : 0, proto,
-                             rtp_fmt->payload_type);
-
-        if (rtp_fmt->bitrate > 0)
-            vlc_memstream_printf(&sdp, "b=AS:%u\r\n", rtp_fmt->bitrate);
-        vlc_memstream_puts(&sdp, "b=RR:0\r\n");
-
-        /* RTP payload type map */
-        vlc_memstream_printf(&sdp, "a=rtpmap:%"PRIu8" %s/%u",
-                             rtp_fmt->payload_type, rtp_fmt->ptname,
-                             rtp_fmt->clock_rate);
-        if (rtp_fmt->cat == AUDIO_ES && rtp_fmt->channels != 1)
-            vlc_memstream_printf(&sdp, "/%u", rtp_fmt->channels);
-        vlc_memstream_puts(&sdp, "\r\n");
-
-        /* Format parameters */
-        if (rtp_fmt->fmtp != NULL)
-            vlc_memstream_printf(&sdp, "a=fmtp:%"PRIu8" %s\r\n",
-                                 rtp_fmt->payload_type, rtp_fmt->fmtp);
+        sdp_AddMedia( &sdp, mime_major, proto, inclport * id->i_port,
+                      rtp_fmt->payload_type, false, rtp_fmt->bitrate,
+                      rtp_fmt->ptname, rtp_fmt->clock_rate, rtp_fmt->channels,
+                      rtp_fmt->fmtp);
 
         /* cf RFC4566 §5.14 */
         if( inclport && !p_sys->rtcp_mux && (id->i_port & 1) )
-            vlc_memstream_printf(&sdp, "a=rtcp:%u\r\n", id->i_port + 1);
+            sdp_AddAttribute( &sdp, "rtcp", "%u", id->i_port + 1 );
 
         if( rtsp_url != NULL )
         {
             char *track_url = RtspAppendTrackPath( id->rtsp_id, rtsp_url );
             if( track_url != NULL )
             {
-                vlc_memstream_printf(&sdp, "a=control:%s\r\n", track_url);
+                sdp_AddAttribute( &sdp, "control", "%s", track_url );
                 free( track_url );
             }
         }
         else
         {
             if( id->listen.fd != NULL )
-                vlc_memstream_puts(&sdp, "a=setup:passive\r\n");
+                sdp_AddAttribute( &sdp, "setup", "passive" );
             if( p_sys->proto == IPPROTO_DCCP )
-                vlc_memstream_printf(&sdp, "a=dccp-service-code:SC:RTP%c",
-                                     toupper((unsigned char)mime_major[0]));
+                sdp_AddAttribute( &sdp, "dccp-service-code", "SC:RTP%c",
+                                  toupper( (unsigned char)mime_major[0] ) );
         }
     }
 
@@ -901,7 +938,7 @@ rtp_set_ptime (sout_stream_id_sys_t *id, unsigned ptime_ms, size_t bytes)
         id->i_mtu = 12 + (((id->i_mtu - 12) / bytes) * bytes);
 }
 
-uint32_t rtp_compute_ts( unsigned i_clock_rate, vlc_tick_t i_pts )
+uint32_t rtp_compute_ts( unsigned i_clock_rate, int64_t i_pts )
 {
     /* This is an overflow-proof way of doing:
      * return i_pts * (int64_t)i_clock_rate / CLOCK_FREQ;
@@ -914,7 +951,8 @@ uint32_t rtp_compute_ts( unsigned i_clock_rate, vlc_tick_t i_pts )
 }
 
 /** Add an ES as a new RTP stream */
-static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static sout_stream_id_sys_t *Add( sout_stream_t *p_stream,
+                                  const es_format_t *p_fmt )
 {
     /* NOTE: As a special case, if we use a non-RTP
      * mux (TS/PS), then p_fmt is NULL. */
@@ -938,18 +976,38 @@ static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
     id->sinkc = 0;
     id->sinkv = NULL;
     id->rtsp_id = NULL;
-    vlc_queue_Init(&id->queue, offsetof (block_t, p_next));
-    id->dead = true;
+    id->p_fifo = NULL;
     id->listen.fd = NULL;
 
     id->b_first_packet = true;
     id->i_caching =
-        VLC_TICK_FROM_MS(var_GetInteger( p_stream, SOUT_CFG_PREFIX "caching"));
+        (int64_t)1000 * var_GetInteger( p_stream, SOUT_CFG_PREFIX "caching");
 
     vlc_rand_bytes (&id->i_sequence, sizeof (id->i_sequence));
     vlc_rand_bytes (id->ssrc, sizeof (id->ssrc));
 
     bool format = false;
+
+    if (p_sys->p_vod_media != NULL)
+    {
+        id->rtp_fmt.ptname = NULL;
+        uint32_t ssrc;
+        int val = vod_init_id(p_sys->p_vod_media, p_sys->psz_vod_session,
+                              p_fmt ? p_fmt->i_id : 0, id, &id->rtp_fmt,
+                              &ssrc, &id->i_seq_sent_next);
+        if (val == VLC_SUCCESS)
+        {
+            memcpy(id->ssrc, &ssrc, sizeof(id->ssrc));
+            /* This is ugly, but id->i_seq_sent_next needs to be
+             * initialized inside vod_init_id() to avoid race
+             * conditions. */
+            id->i_sequence = id->i_seq_sent_next;
+        }
+        /* vod_init_id() may fail either because the ES wasn't found in
+         * the VoD media, or because the RTSP session is gone. In the
+         * former case, id->rtp_fmt was left untouched. */
+        format = (id->rtp_fmt.ptname != NULL);
+    }
 
     if (!format)
     {
@@ -1057,7 +1115,8 @@ static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
                     msg_Err( p_stream, "passive COMEDIA RTP socket failed" );
                     goto error;
                 }
-                if( vlc_clone( &id->listen.thread, rtp_listen_thread, id ) )
+                if( vlc_clone( &id->listen.thread, rtp_listen_thread, id,
+                               VLC_THREAD_PRIORITY_LOW ) )
                 {
                     net_ListenClose( id->listen.fd );
                     id->listen.fd = NULL;
@@ -1123,10 +1182,13 @@ static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
         id->rtsp_id = RtspAddId( p_sys->rtsp, id, GetDWBE( id->ssrc ),
                                  id->rtp_fmt.clock_rate, mcast_fd );
 
-    id->dead = false;
-    if( vlc_clone( &id->thread, ThreadSend, id ) )
+    id->p_fifo = block_FifoNew();
+    if( unlikely(id->p_fifo == NULL) )
+        goto error;
+    if( vlc_clone( &id->thread, ThreadSend, id, VLC_THREAD_PRIORITY_HIGHEST ) )
     {
-        id->dead = true;
+        block_FifoRelease( id->p_fifo );
+        id->p_fifo = NULL;
         goto error;
     }
 
@@ -1155,22 +1217,25 @@ error:
     return NULL;
 }
 
-static void Del( sout_stream_t *p_stream, void *_id )
+static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
 
     vlc_mutex_lock( &p_sys->lock_es );
     TAB_REMOVE( p_sys->i_es, p_sys->es, id );
     vlc_mutex_unlock( &p_sys->lock_es );
 
-    if (!id->dead)
+    if( likely(id->p_fifo != NULL) )
     {
-        vlc_queue_Kill(&id->queue, &id->dead);
+        vlc_cancel( id->thread );
         vlc_join( id->thread, NULL );
-     }
+        block_FifoRelease( id->p_fifo );
+    }
+
     free( id->rtp_fmt.fmtp );
 
+    if (p_sys->p_vod_media != NULL)
+        vod_detach_id(p_sys->p_vod_media, p_sys->psz_vod_session, id);
     if( id->rtsp_id )
         RtspDelId( p_sys->rtsp, id->rtsp_id );
     if( id->listen.fd != NULL )
@@ -1188,6 +1253,8 @@ static void Del( sout_stream_t *p_stream, void *_id )
         srtp_destroy( id->srtp );
 #endif
 
+    vlc_mutex_destroy( &id->lock_sink );
+
     /* Update SDP (sap/file) */
     if( p_sys->b_export_sap ) SapSetup( p_stream );
     if( p_sys->psz_sdp_file != NULL ) FileSetup( p_stream );
@@ -1195,10 +1262,11 @@ static void Del( sout_stream_t *p_stream, void *_id )
     free( id );
 }
 
-static int Send( sout_stream_t *p_stream, void *_id, block_t *p_buffer )
+static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
+                 block_t *p_buffer )
 {
-    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
-    assert( ((sout_stream_sys_t *)p_stream->p_sys)->p_mux == NULL );
+    assert( p_stream->p_sys->p_mux == NULL );
+    (void)p_stream;
 
     while( p_buffer != NULL )
     {
@@ -1326,22 +1394,19 @@ static int  HttpCallback( httpd_file_sys_t *p_args,
  ****************************************************************************/
 static void* ThreadSend( void *data )
 {
-    vlc_thread_set_name("vlc-rt-send");
-
 #ifdef _WIN32
-# undef ENOBUFS
 # define ENOBUFS      WSAENOBUFS
-# undef EAGAIN
 # define EAGAIN       WSAEWOULDBLOCK
-# undef EWOULDBLOCK
 # define EWOULDBLOCK  WSAEWOULDBLOCK
 #endif
     sout_stream_id_sys_t *id = data;
-    vlc_tick_t i_caching = id->i_caching;
-    block_t *out;
+    unsigned i_caching = id->i_caching;
 
-    while ((out = vlc_queue_DequeueKillable(&id->queue, &id->dead)) != NULL)
+    for (;;)
     {
+        block_t *out = block_FifoGet( id->p_fifo );
+        block_cleanup_push (out);
+
 #ifdef HAVE_SRTP
         if( id->srtp )
         {   /* FIXME: this is awfully inefficient */
@@ -1349,20 +1414,31 @@ static void* ThreadSend( void *data )
             out = block_Realloc( out, 0, len + 10 );
             out->i_buffer = len;
 
+            int canc = vlc_savecancel ();
             int val = srtp_send( id->srtp, out->p_buffer, &len, len + 10 );
+            vlc_restorecancel (canc);
             if( val )
             {
                 msg_Dbg( id->p_stream, "SRTP sending error: %s",
                          vlc_strerror_c(val) );
                 block_Release( out );
-                continue;
+                out = NULL;
             }
-            out->i_buffer = len;
+            else
+                out->i_buffer = len;
         }
+        if (out)
+            mwait (out->i_dts + i_caching);
+        vlc_cleanup_pop ();
+        if (out == NULL)
+            continue;
+#else
+        mwait (out->i_dts + i_caching);
+        vlc_cleanup_pop ();
 #endif
-        vlc_tick_wait (out->i_dts + i_caching);
 
         ssize_t len = out->i_buffer;
+        int canc = vlc_savecancel ();
 
         vlc_mutex_lock( &id->lock_sink );
         unsigned deadc = 0; /* How many dead sockets? */
@@ -1399,6 +1475,7 @@ static void* ThreadSend( void *data )
             msg_Dbg( id->p_stream, "removing socket %d", deadv[i] );
             rtp_del_sink( id, deadv[i] );
         }
+        vlc_restorecancel (canc);
     }
     return NULL;
 }
@@ -1407,8 +1484,6 @@ static void* ThreadSend( void *data )
 /* This thread dequeues incoming connections (DCCP streaming) */
 static void *rtp_listen_thread( void *data )
 {
-    vlc_thread_set_name("vlc-rtp-listen");
-
     sout_stream_id_sys_t *id = data;
 
     assert( id->listen.fd != NULL );
@@ -1476,13 +1551,36 @@ uint16_t rtp_get_seq( sout_stream_id_sys_t *id )
     return seq;
 }
 
+/* Return an arbitrary initial timestamp for RTP timestamp computations.
+ * RFC 3550 states that the resulting initial RTP timestamps SHOULD be
+ * random (although we use the same reference for all the ES as a
+ * feature). In the VoD case, this function is called independently
+ * from several parts of the code, so we need to always return the same
+ * value. */
+static int64_t rtp_init_ts( const vod_media_t *p_media,
+                            const char *psz_vod_session )
+{
+    if (p_media == NULL || psz_vod_session == NULL)
+        return mdate();
+
+    uint64_t i_ts_init;
+    /* As per RFC 2326, session identifiers are at least 8 bytes long */
+    strncpy((char *)&i_ts_init, psz_vod_session, sizeof(uint64_t));
+    i_ts_init ^= (uintptr_t)p_media;
+    /* Limit the timestamp to 48 bits, this is enough and allows us
+     * to stay away from overflows */
+    i_ts_init &= 0xFFFFFFFFFFFF;
+    return i_ts_init;
+}
+
 /* Return a timestamp corresponding to packets being sent now, and that
  * can be passed to rtp_compute_ts() to get rtptime values for each ES.
  * Also return the NPT corresponding to this timestamp. If the stream
  * output is not started, the initial timestamp that will be used with
  * the first packets for NPT=0 is returned instead. */
-vlc_tick_t rtp_get_ts( const sout_stream_t *p_stream, const sout_stream_id_sys_t *id,
-                    vlc_tick_t *p_npt )
+int64_t rtp_get_ts( const sout_stream_t *p_stream, const sout_stream_id_sys_t *id,
+                    const vod_media_t *p_media, const char *psz_vod_session,
+                    int64_t *p_npt )
 {
     if (p_npt != NULL)
         *p_npt = 0;
@@ -1491,7 +1589,7 @@ vlc_tick_t rtp_get_ts( const sout_stream_t *p_stream, const sout_stream_id_sys_t
         p_stream = id->p_stream;
 
     if (p_stream == NULL)
-        return vlc_tick_now();
+        return rtp_init_ts(p_media, psz_vod_session);
 
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     vlc_tick_t i_npt_zero;
@@ -1502,11 +1600,11 @@ vlc_tick_t rtp_get_ts( const sout_stream_t *p_stream, const sout_stream_id_sys_t
     if( i_npt_zero == VLC_TICK_INVALID )
         return p_sys->i_pts_zero;
 
-    vlc_tick_t now = vlc_tick_now();
+    vlc_tick_t now = mdate();
     if( now < i_npt_zero )
         return p_sys->i_pts_zero;
 
-    vlc_tick_t npt = now - i_npt_zero;
+    int64_t npt = now - i_npt_zero;
     if (p_npt != NULL)
         *p_npt = npt;
 
@@ -1514,7 +1612,7 @@ vlc_tick_t rtp_get_ts( const sout_stream_t *p_stream, const sout_stream_id_sys_t
 }
 
 void rtp_packetize_common( sout_stream_id_sys_t *id, block_t *out,
-                           bool b_m_bit, vlc_tick_t i_pts )
+                           bool b_m_bit, int64_t i_pts )
 {
     if( !id->b_ts_init )
     {
@@ -1561,7 +1659,7 @@ uint16_t rtp_get_extended_sequence( sout_stream_id_sys_t *id )
 
 void rtp_packetize_send( sout_stream_id_sys_t *id, block_t *out )
 {
-    vlc_queue_Enqueue(&id->queue, out);
+    block_FifoPut( id->p_fifo, out );
 }
 
 /**
@@ -1578,11 +1676,11 @@ size_t rtp_mtu (const sout_stream_id_sys_t *id)
  *****************************************************************************/
 
 /** Add an ES to a non-RTP muxed stream */
-static void *MuxAdd( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static sout_stream_id_sys_t *MuxAdd( sout_stream_t *p_stream,
+                                     const es_format_t *p_fmt )
 {
     sout_input_t      *p_input;
-    sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_mux_t *p_mux = p_sys->p_mux;
+    sout_mux_t *p_mux = p_stream->p_sys->p_mux;
     assert( p_mux != NULL );
 
     p_input = sout_MuxAddStream( p_mux, p_fmt );
@@ -1596,10 +1694,10 @@ static void *MuxAdd( sout_stream_t *p_stream, const es_format_t *p_fmt )
 }
 
 
-static int MuxSend( sout_stream_t *p_stream, void *id, block_t *p_buffer )
+static int MuxSend( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
+                    block_t *p_buffer )
 {
-    sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_mux_t *p_mux = p_sys->p_mux;
+    sout_mux_t *p_mux = p_stream->p_sys->p_mux;
     assert( p_mux != NULL );
 
     return sout_MuxSendBuffer( p_mux, (sout_input_t *)id, p_buffer );
@@ -1607,10 +1705,9 @@ static int MuxSend( sout_stream_t *p_stream, void *id, block_t *p_buffer )
 
 
 /** Remove an ES from a non-RTP muxed stream */
-static void MuxDel( sout_stream_t *p_stream, void *id )
+static void MuxDel( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
-    sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_mux_t *p_mux = p_sys->p_mux;
+    sout_mux_t *p_mux = p_stream->p_sys->p_mux;
     assert( p_mux != NULL );
 
     sout_MuxDeleteStream( p_mux, (sout_input_t *)id );
@@ -1623,7 +1720,7 @@ static ssize_t AccessOutGrabberWriteBuffer( sout_stream_t *p_stream,
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     sout_stream_id_sys_t *id = p_sys->es[0];
 
-    vlc_tick_t  i_dts = p_buffer->i_dts;
+    int64_t  i_dts = p_buffer->i_dts;
 
     uint8_t         *p_data = p_buffer->p_buffer;
     size_t          i_data  = p_buffer->i_buffer;
@@ -1704,7 +1801,7 @@ static sout_access_out_t *GrabberCreate( sout_stream_t *p_stream )
     p_grab->psz_access  = strdup( "grab" );
     p_grab->p_cfg       = NULL;
     p_grab->psz_path    = strdup( "" );
-    p_grab->p_sys       = p_stream;
+    p_grab->p_sys       = (sout_access_out_sys_t *)p_stream;
     p_grab->pf_seek     = NULL;
     p_grab->pf_write    = AccessOutGrabberWrite;
     return p_grab;

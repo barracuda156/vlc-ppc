@@ -1,5 +1,5 @@
 # NFS
-NFS_VERSION := 5.0.2
+NFS_VERSION := 5.0.1
 NFS_URL := $(GITHUB)/sahlberg/libnfs/archive/libnfs-$(NFS_VERSION).tar.gz
 
 PKGS += nfs
@@ -15,11 +15,11 @@ $(TARBALLS)/libnfs-$(NFS_VERSION).tar.gz:
 nfs: libnfs-$(NFS_VERSION).tar.gz .sum-nfs
 	$(UNPACK)
 	mv libnfs-libnfs-$(NFS_VERSION) libnfs-$(NFS_VERSION)
+	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 
-.nfs: nfs toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+.nfs: nfs
+	cd $< && ./bootstrap
+	cd $< && $(HOSTVARS) ./configure --disable-examples --disable-utils --disable-werror $(HOSTCONF)
+	cd $< && $(MAKE) install
 	touch $@

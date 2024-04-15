@@ -28,7 +28,6 @@
 #include <assert.h>
 #include <vlc_common.h>
 #include <vlc_services_discovery.h>
-#include <vlc_queue.h>
 
 #include "vlc.h"
 #include "libs.h"
@@ -136,21 +135,19 @@ static const char * const ppsz_sd_options[] = { "sd", NULL };
 /*****************************************************************************
  * Local structures
  *****************************************************************************/
-typedef struct
+struct services_discovery_sys_t
 {
     lua_State *L;
     char *psz_filename;
 
     vlc_thread_t thread;
-    vlc_queue_t queue;
-    bool dead;
-} services_discovery_sys_t;
+    vlc_mutex_t lock;
+    vlc_cond_t cond;
 
-struct sd_query
-{
-    struct sd_query *next;
-    char query[];
+    char **ppsz_query;
+    int i_query;
 };
+static const luaL_Reg p_reg[] = { { NULL, NULL } };
 
 /*****************************************************************************
  * Open: initialize and create stuff
@@ -202,8 +199,6 @@ int Open_LuaSD( vlc_object_t *p_this )
     }
     vlclua_set_this( L, p_sd );
     luaL_openlibs( L );
-
-    static const luaL_Reg p_reg[] = { { NULL, NULL } };
     luaL_register_namespace( L, "vlc", p_reg );
     luaopen_input( L );
     luaopen_msg( L );
@@ -237,11 +232,15 @@ int Open_LuaSD( vlc_object_t *p_this )
         p_sd->description = p_sd->psz_name;
 
     p_sys->L = L;
-    p_sys->dead = false;
-    vlc_queue_Init( &p_sys->queue, offsetof (struct sd_query, next) );
+    vlc_mutex_init( &p_sys->lock );
+    vlc_cond_init( &p_sys->cond );
+    TAB_INIT( p_sys->i_query, p_sys->ppsz_query );
 
-    if( vlc_clone( &p_sys->thread, Run, p_sd ) )
+    if( vlc_clone( &p_sys->thread, Run, p_sd, VLC_THREAD_PRIORITY_LOW ) )
     {
+        TAB_CLEAN( p_sys->i_query, p_sys->ppsz_query );
+        vlc_cond_destroy( &p_sys->cond );
+        vlc_mutex_destroy( &p_sys->lock );
         goto error;
     }
     return VLC_SUCCESS;
@@ -262,8 +261,15 @@ void Close_LuaSD( vlc_object_t *p_this )
     services_discovery_t *p_sd = ( services_discovery_t * )p_this;
     services_discovery_sys_t *p_sys = p_sd->p_sys;
 
-    vlc_queue_Kill( &p_sys->queue, &p_sys->dead );
+    vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
+
+    for( int i = 0; i < p_sys->i_query; i++ )
+        free( p_sys->ppsz_query[i] );
+    TAB_CLEAN( p_sys->i_query, p_sys->ppsz_query );
+
+    vlc_cond_destroy( &p_sys->cond );
+    vlc_mutex_destroy( &p_sys->lock );
     free( p_sys->psz_filename );
     lua_close( p_sys->L );
     free( p_sys );
@@ -274,11 +280,11 @@ void Close_LuaSD( vlc_object_t *p_this )
  ****************************************************************************/
 static void* Run( void *data )
 {
-    vlc_thread_set_name("vlc-lua-service");
-
     services_discovery_t *p_sd = ( services_discovery_t * )data;
     services_discovery_sys_t *p_sys = p_sd->p_sys;
     lua_State *L = p_sys->L;
+
+    int cancel = vlc_savecancel();
 
     lua_getglobal( L, "main" );
     if( !lua_isfunction( L, lua_gettop( L ) ) || lua_pcall( L, 0, 1, 0 ) )
@@ -287,6 +293,7 @@ static void* Run( void *data )
                   "function main(): %s", p_sys->psz_filename,
                   lua_tostring( L, lua_gettop( L ) ) );
         lua_pop( L, 1 );
+        vlc_restorecancel( cancel );
         return NULL;
     }
     msg_Dbg( p_sd, "LuaSD script loaded: %s", p_sys->psz_filename );
@@ -295,20 +302,37 @@ static void* Run( void *data )
      * open, but lua will never gc until lua_close(). */
     lua_gc( L, LUA_GCCOLLECT, 0 );
 
-    /* Main loop to handle search requests */
-    struct sd_query *query;
+    vlc_restorecancel( cancel );
 
-    while( (query = vlc_queue_DequeueKillable( &p_sys->queue,
-                                               &p_sys->dead )) != NULL )
+    /* Main loop to handle search requests */
+    vlc_mutex_lock( &p_sys->lock );
+    mutex_cleanup_push( &p_sys->lock );
+    for( ;; )
     {
-        /* Execute one query */
-        DoSearch( p_sd, query->query );
-        free( query );
+        /* Wait for a request */
+        if( !p_sys->i_query )
+        {
+            vlc_cond_wait( &p_sys->cond, &p_sys->lock );
+            continue;
+        }
+
+        /* Execute one query (protected against cancellation) */
+        char *psz_query = p_sys->ppsz_query[p_sys->i_query - 1];
+        TAB_ERASE(p_sys->i_query, p_sys->ppsz_query, p_sys->i_query - 1);
+        vlc_mutex_unlock( &p_sys->lock );
+
+        cancel = vlc_savecancel();
+        DoSearch( p_sd, psz_query );
+        free( psz_query );
         /* Force garbage collection, because the core will keep the SD
          * open, but lua will never gc until lua_close(). */
         lua_gc( L, LUA_GCCOLLECT, 0 );
+        vlc_restorecancel( cancel );
+
+        vlc_mutex_lock( &p_sys->lock );
     }
-    return NULL;
+    vlc_cleanup_pop();
+    vlc_assert_unreachable();
 }
 
 /*****************************************************************************
@@ -323,15 +347,10 @@ static int Control( services_discovery_t *p_sd, int i_command, va_list args )
     case SD_CMD_SEARCH:
     {
         const char *psz_query = va_arg( args, const char * );
-        size_t len = strlen(psz_query) + 1;
-        struct sd_query *query = malloc(sizeof (*query) + len);
-
-        if (unlikely(query == NULL))
-            return VLC_ENOMEM;
-
-        query->next = NULL;
-        memcpy(query->query, psz_query, len);
-        vlc_queue_Enqueue(&p_sys->queue, query);
+        vlc_mutex_lock( &p_sys->lock );
+        TAB_APPEND( p_sys->i_query, p_sys->ppsz_query, strdup( psz_query ) );
+        vlc_cond_signal( &p_sys->cond );
+        vlc_mutex_unlock( &p_sys->lock );
         break;
     }
 

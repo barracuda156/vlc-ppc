@@ -28,8 +28,6 @@
 #include <vlc_common.h>
 #include <vlc_strings.h>
 
-const char vlc_module_name[] = "test_sort";
-
 static void test_smaller(const char *small, const char *big,
                          int (*cmp)(const char *, const char *))
 {

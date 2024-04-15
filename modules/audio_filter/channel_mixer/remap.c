@@ -38,13 +38,14 @@
  * Module descriptor
  *****************************************************************************/
 static int  OpenFilter( vlc_object_t * );
+static void CloseFilter( vlc_object_t * );
 
 #define REMAP_CFG "aout-remap-"
 
 /* wg4 channel indices in the order of channel_name */
 static const uint8_t channel_wg4idx[] = { 0, 7, 1, 4, 6, 5, 2, 3, 8 };
 
-static const int channel_idx[]    = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+static const unsigned channel_idx[]    = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
 
 static const char *const channel_name[] =
 {
@@ -72,13 +73,14 @@ static const int channel_flag[] =
 vlc_module_begin ()
     set_description( N_("Audio channel remapper") )
     set_capability( "audio filter", 0 )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_AFILTER )
-    set_callback( OpenFilter )
+    set_callbacks( OpenFilter, CloseFilter )
     set_shortname( "Remap" )
 
 #define CHANNEL( idx ) \
     add_integer( channel_name[idx], idx, channel_desc[idx], \
-            channel_desc[idx]) \
+            channel_desc[idx], false) \
         change_integer_list( channel_idx, channel_desc )
     CHANNEL(0) CHANNEL(1) CHANNEL(2)
     CHANNEL(3) CHANNEL(4) CHANNEL(5)
@@ -87,7 +89,9 @@ vlc_module_begin ()
 
     add_bool( REMAP_CFG "normalize", true, "Normalize channels",
             "When mapping more than one channel to a single output channel, "
-            "normalize the output accordingly." )
+            "normalize the output accordingly.", false )
+
+    set_callbacks( OpenFilter, CloseFilter )
 
 vlc_module_end ()
 
@@ -100,13 +104,13 @@ static block_t *Remap( filter_t *, block_t * );
 typedef void (*remap_fun_t)( filter_t *, const void *, void *,
                              int, unsigned, unsigned);
 
-typedef struct
+struct filter_sys_t
 {
     remap_fun_t pf_remap;
     int nb_in_ch[AOUT_CHAN_MAX];
     int8_t map_ch[AOUT_CHAN_MAX];
     bool b_normalize;
-} filter_sys_t;
+};
 
 static const uint32_t valid_channels[] = {
 /* list taken from aout_FormatPrintChannels */
@@ -167,7 +171,7 @@ static void RemapCopy##name( filter_t *p_filter, \
                     int i_nb_samples, \
                     unsigned i_nb_in_channels, unsigned i_nb_out_channels ) \
 { \
-    filter_sys_t *p_sys = p_filter->p_sys; \
+    filter_sys_t *p_sys = ( filter_sys_t * )p_filter->p_sys; \
     const type *p_src = p_srcorig; \
     type *p_dest = p_destorig; \
  \
@@ -191,7 +195,7 @@ static void RemapAdd##name( filter_t *p_filter, \
                     int i_nb_samples, \
                     unsigned i_nb_in_channels, unsigned i_nb_out_channels ) \
 { \
-    filter_sys_t *p_sys = p_filter->p_sys; \
+    filter_sys_t *p_sys = ( filter_sys_t * )p_filter->p_sys; \
     const type *p_src = p_srcorig; \
     type *p_dest = p_destorig; \
  \
@@ -270,7 +274,7 @@ static int OpenFilter( vlc_object_t *p_this )
     audio_format_t *audio_out = &p_filter->fmt_out.audio;
 
     /* Allocate the memory needed to store the module's structure */
-    p_sys = p_filter->p_sys = vlc_obj_malloc( p_this, sizeof(filter_sys_t) );
+    p_sys = p_filter->p_sys = malloc( sizeof(filter_sys_t) );
     if( unlikely( p_sys == NULL ) )
         return VLC_ENOMEM;
 
@@ -302,6 +306,7 @@ static int OpenFilter( vlc_object_t *p_this )
         if (val >= AOUT_CHAN_MAX)
         {
             msg_Err( p_filter, "invalid channel index" );
+            free( p_sys );
             return VLC_EGENERIC;
         }
         if (val < 0)
@@ -316,7 +321,7 @@ static int OpenFilter( vlc_object_t *p_this )
     }
     i_output_physical = CanonicaliseChannels( i_output_physical );
 
-    unsigned i_channels = vlc_popcount(i_output_physical);
+    unsigned i_channels = popcount(i_output_physical);
 
     /* condense out_channels */
     uint8_t out_ch_sorted[ AOUT_CHAN_MAX ];
@@ -350,6 +355,7 @@ static int OpenFilter( vlc_object_t *p_this )
     if( !p_sys->pf_remap )
     {
         msg_Err( p_filter, "Could not decide on %s remap function", b_multiple ? "an add" : "a copy" );
+        free( p_sys );
         return VLC_EGENERIC;
     }
 
@@ -365,12 +371,18 @@ static int OpenFilter( vlc_object_t *p_this )
              aout_FormatPrintChannels( audio_in ),
              aout_FormatPrintChannels( audio_out ) );
 
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_audio = Remap,
-    };
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = Remap;
     return VLC_SUCCESS;
+}
+
+/*****************************************************************************
+ * CloseFilter:
+ *****************************************************************************/
+static void CloseFilter( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t *) p_this;
+    filter_sys_t *p_sys = p_filter->p_sys;
+    free( p_sys );
 }
 
 /*****************************************************************************
@@ -378,7 +390,7 @@ static int OpenFilter( vlc_object_t *p_this )
  *****************************************************************************/
 static block_t *Remap( filter_t *p_filter, block_t *p_block )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
+    filter_sys_t *p_sys = (filter_sys_t *)p_filter->p_sys;
     if( !p_block || !p_block->i_nb_samples )
     {
         if( p_block )

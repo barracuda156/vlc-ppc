@@ -2,6 +2,7 @@
  * async_queue.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 9288465e485c472e5f6269a655a9e3f1dd03ed83 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -28,9 +29,6 @@
 
 #include <list>
 #include <string>
-#include <memory>
-
-#include <vlc_cxx_helpers.hpp>
 
 class OSTimer;
 
@@ -58,15 +56,16 @@ public:
 
 private:
     /// Command queue
-    using cmdList_t = std::list<CmdGenericPtr>;
+    typedef std::list<CmdGenericPtr> cmdList_t;
     cmdList_t m_cmdList;
     /// Timer
-    std::unique_ptr<OSTimer> m_pTimer;
+    OSTimer *m_pTimer;
     /// Mutex
-    vlc::threads::mutex m_lock;
+    vlc_mutex_t m_lock;
 
     // Private because it is a singleton
     AsyncQueue( intf_thread_t *pIntf );
+    virtual ~AsyncQueue();
 
     // Callback to flush the queue
     DEFINE_CALLBACK( AsyncQueue, Flush );

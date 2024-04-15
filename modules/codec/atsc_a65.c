@@ -72,7 +72,7 @@ atsc_a65_handle_t *atsc_a65_handle_New( const char *psz_lang )
     atsc_a65_handle_t *p_handle = malloc( sizeof(*p_handle) );
     if( p_handle )
     {
-        if( psz_lang && strnlen(psz_lang, 2+1) > 2 )
+        if( psz_lang && strlen(psz_lang) > 2 )
             p_handle->psz_lang = strdup( psz_lang );
         else
             p_handle->psz_lang = NULL;
@@ -122,7 +122,7 @@ static bool convert_encoding_set( atsc_a65_handle_t *p_handle,
     bool b_ret = true;
 
     if( i_src == 0 )
-        return false;
+        return NULL;
 
     /* First exclude reserved ranges */
     for( unsigned i=0; i<12; i+=2 )

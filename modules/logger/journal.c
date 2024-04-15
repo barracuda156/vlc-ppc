@@ -64,22 +64,21 @@ static void Log(void *opaque, int type, const vlc_log_t *meta,
     (void) opaque;
 }
 
-static const struct vlc_logger_operations ops = { Log, NULL };
-
-static const struct vlc_logger_operations *Open(vlc_object_t *obj, void **sysp)
+static vlc_log_cb Open(vlc_object_t *obj, void **sysp)
 {
     if (!var_InheritBool(obj, "syslog"))
         return NULL;
 
     (void) sysp;
-    return &ops;
+    return Log;
 }
 
 vlc_module_begin()
     set_shortname(N_("Journal"))
     set_description(N_("SystemD journal logger"))
+    set_category(CAT_ADVANCED)
     set_subcategory(SUBCAT_ADVANCED_MISC)
     set_capability("logger", 30)
-    set_callback(Open)
+    set_callbacks(Open, NULL)
     add_shortcut("journal")
 vlc_module_end()

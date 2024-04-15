@@ -29,6 +29,7 @@
  */
 
 struct vlc_http_msg;
+struct block_t;
 struct vlc_http_cookie_jar_t;
 
 /**
@@ -73,16 +74,6 @@ void vlc_http_msg_destroy(struct vlc_http_msg *);
  */
 int vlc_http_msg_add_header(struct vlc_http_msg *, const char *name,
                             const char *fmt, ...) VLC_FORMAT(3,4);
-
-/**
- * Formats an authority.
- *
- * @param host host name (cannot be NULL)
- * @param port port number (0 for unspecified)
- * @return the formatted authority as a heap-allocated nul-terminated string,
- *         or NULL on allocation failure
- */
-char *vlc_http_authority(const char *host, unsigned port);
 
 /**
  * Sets the agent field.
@@ -295,21 +286,7 @@ struct vlc_http_msg *vlc_http_msg_get_final(struct vlc_http_msg *) VLC_USED;
  * @retval NULL on end-of-stream
  * @retval vlc_http_error on fatal error
  */
-block_t *vlc_http_msg_read(struct vlc_http_msg *) VLC_USED;
-
-/**
- * Sends HTTP data.
- *
- * Queues the next block of data for an HTTP message payload.
- *
- * @note This function takes ownership of the passed data block(s).
- *
- * @param b chain of block of data to be sent
- * @param eos true to indicate the end of the payload
- * @retval 0 success
- * @retval -1 fatal error
- */
-int vlc_http_msg_write(struct vlc_http_msg *, block_t *b, bool eos);
+struct block_t *vlc_http_msg_read(struct vlc_http_msg *) VLC_USED;
 
 /** @} */
 
@@ -356,8 +333,7 @@ VLC_USED;
 struct vlc_http_stream_cbs
 {
     struct vlc_http_msg *(*read_headers)(struct vlc_http_stream *);
-    ssize_t (*write)(struct vlc_http_stream *, const void *, size_t, bool eos);
-    block_t *(*read)(struct vlc_http_stream *);
+    struct block_t *(*read)(struct vlc_http_stream *);
     void (*close)(struct vlc_http_stream *, bool abort);
 };
 
@@ -377,9 +353,6 @@ struct vlc_http_stream
  * @warning The caller is responsible for reading headers at appropriate
  * times as intended by the protocol. Failure to do so may result in protocol
  * dead lock, and/or (HTTP 1.x) connection failure.
- *
- * @param s HTTP stream to read from
- *
  */
 static inline
 struct vlc_http_msg *vlc_http_stream_read_headers(struct vlc_http_stream *s)
@@ -388,37 +361,15 @@ struct vlc_http_msg *vlc_http_stream_read_headers(struct vlc_http_stream *s)
 }
 
 /**
- * Write message payload data.
- *
- * Writes data as message payload of an HTTP stream.
- *
- * @todo Take a block structure rather than a byte array.
- *
- * @param s HTTP stream to write to
- * @param base start address of data to write
- * @param length length in bytes of data to write
- * @param eos whether this is the last write on the stream
- * @retval len success
- * @retval -1 error
- */
-static inline ssize_t vlc_http_stream_write(struct vlc_http_stream *s,
-                                            const void *base, size_t length,
-                                            bool eos)
-{
-    return s->cbs->write(s, base, length, eos);
-}
-
-/**
  * Reads message payload data.
  *
  * Reads the next block of data from the message payload of an HTTP stream.
  *
- * @param s HTTP stream to read from
  * @return a block of data (use block_Release() to free it)
  * @retval NULL The end of the stream was reached.
  * @retval vlc_http_error The stream encountered a fatal error.
  */
-static inline block_t *vlc_http_stream_read(struct vlc_http_stream *s)
+static inline struct block_t *vlc_http_stream_read(struct vlc_http_stream *s)
 {
     return s->cbs->read(s);
 }
@@ -428,9 +379,6 @@ static inline block_t *vlc_http_stream_read(struct vlc_http_stream *s)
  *
  * Releases all resources associated or held by an HTTP stream. Any unread
  * header or data is discarded.
- *
- * @param s HTTP stream to close
- * @param abort whether to close the connection and prevent re-use
  */
 static inline void vlc_http_stream_close(struct vlc_http_stream *s, bool abort)
 {
@@ -449,12 +397,11 @@ static inline void vlc_http_stream_close(struct vlc_http_stream *s, bool abort)
  *             [OUT]
  * @param proxied whether the message is meant for sending to a proxy rather
  *                than an origin (only relevant for requests)
- * @param chunked whether to append a chunked transfer encoding header line
  * @return A heap-allocated nul-terminated string or *lenp bytes,
  *         or NULL on error
  */
 char *vlc_http_msg_format(const struct vlc_http_msg *m, size_t *restrict lenp,
-                          bool proxied, bool chunked) VLC_USED;
+                          bool proxied) VLC_USED;
 
 /**
  * Parses an HTTP 1.1 message header.

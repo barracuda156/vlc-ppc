@@ -35,10 +35,8 @@
 #include <dshow.h>
 
 #include <comcat.h>
-#include "bdadefs.h"
+#include "dtv/bdadefs.h"
 #include <stdexcept>
-
-#include <wrl/client.h>
 
 
 // TBS tuner extension headers
@@ -81,7 +79,7 @@ struct ComContext
 class BDAOutput
 {
 public:
-    BDAOutput( );
+    BDAOutput( vlc_object_t * );
     ~BDAOutput();
 
     void    Push( block_t * );
@@ -89,6 +87,7 @@ public:
     void    Empty();
 
 private:
+    vlc_object_t *p_access;
     vlc_mutex_t   lock;
     vlc_cond_t    wait;
     block_t      *p_first;
@@ -130,7 +129,7 @@ private:
     STDMETHODIMP BufferCB( double d_time, BYTE* p_buffer, long l_buffer_len );
 
     vlc_object_t *p_access;
-    CLSID     clsid_network_type;  /* network type in use */
+    CLSID     guid_network_type;   /* network type in use */
     long      l_tuner_used;        /* Index of the Tuning Device in use */
     unsigned  systems;             /* bitmask of all tuners' network types */
 
@@ -139,7 +138,7 @@ private:
 
     BDAOutput       output;
 
-    Microsoft::WRL::ComPtr<IMediaControl> p_media_control;
+    IMediaControl*  p_media_control;
     IGraphBuilder*  p_filter_graph;
     ITuningSpace*               p_tuning_space;
     ITuneRequest*               p_tune_request;

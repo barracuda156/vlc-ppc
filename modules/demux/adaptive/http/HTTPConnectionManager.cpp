@@ -29,11 +29,9 @@
 #include "HTTPConnection.hpp"
 #include "ConnectionParams.hpp"
 #include "Downloader.hpp"
-#include "../tools/Debug.hpp"
+#include "tools/Debug.hpp"
 #include <vlc_url.h>
 #include <vlc_http.h>
-
-#include <cassert>
 
 using namespace adaptive::http;
 
@@ -56,7 +54,7 @@ void AbstractConnectionManager::updateDownloadRate(const adaptive::ID &sourceid,
     {
         BwDebug(msg_Dbg(p_object,
                 "%" PRId64 "Kbps downloaded %zuKBytes in %" PRId64 "ms latency %" PRId64 "ms [%s]",
-                1000 * size * 8 / (time ? time : 1), size / 1024, MS_FROM_VLC_TICK(time),
+                1000 * size * 8 / (time ? time : 1), size / 1024, time / 1000,
                 latency / 1000, sourceid.str().c_str()));
         rateObserver->updateDownloadRate(sourceid, size, time, latency);
     }
@@ -87,16 +85,6 @@ HTTPConnectionManager::HTTPConnectionManager    (vlc_object_t *p_object_)
 
 HTTPConnectionManager::~HTTPConnectionManager   ()
 {
-    while(!cache.empty())
-    {
-        HTTPChunkBufferedSource *purged = cache.back();
-        cache.pop_back();
-        assert(cache_total >= purged->contentLength);
-        cache_total -= purged->contentLength;
-        CacheDebug(msg_Dbg(p_object, "Cache DEL '%s' usage %u bytes",
-                            purged->getStorageID().c_str(), cache_total));
-        deleteSource(purged);
-    }
     delete downloader;
     delete downloaderhp;
     this->closeAllConnections();
@@ -105,13 +93,15 @@ HTTPConnectionManager::~HTTPConnectionManager   ()
         delete factories.front();
         factories.pop_front();
     }
+    vlc_mutex_destroy(&lock);
 }
 
 void HTTPConnectionManager::closeAllConnections      ()
 {
-    vlc_mutex_locker locker(&lock);
+    vlc_mutex_lock(&lock);
     releaseAllConnections();
     vlc_delete_all(this->connectionPool);
+    vlc_mutex_unlock(&lock);
 }
 
 void HTTPConnectionManager::releaseAllConnections()
@@ -144,7 +134,7 @@ AbstractConnection * HTTPConnectionManager::getConnection(ConnectionParams &para
             return nullptr;
     }
 
-    vlc_mutex_locker locker(&lock);
+    vlc_mutex_lock(&lock);
     AbstractConnection *conn = reuseConnection(params);
     if(!conn)
     {
@@ -153,6 +143,7 @@ AbstractConnection * HTTPConnectionManager::getConnection(ConnectionParams &para
 
         if(!conn)
         {
+            vlc_mutex_unlock(&lock);
             return nullptr;
         }
 
@@ -160,11 +151,13 @@ AbstractConnection * HTTPConnectionManager::getConnection(ConnectionParams &para
 
         if (!conn->prepare(params))
         {
+            vlc_mutex_unlock(&lock);
             return nullptr;
         }
     }
 
     conn->setUsed(true);
+    vlc_mutex_unlock(&lock);
     return conn;
 }
 
@@ -182,7 +175,6 @@ AbstractChunkSource *HTTPConnectionManager::makeSource(const std::string &url,
                 if(s->getStorageID() == storageid)
                 {
                     cache.remove(s);
-                    assert(cache_total >= s->contentLength);
                     cache_total -= s->contentLength;
                     CacheDebug(msg_Dbg(p_object, "Cache GET '%s' usage %u bytes",
                                        storageid.c_str(), cache_total));
@@ -223,7 +215,6 @@ void HTTPConnectionManager::recycleSource(AbstractChunkSource *source)
         {
             HTTPChunkBufferedSource *purged = cache.back();
             cache.pop_back();
-            assert(cache_total >= purged->contentLength);
             cache_total -= purged->contentLength;
             CacheDebug(msg_Dbg(p_object, "Cache DEL '%s' usage %u bytes",
                                purged->getStorageID().c_str(), cache_total));

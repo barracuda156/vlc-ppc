@@ -27,6 +27,7 @@
 
 #include "Segment.h"
 #include "SegmentBaseType.hpp"
+#include "../tools/Properties.hpp"
 
 namespace adaptive
 {

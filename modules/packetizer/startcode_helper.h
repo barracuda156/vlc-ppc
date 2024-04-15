@@ -22,16 +22,8 @@
 
 #include <vlc_cpu.h>
 
-#ifdef CAN_COMPILE_SSE2
-#  if defined __has_attribute
-#    if __has_attribute(__vector_size__)
-#      define HAS_ATTRIBUTE_VECTORSIZE
-#    endif
-#  endif
-
-#  ifdef HAS_ATTRIBUTE_VECTORSIZE
-    typedef unsigned char v16qu __attribute__((__vector_size__(16)));
-#  endif
+#if !defined(CAN_COMPILE_SSE2) && defined(HAVE_SSE2_INTRINSICS)
+   #include <emmintrin.h>
 #endif
 
 /* Looks up efficiently for an AnnexB startcode 0x00 0x00 0x01
@@ -52,7 +44,7 @@
         }\
     }
 
-#ifdef CAN_COMPILE_SSE2
+#if defined(CAN_COMPILE_SSE2) || defined(HAVE_SSE2_INTRINSICS)
 
 __attribute__ ((__target__ ("sse2")))
 static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const uint8_t *end )
@@ -71,33 +63,31 @@ static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const
     alignedend = end - ((intptr_t) end & 15);
     if( alignedend > p )
     {
-#  ifdef HAS_ATTRIBUTE_VECTORSIZE
-        const v16qu zeros = { 0 };
-#  endif
-
+#ifdef CAN_COMPILE_SSE2
+        asm volatile(
+            "pxor   %%xmm1, %%xmm1\n"
+            ::: "xmm1"
+        );
+#else
+        __m128i zeros = _mm_set1_epi8( 0x00 );
+#endif
         for( ; p < alignedend; p += 16)
         {
             uint32_t match;
-#  ifdef HAS_ATTRIBUTE_VECTORSIZE
+#ifdef CAN_COMPILE_SSE2
             asm volatile(
                 "movdqa   0(%[v]),   %%xmm0\n"
-                "pcmpeqb %[czero],   %%xmm0\n"
-                "pmovmskb  %%xmm0,   %[match]\n" /* mask will be in reversed match order */
-                : [match]"=r"(match)
-                : [v]"r"(p), [czero]"x"(zeros)
-                : "xmm0"
-            );
-#  else
-            asm volatile(
-                "movdqa   0(%[v]),   %%xmm0\n"
-                "pxor      %%xmm1,   %%xmm1\n"
                 "pcmpeqb   %%xmm1,   %%xmm0\n"
-                "pmovmskb  %%xmm0,   %[match]\n" /* mask will be in reversed match order */
+                "pmovmskb  %%xmm0,   %[match]\n"
                 : [match]"=r"(match)
                 : [v]"r"(p)
-                : "xmm0", "xmm1"
+                : "xmm0"
             );
-#  endif
+#else
+            __m128i v = _mm_load_si128((__m128i*)p);
+            __m128i res = _mm_cmpeq_epi8( zeros, v );
+            match = _mm_movemask_epi8( res ); /* mask will be in reversed match order */
+#endif
             if( match & 0x000F )
                 TRY_MATCH(p, 0);
             if( match & 0x00F0 )
@@ -123,8 +113,12 @@ static inline const uint8_t * startcode_FindAnnexB_SSE2( const uint8_t *p, const
  * and i believe the trick originated from
  * https://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord
  */
-static inline const uint8_t * startcode_FindAnnexB_Bits( const uint8_t *p, const uint8_t *end )
+static inline const uint8_t * startcode_FindAnnexB( const uint8_t *p, const uint8_t *end )
 {
+#if defined(CAN_COMPILE_SSE2) || defined(HAVE_SSE2_INTRINSICS)
+    if (vlc_CPU_SSE2())
+        return startcode_FindAnnexB_SSE2(p, end);
+#endif
     const uint8_t *a = p + 4 - ((intptr_t)p & 3);
 
     for (end -= 3; p < a && p <= end; p++) {
@@ -148,18 +142,7 @@ static inline const uint8_t * startcode_FindAnnexB_Bits( const uint8_t *p, const
 
     return NULL;
 }
-#undef TRY_MATCH
 
-#ifdef CAN_COMPILE_SSE2
-static inline const uint8_t * startcode_FindAnnexB( const uint8_t *p, const uint8_t *end )
-{
-    if (vlc_CPU_SSE2())
-        return startcode_FindAnnexB_SSE2(p, end);
-    else
-        return startcode_FindAnnexB_Bits(p, end);
-}
-#else
-    #define startcode_FindAnnexB startcode_FindAnnexB_Bits
-#endif
+#undef TRY_MATCH
 
 #endif

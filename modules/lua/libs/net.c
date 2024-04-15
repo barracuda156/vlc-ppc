@@ -2,6 +2,7 @@
  * net.c: Network related functions
  *****************************************************************************
  * Copyright (C) 2007-2008 the VideoLAN team
+ * $Id: 5e10ee4860557a98c42cb04e961622c8c37ccb79 $
  *
  * Authors: Antoine Cellerier <dionoea at videolan tod org>
  *
@@ -32,7 +33,7 @@
 #ifdef _WIN32
 #include <io.h>
 #endif
-#ifdef HAVE_POLL_H
+#ifdef HAVE_POLL
 #include <poll.h>       /* poll structures and defines */
 #endif
 #include <sys/stat.h>
@@ -178,7 +179,7 @@ static int vlclua_net_listen_tcp( lua_State *L )
 {
     vlc_object_t *p_this = vlclua_get_this( L );
     const char *psz_host = luaL_checkstring( L, 1 );
-    int i_port = luaL_checkinteger( L, 2 );
+    int i_port = luaL_checkint( L, 2 );
     int *pi_fd = net_ListenTCP( p_this, psz_host, i_port );
     if( pi_fd == NULL )
         return luaL_error( L, "Cannot listen on %s:%d", psz_host, i_port );
@@ -250,7 +251,7 @@ static int vlclua_net_connect_tcp( lua_State *L )
 {
     vlc_object_t *p_this = vlclua_get_this( L );
     const char *psz_host = luaL_checkstring( L, 1 );
-    int i_port = luaL_checkinteger( L, 2 );
+    int i_port = luaL_checkint( L, 2 );
     int i_fd = net_ConnectTCP( p_this, psz_host, i_port );
     lua_pushinteger( L, vlclua_fd_map_safe( L, i_fd ) );
     return 1;
@@ -258,26 +259,26 @@ static int vlclua_net_connect_tcp( lua_State *L )
 
 static int vlclua_net_close( lua_State *L )
 {
-    int i_fd = luaL_checkinteger( L, 1 );
+    int i_fd = luaL_checkint( L, 1 );
     vlclua_fd_unmap_safe( L, i_fd );
     return 0;
 }
 
 static int vlclua_net_send( lua_State *L )
 {
-    int fd = vlclua_fd_get( L, luaL_checkinteger( L, 1 ) );
+    int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
     size_t i_len;
     const char *psz_buffer = luaL_checklstring( L, 2, &i_len );
 
     i_len = (size_t)luaL_optinteger( L, 3, i_len );
     lua_pushinteger( L,
-        (fd != -1) ? vlc_send( fd, psz_buffer, i_len, 0 ) : -1 );
+        (fd != -1) ? send( fd, psz_buffer, i_len, MSG_NOSIGNAL ) : -1 );
     return 1;
 }
 
 static int vlclua_net_recv( lua_State *L )
 {
-    int fd = vlclua_fd_get( L, luaL_checkinteger( L, 1 ) );
+    int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
     size_t i_len = (size_t)luaL_optinteger( L, 2, 1 );
     char psz_buffer[i_len];
 
@@ -311,7 +312,7 @@ static int vlclua_net_poll( lua_State *L )
     lua_pushnil( L );
     for( int i = 0; lua_next( L, 1 ); i++ )
     {
-        luafds[i] = luaL_checkinteger( L, -2 );
+        luafds[i] = luaL_checkint( L, -2 );
         p_fds[i].fd = vlclua_fd_get( L, luafds[i] );
         p_fds[i].events = luaL_checkinteger( L, -1 );
         p_fds[i].events &= POLLIN | POLLOUT | POLLPRI;
@@ -359,7 +360,7 @@ static int vlclua_fd_open( lua_State *L )
 #ifndef _WIN32
 static int vlclua_fd_write( lua_State *L )
 {
-    int fd = vlclua_fd_get( L, luaL_checkinteger( L, 1 ) );
+    int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
     size_t i_len;
     const char *psz_buffer = luaL_checklstring( L, 2, &i_len );
 
@@ -370,7 +371,7 @@ static int vlclua_fd_write( lua_State *L )
 
 static int vlclua_fd_read( lua_State *L )
 {
-    int fd = vlclua_fd_get( L, luaL_checkinteger( L, 1 ) );
+    int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
     size_t i_len = (size_t)luaL_optinteger( L, 2, 1 );
     char psz_buffer[i_len];
 
@@ -441,7 +442,7 @@ static int vlclua_stat( lua_State *L )
 static int vlclua_opendir( lua_State *L )
 {
     const char *psz_dir = luaL_checkstring( L, 1 );
-    vlc_DIR *p_dir;
+    DIR *p_dir;
     int i = 0;
 
     if( ( p_dir = vlc_opendir( psz_dir ) ) == NULL )
@@ -456,7 +457,7 @@ static int vlclua_opendir( lua_State *L )
         lua_pushstring( L, psz_filename );
         lua_rawseti( L, -2, i );
     }
-    vlc_closedir( p_dir );
+    closedir( p_dir );
     return 1;
 }
 

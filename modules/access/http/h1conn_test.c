@@ -29,21 +29,13 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
-#ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
-#endif
 
 #include <vlc_common.h>
 #include <vlc_block.h>
 #include <vlc_tls.h>
 #include "conn.h"
 #include "message.h"
-
-#if defined(PF_UNIX) && !defined(PF_LOCAL)
-#    define PF_LOCAL PF_UNIX
-#endif
-
-const char vlc_module_name[] = "test_h1conn";
 
 static struct vlc_http_conn *conn;
 static struct vlc_tls *external_tls;
@@ -69,7 +61,7 @@ static void conn_send_raw(const void *buf, size_t len)
 
 static void conn_send(const char *str)
 {
-    conn_send_raw(str, strlen(str));
+    return conn_send_raw(str, strlen(str));
 }
 
 static void conn_shutdown(bool duplex)
@@ -84,14 +76,13 @@ static void conn_destroy(void)
     vlc_tls_SessionDelete(external_tls);
 }
 
-static struct vlc_http_stream *stream_open(bool has_data)
+static struct vlc_http_stream *stream_open(void)
 {
-    const char *verb = has_data ? "POST" : "GET";
-    struct vlc_http_msg *m = vlc_http_req_create(verb, "https",
+    struct vlc_http_msg *m = vlc_http_req_create("GET", "https",
                                                  "www.example.com", "/");
     assert(m != NULL);
 
-    struct vlc_http_stream *s = vlc_http_stream_open(conn, m, has_data);
+    struct vlc_http_stream *s = vlc_http_stream_open(conn, m);
     vlc_http_msg_destroy(m);
     return s;
 }
@@ -100,7 +91,7 @@ int main(void)
 {
     struct vlc_http_stream *s;
     struct vlc_http_msg *m;
-    block_t *b;
+    struct block_t *b;
 
     /* Dummy */
     conn_create();
@@ -108,8 +99,8 @@ int main(void)
 
     /* Test rejected connection */
     conn_create();
-    conn_shutdown(false);
-    s = stream_open(false);
+    conn_shutdown(SHUT_RD);
+    s = stream_open();
     if (s != NULL)
         /* Remote read shutdown does not result in an error on some systems. */
         vlc_http_stream_close(s, true);
@@ -117,9 +108,9 @@ int main(void)
 
     /* Test rejected stream */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
-    conn_shutdown(true);
+    conn_shutdown(SHUT_WR);
 
     m = vlc_http_stream_read_headers(s);
     assert(m == NULL);
@@ -132,16 +123,16 @@ int main(void)
     m = vlc_http_msg_get_initial(s);
     assert(m == NULL);
 
-    s = stream_open(false);
+    s = stream_open();
     assert(s == NULL);
     conn_destroy();
 
     /* Test garbage */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("Go away!\r\n\r\n");
-    conn_shutdown(true);
+    conn_shutdown(SHUT_WR);
 
     m = vlc_http_stream_read_headers(s);
     assert(m == NULL);
@@ -152,14 +143,14 @@ int main(void)
 
     /* Test HTTP/1.0 stream */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("HTTP/1.0 200 OK\r\n\r\n");
     m = vlc_http_msg_get_initial(s);
     assert(m != NULL);
 
     conn_send("Hello world!");
-    conn_shutdown(true);
+    conn_shutdown(SHUT_WR);
     b = vlc_http_msg_read(m);
     assert(b != NULL);
     assert(b->i_buffer == 12);
@@ -172,14 +163,14 @@ int main(void)
 
     /* Test HTTP/1.1 with closed connection */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
     m = vlc_http_msg_get_initial(s);
     assert(m != NULL);
 
     conn_send("Hello again!");
-    conn_shutdown(true);
+    conn_shutdown(SHUT_WR);
     b = vlc_http_msg_read(m);
     assert(b != NULL);
     assert(b->i_buffer == 12);
@@ -192,7 +183,7 @@ int main(void)
 
     /* Test HTTP/1.1 with chunked transfer encoding */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
               "Content-Length: 1000000\r\n\r\n"); /* length must be ignored */
@@ -212,7 +203,7 @@ int main(void)
 
     /* Test HTTP/1.1 with content length */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n");
     m = vlc_http_msg_get_initial(s);
@@ -231,7 +222,7 @@ int main(void)
 
     /* Test HTTP/1.1 with content length, shortened by error */
     conn_create();
-    s = stream_open(false);
+    s = stream_open();
     assert(s != NULL);
     conn_send("HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n");
     m = vlc_http_msg_get_initial(s);
@@ -243,34 +234,9 @@ int main(void)
     assert(b->i_buffer == 6);
     assert(!memcmp(b->p_buffer, "Hello ", 6));
     block_Release(b);
-    conn_shutdown(true);
+    conn_shutdown(SHUT_RDWR);
     b = vlc_http_msg_read(m);
     assert(b == vlc_http_error);
-    vlc_http_msg_destroy(m);
-    conn_destroy();
-
-    /* Test HTTP/1.1 with chunked request payload */
-    conn_create();
-    s = stream_open(true);
-    assert(s != NULL);
-    conn_send("HTTP/1.1 100 Continue\r\n\r\n");
-    m = vlc_http_msg_get_initial(s);
-    assert(m != NULL);
-    b = block_Alloc(11);
-    assert(b != NULL);
-    memcpy(b->p_buffer, "Message 1\r\n", 11);
-    assert(vlc_http_msg_write(m, b, false) == 0);
-    assert(vlc_http_msg_write(m, NULL, true) == 0);
-    conn_send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
-    m = vlc_http_msg_iterate(m);
-    assert(m != NULL);
-    b = vlc_http_msg_read(m);
-    assert(b != NULL);
-    assert(b->i_buffer == 2);
-    assert(!memcmp(b->p_buffer, "OK", 2));
-    block_Release(b);
-    b = vlc_http_msg_read(m);
-    assert(b == NULL);
     vlc_http_msg_destroy(m);
     conn_destroy();
 

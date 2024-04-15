@@ -50,18 +50,19 @@ static vlc_mutex_t mpg123_mutex = VLC_STATIC_MUTEX;
 /*****************************************************************************
  * Local structures
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     mpg123_handle * p_handle;
     date_t          end_date;
     block_t       * p_out;
     bool            b_opened;
-} decoder_sys_t;
+};
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
     set_description( N_("MPEG audio decoder using mpg123") )
     set_capability( "audio decoder", 100 )
@@ -98,9 +99,9 @@ static int MPG123Open( decoder_t *p_dec )
     mpg123_format_none( p_sys->p_handle );
 
     int i_ret = MPG123_OK;
-    if( p_dec->fmt_in->audio.i_rate != 0 )
+    if( p_dec->fmt_in.audio.i_rate != 0 )
     {
-        i_ret =  mpg123_format( p_sys->p_handle, p_dec->fmt_in->audio.i_rate,
+        i_ret =  mpg123_format( p_sys->p_handle, p_dec->fmt_in.audio.i_rate,
                                 MPG123_MONO | MPG123_STEREO,
                                 MPG123_ENC_FLOAT_32 );
     }
@@ -189,6 +190,7 @@ static int UpdateAudioFormat( decoder_t *p_dec )
     {
         p_dec->fmt_out.audio.i_rate = (unsigned int)frame_info.rate;
         date_Init( &p_sys->end_date, p_dec->fmt_out.audio.i_rate, 1 );
+        date_Set( &p_sys->end_date, 0 );
     }
 
     return decoder_UpdateAudioFormat( p_dec );
@@ -213,7 +215,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
     /* Feed input block */
     if( p_block != NULL )
     {
-        i_pts = p_block->i_pts != VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
+        i_pts = p_block->i_pts > VLC_TICK_INVALID ? p_block->i_pts : p_block->i_dts;
 
         if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
         {
@@ -225,8 +227,7 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
             }
         }
 
-        if( i_pts == VLC_TICK_INVALID &&
-            date_Get( &p_sys->end_date ) == VLC_TICK_INVALID )
+        if( !date_Get( &p_sys->end_date ) && i_pts <= VLC_TICK_INVALID )
         {
             /* We've just started the stream, wait for the first PTS. */
             msg_Dbg( p_dec, "waiting for PTS" );
@@ -381,8 +382,8 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_MPGA &&
-        p_dec->fmt_in->i_codec != VLC_CODEC_MP3 )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_MPGA &&
+        p_dec->fmt_in.i_codec != VLC_CODEC_MP3 )
         return VLC_EGENERIC;
 
     /* Initialize libmpg123 */
@@ -407,7 +408,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_dec->pf_flush  = Flush;
 
     msg_Dbg( p_this, "%4.4s->%4.4s, bits per sample: %i",
-             (char *)&p_dec->fmt_in->i_codec,
+             (char *)&p_dec->fmt_in.i_codec,
              (char *)&p_dec->fmt_out.i_codec,
              aout_BitsPerSample( p_dec->fmt_out.i_codec ) );
 

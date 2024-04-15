@@ -23,15 +23,11 @@
 
 #include "hevc_nal.h"
 #include "hxxx_nal.h"
-#include "hxxx_ep3b.h"
-#include "iso_color_tables.h"
 
 #include <vlc_common.h>
 #include <vlc_bits.h>
 
 #include <limits.h>
-
-//#define HEVC_POC_DEBUG
 
 typedef uint8_t  nal_u1_t;
 typedef uint8_t  nal_u2_t;
@@ -65,7 +61,6 @@ typedef struct
         nal_u1_t intra_constraint_flag;
         nal_u1_t one_picture_only_constraint_flag;
         nal_u1_t lower_bit_rate_constraint_flag;
-        nal_u1_t max_14bit_constraint_flag;
     } idc4to7;
     struct
     {
@@ -412,6 +407,9 @@ uint8_t * hevc_hvcC_to_AnnexB_NAL( const uint8_t *p_buf, size_t i_buf,
 
 static bool hevc_parse_scaling_list_rbsp( bs_t *p_bs )
 {
+    if( bs_remain( p_bs ) < 16 )
+        return false;
+
     for( int i=0; i<4; i++ )
     {
         for( int j=0; j<6; j += (i == 3) ? 3 : 1 )
@@ -440,6 +438,9 @@ static bool hevc_parse_scaling_list_rbsp( bs_t *p_bs )
 static bool hevc_parse_vui_parameters_rbsp( bs_t *p_bs, hevc_vui_parameters_t *p_vui,
                                             bool b_broken )
 {
+    if( bs_remain( p_bs ) < 10 )
+        return false;
+
     p_vui->aspect_ratio_info_present_flag = bs_read1( p_bs );
     if( p_vui->aspect_ratio_info_present_flag )
     {
@@ -469,9 +470,9 @@ static bool hevc_parse_vui_parameters_rbsp( bs_t *p_bs, hevc_vui_parameters_t *p
         }
         else
         {
-            p_vui->vs.colour.colour_primaries = ISO_23001_8_CP_UNSPECIFIED;
-            p_vui->vs.colour.transfer_characteristics = ISO_23001_8_TC_UNSPECIFIED;
-            p_vui->vs.colour.matrix_coeffs = ISO_23001_8_MC_UNSPECIFIED;
+            p_vui->vs.colour.colour_primaries = HXXX_PRIMARIES_UNSPECIFIED;
+            p_vui->vs.colour.transfer_characteristics = HXXX_TRANSFER_UNSPECIFIED;
+            p_vui->vs.colour.matrix_coeffs = HXXX_MATRIX_UNSPECIFIED;
         }
     }
 
@@ -500,10 +501,16 @@ static bool hevc_parse_vui_parameters_rbsp( bs_t *p_bs, hevc_vui_parameters_t *p
     {
         p_vui->timing.vui_num_units_in_tick =  bs_read( p_bs, 32 );
         p_vui->timing.vui_time_scale =  bs_read( p_bs, 32 );
+
+        if( bs_remain( p_bs ) < 3 )
+            return false;
     }
     /* incomplete */
 
-    return !bs_error( p_bs );
+    if( bs_remain( p_bs ) < 1 ) /* late fail */
+        return false;
+
+    return true;
 }
 
 /* Shortcut for retrieving vps/sps/pps id */
@@ -538,6 +545,9 @@ bool hevc_get_xps_id(const uint8_t *p_buf, size_t i_buf, uint8_t *pi_id)
 static bool hevc_parse_inner_profile_tier_level_rbsp( bs_t *p_bs,
                                                       hevc_inner_profile_tier_level_t *p_in )
 {
+    if( bs_remain( p_bs ) < 88 )
+        return false;
+
     p_in->profile_space = bs_read( p_bs, 2 );
     p_in->tier_flag = bs_read1( p_bs );
     p_in->profile_idc = bs_read( p_bs, 5 );
@@ -547,8 +557,8 @@ static bool hevc_parse_inner_profile_tier_level_rbsp( bs_t *p_bs,
     p_in->non_packed_constraint_flag = bs_read1( p_bs );
     p_in->frame_only_constraint_flag = bs_read1( p_bs );
 
-    if( ( p_in->profile_idc >= 4 && p_in->profile_idc <= 10 ) ||
-        ( p_in->profile_compatibility_flag & 0x0F700000 ) )
+    if( ( p_in->profile_idc >= 4 && p_in->profile_idc <= 7 ) ||
+        ( p_in->profile_compatibility_flag & 0x0F000000 ) )
     {
         p_in->idc4to7.max_12bit_constraint_flag = bs_read1( p_bs );
         p_in->idc4to7.max_10bit_constraint_flag = bs_read1( p_bs );
@@ -559,36 +569,21 @@ static bool hevc_parse_inner_profile_tier_level_rbsp( bs_t *p_bs,
         p_in->idc4to7.intra_constraint_flag = bs_read1( p_bs );
         p_in->idc4to7.one_picture_only_constraint_flag = bs_read1( p_bs );
         p_in->idc4to7.lower_bit_rate_constraint_flag = bs_read1( p_bs );
-        if( p_in->profile_idc == 5 ||
-            p_in->profile_idc == 9 ||
-            p_in->profile_idc == 10 ||
-           (p_in->profile_compatibility_flag & 0x08600000) )
-        {
-            p_in->idc4to7.max_14bit_constraint_flag = bs_read1( p_bs );
-            bs_skip( p_bs, 33 );
-        }
-        else bs_skip( p_bs, 34 );
-    }
-    else if( p_in->profile_idc == 2 ||
-            (p_in->profile_compatibility_flag & 0x20000000) )
-    {
-        bs_skip( p_bs, 7 );
-        p_in->idc4to7.one_picture_only_constraint_flag = bs_read1( p_bs );
-        bs_skip( p_bs, 35 );
+        (void) bs_read( p_bs, 2 );
     }
     else
     {
-        bs_read( p_bs, 43 );
+        (void) bs_read( p_bs, 11 );
     }
+    (void) bs_read( p_bs, 32 );
 
     if( ( p_in->profile_idc >= 1 && p_in->profile_idc <= 5 ) ||
-         p_in->profile_idc == 9 ||
-        ( p_in->profile_compatibility_flag & 0x7C400000 ) )
+        ( p_in->profile_compatibility_flag & 0x7C000000 ) )
         p_in->idc1to5.inbld_flag = bs_read1( p_bs );
     else
-        bs_skip( p_bs, 1 );
+        (void) bs_read1( p_bs );
 
-    return !bs_error( p_bs );
+    return true;
 }
 
 static bool hevc_parse_profile_tier_level_rbsp( bs_t *p_bs, bool profile_present,
@@ -598,14 +593,14 @@ static bool hevc_parse_profile_tier_level_rbsp( bs_t *p_bs, bool profile_present
     if( profile_present && !hevc_parse_inner_profile_tier_level_rbsp( p_bs, &p_ptl->general ) )
         return false;
 
-    if( bs_error( p_bs ) )
+    if( bs_remain( p_bs ) < 8)
         return false;
 
     p_ptl->general_level_idc = bs_read( p_bs, 8 );
 
     if( max_num_sub_layers_minus1 > 0 )
     {
-        if( bs_eof( p_bs ) )
+        if( bs_remain( p_bs ) < 16 )
             return false;
 
         for( uint8_t i=0; i< 8; i++ )
@@ -629,20 +624,20 @@ static bool hevc_parse_profile_tier_level_rbsp( bs_t *p_bs, bool profile_present
 
             if( p_ptl->sublayer_profile_present_flag & (0x80 >> i) )
             {
-                if( bs_eof( p_bs ) )
+                if( bs_remain( p_bs ) < 8 )
                     return false;
                 p_ptl->sub_layer_level_idc[i] = bs_read( p_bs, 8 );
             }
         }
     }
 
-    return !bs_error( p_bs );
+    return true;
 }
 
 static bool hevc_parse_video_parameter_set_rbsp( bs_t *p_bs,
                                                  hevc_video_parameter_set_t *p_vps )
 {
-    if( bs_eof( p_bs ) )
+    if( bs_remain( p_bs ) < 134 )
         return false;
 
     p_vps->vps_video_parameter_set_id = bs_read( p_bs, 4 );
@@ -666,14 +661,15 @@ static bool hevc_parse_video_parameter_set_rbsp( bs_t *p_bs,
         p_vps->vps_max[i].num_reorder_pics = bs_read_ue( p_bs );
         p_vps->vps_max[i].max_latency_increase_plus1 = bs_read_ue( p_bs );
     }
-
-    if( bs_error( p_bs ) )
+    if( bs_remain( p_bs ) < 10 )
         return false;
 
     p_vps->vps_max_layer_id = bs_read( p_bs, 6 );
     p_vps->vps_num_layer_set_minus1 = bs_read_ue( p_bs );
     // layer_id_included_flag; read but discarded
     bs_skip( p_bs, p_vps->vps_num_layer_set_minus1 * (p_vps->vps_max_layer_id + 1) );
+    if( bs_remain( p_bs ) < 2 )
+        return false;
 
     p_vps->vps_timing_info_present_flag = bs_read1( p_bs );
     if( p_vps->vps_timing_info_present_flag )
@@ -683,7 +679,10 @@ static bool hevc_parse_video_parameter_set_rbsp( bs_t *p_bs,
     }
     /* parsing incomplete */
 
-    return !bs_error( p_bs );
+    if( bs_remain( p_bs ) < 1 )
+        return false;
+
+    return true;
 }
 
 void hevc_rbsp_release_vps( hevc_video_parameter_set_t *p_vps )
@@ -698,13 +697,14 @@ void hevc_rbsp_release_vps( hevc_video_parameter_set_t *p_vps )
         if(likely(p_hevctype)) \
         { \
             bs_t bs; \
-            struct hxxx_bsfw_ep3b_ctx_s bsctx; \
+            bs_init( &bs, p_buf, i_buf ); \
+            unsigned i_bitflow = 0; \
             if( b_escaped ) \
             { \
-                hxxx_bsfw_ep3b_ctx_init( &bsctx ); \
-                bs_init_custom( &bs, p_buf, i_buf, &hxxx_bsfw_ep3b_callbacks, &bsctx );\
+                bs.p_fwpriv = &i_bitflow; \
+                bs.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */ \
             } \
-            else bs_init( &bs, p_buf, i_buf ); \
+            else (void) i_bitflow;\
             bs_skip( &bs, 7 ); /* nal_unit_header */ \
             uint8_t i_nuh_layer_id = bs_read( &bs, 6 ); \
             bs_skip( &bs, 3 ); /* !nal_unit_header */ \
@@ -759,7 +759,7 @@ static bool hevc_parse_st_ref_pic_set( bs_t *p_bs, unsigned stRpsIdx,
     {
         nal_ue_t num_negative_pics = bs_read_ue( p_bs );
         nal_ue_t num_positive_pics = bs_read_ue( p_bs );
-        if( bs_error( p_bs ) )
+        if( bs_remain( p_bs ) < ((int64_t)num_negative_pics + num_positive_pics) * 2 )
             return false;
         for(unsigned int i=0; i<num_negative_pics; i++)
         {
@@ -774,7 +774,7 @@ static bool hevc_parse_st_ref_pic_set( bs_t *p_bs, unsigned stRpsIdx,
         p_sets[stRpsIdx].num_delta_pocs = num_positive_pics + num_negative_pics;
     }
 
-    return !bs_error( p_bs );
+    return true;
 }
 
 static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
@@ -787,7 +787,7 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
                                             &p_sps->profile_tier_level ) )
         return false;
 
-    if( bs_error( p_bs ) )
+    if( bs_remain( p_bs ) < 1 )
         return false;
 
     p_sps->sps_seq_parameter_set_id = bs_read_ue( p_bs );
@@ -824,12 +824,14 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
         p_sps->sps_max[i].latency_increase_plus1 = bs_read_ue( p_bs );
     }
 
-    if( bs_eof( p_bs ) )
+    if( bs_remain( p_bs ) < 4 )
         return false;
 
     p_sps->log2_min_luma_coding_block_size_minus3 = bs_read_ue( p_bs );
     p_sps->log2_diff_max_min_luma_coding_block_size = bs_read_ue( p_bs );
     p_sps->log2_min_luma_transform_block_size_minus2 = bs_read_ue( p_bs );
+    if( bs_remain( p_bs ) < 1 ) /* last late fail check */
+        return false;
     p_sps->log2_diff_max_min_luma_transform_block_size = bs_read_ue( p_bs );
 
     /* parsing incomplete */
@@ -846,9 +848,6 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
             return false;
         }
     }
-
-    if( bs_error( p_bs ) )
-        return false;
 
     p_sps->amp_enabled_flag = bs_read1( p_bs );
     p_sps->sample_adaptive_offset_enabled_flag = bs_read1( p_bs );
@@ -893,7 +892,7 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
     p_sps->sps_temporal_mvp_enabled_flag = bs_read1( p_bs );
     p_sps->strong_intra_smoothing_enabled_flag = bs_read1( p_bs );
 
-    if( bs_error( p_bs ) )
+    if( bs_remain( p_bs ) < 1 ) /* late fail */
         return false;
 
     p_sps->vui_parameters_present_flag = bs_read1( p_bs );
@@ -902,7 +901,7 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
         bs_t rollbackpoint = *p_bs;
         if( !hevc_parse_vui_parameters_rbsp( p_bs, &p_sps->vui, false ) &&
             p_sps->vui.default_display_window_flag &&
-            !bs_error( p_bs ) )
+            bs_remain( p_bs ) < 66 )
         {
             /* Broken MKV SPS vui bitstreams with missing display_window bits.
              * Forced to accept it since some decided to accept it...
@@ -918,7 +917,7 @@ static bool hevc_parse_sequence_parameter_set_rbsp( bs_t *p_bs,
 
     /* incomplete */
 
-    return !bs_error( p_bs );
+    return true;
 }
 
 void hevc_rbsp_release_sps( hevc_sequence_parameter_set_t *p_sps )
@@ -932,10 +931,10 @@ IMPL_hevc_generic_decode( hevc_decode_sps, hevc_sequence_parameter_set_t,
 static bool hevc_parse_pic_parameter_set_rbsp( bs_t *p_bs,
                                                hevc_picture_parameter_set_t *p_pps )
 {
-    if( bs_eof( p_bs ) )
+    if( bs_remain( p_bs ) < 1 )
         return false;
     p_pps->pps_pic_parameter_set_id = bs_read_ue( p_bs );
-    if( p_pps->pps_pic_parameter_set_id > HEVC_PPS_ID_MAX )
+    if( p_pps->pps_pic_parameter_set_id > HEVC_PPS_ID_MAX || bs_remain( p_bs ) < 1 )
         return false;
     p_pps->pps_seq_parameter_set_id = bs_read_ue( p_bs );
     if( p_pps->pps_seq_parameter_set_id > HEVC_SPS_ID_MAX )
@@ -956,7 +955,7 @@ static bool hevc_parse_pic_parameter_set_rbsp( bs_t *p_bs,
     if( p_pps->cu_qp_delta_enabled_flag )
         p_pps->diff_cu_qp_delta_depth = bs_read_ue( p_bs );
 
-    if( bs_error( p_bs ) )
+    if( bs_remain( p_bs ) < 1 )
         return false;
 
     p_pps->pps_cb_qp_offset = bs_read_se( p_bs );
@@ -975,14 +974,15 @@ static bool hevc_parse_pic_parameter_set_rbsp( bs_t *p_bs,
         p_pps->uniform_spacing_flag = bs_read1( p_bs );
         if( !p_pps->uniform_spacing_flag )
         {
+            if( bs_remain( p_bs ) < (int64_t) p_pps->num_tile_columns_minus1 +
+                                               p_pps->num_tile_rows_minus1 + 1 )
+                return false;
             for( unsigned i=0; i< p_pps->num_tile_columns_minus1; i++ )
                 (void) bs_read_ue( p_bs );
             for( unsigned i=0; i< p_pps->num_tile_rows_minus1; i++ )
                 (void) bs_read_ue( p_bs );
         }
         p_pps->loop_filter_across_tiles_enabled_flag = bs_read1( p_bs );
-        if( bs_error( p_bs ) )
-            return false;
     }
 
     p_pps->pps_loop_filter_across_slices_enabled_flag = bs_read1( p_bs );
@@ -1006,16 +1006,21 @@ static bool hevc_parse_pic_parameter_set_rbsp( bs_t *p_bs,
     p_pps->log2_parallel_merge_level_minus2 = bs_read_ue( p_bs );
     p_pps->slice_header_extension_present_flag = bs_read1( p_bs );
 
+    if( bs_remain( p_bs ) < 1 )
+        return false;
+
     p_pps->pps_extension_present_flag = bs_read1( p_bs );
     if( p_pps->pps_extension_present_flag )
     {
         p_pps->pps_range_extension_flag = bs_read1( p_bs );
         p_pps->pps_multilayer_extension_flag = bs_read1( p_bs );
         p_pps->pps_3d_extension_flag = bs_read1( p_bs );
+        if( bs_remain( p_bs ) < 5 )
+            return false;
         p_pps->pps_extension_5bits = bs_read( p_bs, 5 );
     }
 
-    return !bs_error( p_bs );
+    return true;
 }
 
 void hevc_rbsp_release_pps( hevc_picture_parameter_set_t *p_pps )
@@ -1185,17 +1190,17 @@ bool hevc_get_colorimetry( const hevc_sequence_parameter_set_t *p_sps,
                            video_color_primaries_t *p_primaries,
                            video_transfer_func_t *p_transfer,
                            video_color_space_t *p_colorspace,
-                           video_color_range_t *p_full_range )
+                           bool *p_full_range )
 {
     if( !p_sps->vui_parameters_present_flag )
         return false;
     *p_primaries =
-        iso_23001_8_cp_to_vlc_primaries( p_sps->vui.vs.colour.colour_primaries );
+        hxxx_colour_primaries_to_vlc( p_sps->vui.vs.colour.colour_primaries );
     *p_transfer =
-        iso_23001_8_tc_to_vlc_xfer( p_sps->vui.vs.colour.transfer_characteristics );
+        hxxx_transfer_characteristics_to_vlc( p_sps->vui.vs.colour.transfer_characteristics );
     *p_colorspace =
-        iso_23001_8_mc_to_vlc_coeffs( p_sps->vui.vs.colour.matrix_coeffs );
-    *p_full_range = p_sps->vui.vs.video_full_range_flag ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+        hxxx_matrix_coeffs_to_vlc( p_sps->vui.vs.colour.matrix_coeffs );
+    *p_full_range = p_sps->vui.vs.video_full_range_flag;
     return true;
 }
 
@@ -1208,17 +1213,14 @@ static bool hevc_parse_slice_segment_header_rbsp( bs_t *p_bs,
     hevc_picture_parameter_set_t *p_pps;
     hevc_video_parameter_set_t *p_vps;
 
-    if( bs_eof( p_bs ) )
+    if( bs_remain( p_bs ) < 3 )
         return false;
 
     p_sl->first_slice_segment_in_pic_flag = bs_read1( p_bs );
     if( p_sl->nal_type >= HEVC_NAL_BLA_W_LP && p_sl->nal_type <= HEVC_NAL_IRAP_VCL23 )
         p_sl->no_output_of_prior_pics_flag = bs_read1( p_bs );
     p_sl->slice_pic_parameter_set_id = bs_read_ue( p_bs );
-    if( p_sl->slice_pic_parameter_set_id > HEVC_PPS_ID_MAX )
-        return false;
-
-    if( bs_error( p_bs ) )
+    if( p_sl->slice_pic_parameter_set_id > HEVC_PPS_ID_MAX || bs_remain( p_bs ) < 1 )
         return false;
 
     get_matchedxps( p_sl->slice_pic_parameter_set_id, priv, &p_pps, &p_sps, &p_vps );
@@ -1261,8 +1263,6 @@ static bool hevc_parse_slice_segment_header_rbsp( bs_t *p_bs,
 
         if( p_pps->output_flag_present_flag )
             p_sl->pic_output_flag = bs_read1( p_bs );
-        else
-            p_sl->pic_output_flag = 1;
     }
 
     if( p_sps->separate_colour_plane_flag )
@@ -1273,7 +1273,10 @@ static bool hevc_parse_slice_segment_header_rbsp( bs_t *p_bs,
     else
         p_sl->pic_order_cnt_lsb = 0;
 
-    return !bs_error( p_bs );
+    if( bs_remain( p_bs ) < 1 )
+        return false;
+
+    return true;
 }
 
 void hevc_rbsp_release_slice_header( hevc_slice_segment_header_t *p_sh )
@@ -1288,13 +1291,14 @@ hevc_slice_segment_header_t * hevc_decode_slice_header( const uint8_t *p_buf, si
     if(likely(p_sh))
     {
         bs_t bs;
-        struct hxxx_bsfw_ep3b_ctx_s bsctx;
+        bs_init( &bs, p_buf, i_buf );
+        unsigned i_bitflow = 0;
         if( b_escaped )
         {
-            hxxx_bsfw_ep3b_ctx_init( &bsctx );
-            bs_init_custom( &bs, p_buf, i_buf, &hxxx_bsfw_ep3b_callbacks, &bsctx );
+            bs.p_fwpriv = &i_bitflow;
+            bs.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */
         }
-        else bs_init( &bs, p_buf, i_buf );
+        else (void) i_bitflow;
         bs_skip( &bs, 1 );
         p_sh->nal_type = bs_read( &bs, 6 );
         p_sh->nuh_layer_id = bs_read( &bs, 6 );
@@ -1339,54 +1343,6 @@ bool hevc_get_profile_level(const es_format_t *p_fmt, uint8_t *pi_profile,
     return true;
 }
 
-static unsigned hevc_make_indication( const hevc_inner_profile_tier_level_t *p )
-{
-    uint8_t flags[] =
-    {
-        p->idc4to7.max_14bit_constraint_flag,
-        p->idc4to7.max_12bit_constraint_flag,
-        p->idc4to7.max_10bit_constraint_flag,
-        p->idc4to7.max_8bit_constraint_flag,
-        p->idc4to7.max_422chroma_constraint_flag,
-        p->idc4to7.max_420chroma_constraint_flag,
-        p->idc4to7.max_monochrome_constraint_flag,
-        p->idc4to7.intra_constraint_flag,
-        p->idc4to7.one_picture_only_constraint_flag,
-        p->idc4to7.lower_bit_rate_constraint_flag,
-    };
-    unsigned indication = 0;
-    for( size_t i=0; i<ARRAY_SIZE(flags); i++ )
-    {
-        if( flags[i] )
-            indication |= (1 << (ARRAY_SIZE(flags) - 1 - i));
-    }
-    return indication;
-}
-
-enum vlc_hevc_profile_e hevc_get_vlc_profile( const hevc_sequence_parameter_set_t *p_sps )
-{
-    unsigned indication = 0;
-    enum hevc_general_profile_idc_e profile = p_sps->profile_tier_level.general.profile_idc;
-    switch( profile )
-    {
-        case HEVC_PROFILE_IDC_REXT:
-            indication = hevc_make_indication( &p_sps->profile_tier_level.general ) & 0x1FF;
-            break;
-        case HEVC_PROFILE_IDC_HIGH_THROUGHPUT:
-        case HEVC_PROFILE_IDC_SCREEN_EXTENDED:
-            indication = hevc_make_indication( &p_sps->profile_tier_level.general );
-            break;
-        default:
-            break;
-    }
-
-    /* all intras have insignifiant lowest bit */
-    if( p_sps->profile_tier_level.general.idc4to7.intra_constraint_flag )
-        indication &= ~1;
-
-    return (indication << HEVC_INDICATION_SHIFT) | profile;
-}
-
 /*
  * HEVCDecoderConfigurationRecord operations
  */
@@ -1398,9 +1354,10 @@ static void hevc_dcr_params_from_vps( const uint8_t * p_buffer, size_t i_buffer,
         return;
 
     bs_t bs;
-    struct hxxx_bsfw_ep3b_ctx_s bsctx;
-    hxxx_bsfw_ep3b_ctx_init( &bsctx );
-    bs_init_custom( &bs, p_buffer, i_buffer, &hxxx_bsfw_ep3b_callbacks, &bsctx );
+    bs_init( &bs, p_buffer, i_buffer );
+    unsigned i_bitflow = 0;
+    bs.p_fwpriv = &i_bitflow;
+    bs.pf_forward = hxxx_bsfw_ep3b_to_rbsp;  /* Does the emulated 3bytes conversion to rbsp */
 
     /* first two bytes are the NAL header, 3rd and 4th are:
         vps_video_parameter_set_id(4)
@@ -1570,13 +1527,6 @@ int hevc_compute_picture_order_count( const hevc_sequence_parameter_set_t *p_sps
         NoRaslOutputFlag = false;
     }
 
-#ifdef HEVC_POC_DEBUG
-    printf("slice lsb=%"PRIu32" irap=%d norasl=%d tid=%d msb=%d lsb=%d",
-           p_slice->pic_order_cnt_lsb,
-           IsIRAP, NoRaslOutputFlag, p_slice->temporal_id_plus1,
-           p_ctx->prevTid0PicOrderCnt.msb, p_ctx->prevTid0PicOrderCnt.lsb);
-#endif
-
     if( p_slice->nal_type == HEVC_NAL_IDR_N_LP ||
         p_slice->nal_type == HEVC_NAL_IDR_W_RADL )
     {
@@ -1616,10 +1566,6 @@ int hevc_compute_picture_order_count( const hevc_sequence_parameter_set_t *p_sps
 
     p_ctx->first_picture = false;
 
-#ifdef HEVC_POC_DEBUG
-    printf(" POC=%"PRIu32"\n", pocMSB + p_slice->pic_order_cnt_lsb);
-#endif
-
     return pocMSB + p_slice->pic_order_cnt_lsb;
 }
 
@@ -1654,12 +1600,6 @@ hevc_sei_pic_timing_t * hevc_decode_sei_pic_timing( bs_t *p_bs,
     return p_timing;
 }
 
-bool hevc_decode_sei_recovery_point( bs_t *p_bs, hevc_sei_recovery_point_t *p_reco )
-{
-    p_reco->i_frames = bs_read_se( p_bs );
-    return true;
-}
-
 bool hevc_frame_is_progressive( const hevc_sequence_parameter_set_t *p_sps,
                                 const hevc_sei_pic_timing_t *p_timing )
 {
@@ -1667,22 +1607,15 @@ bool hevc_frame_is_progressive( const hevc_sequence_parameter_set_t *p_sps,
         p_sps->vui.field_seq_flag )
         return false;
 
-    const hevc_inner_profile_tier_level_t *p_profile = &p_sps->profile_tier_level.general;
-    /* 1 & 0, 0 & 1, global */
-    if( p_profile->progressive_source_flag != p_profile->interlaced_source_flag )
+    if( p_sps->profile_tier_level.general.interlaced_source_flag &&
+       !p_sps->profile_tier_level.general.progressive_source_flag )
+        return false;
+
+    if( p_timing && p_sps->vui.frame_field_info_present_flag )
     {
-        return p_profile->progressive_source_flag > p_profile->interlaced_source_flag;
+        if( p_timing->source_scan_type < 2 )
+            return p_timing->source_scan_type != 0;
     }
-    /* 1 & 1, defined in SEI */
-    else if( p_profile->progressive_source_flag )
-    {
-        if( p_timing && p_sps->vui.frame_field_info_present_flag )
-        {
-            if( p_timing->source_scan_type < 2 )
-                return p_timing->source_scan_type != 0;
-        }
-    }
-    /* else 0 & 0, unspec */
 
     return true;
 }

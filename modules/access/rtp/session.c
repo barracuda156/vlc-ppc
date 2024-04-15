@@ -41,12 +41,13 @@ struct rtp_session_t
     rtp_source_t **srcv;
     unsigned       srcc;
     uint8_t        ptc;
-    rtp_pt_t     **ptv;
+    rtp_pt_t      *ptv;
 };
 
 static rtp_source_t *
 rtp_source_create (demux_t *, const rtp_session_t *, uint32_t, uint16_t);
-static void rtp_source_destroy(demux_t *, rtp_source_t *);
+static void
+rtp_source_destroy (demux_t *, const rtp_session_t *, rtp_source_t *);
 
 static void rtp_decode (demux_t *, const rtp_session_t *, rtp_source_t *);
 
@@ -76,10 +77,7 @@ rtp_session_create (demux_t *demux)
 void rtp_session_destroy (demux_t *demux, rtp_session_t *session)
 {
     for (unsigned i = 0; i < session->srcc; i++)
-        rtp_source_destroy(demux, session->srcv[i]);
-
-    for (uint_fast8_t i = 0; i < session->ptc; i++)
-        vlc_rtp_pt_release(session->ptv[i]);
+        rtp_source_destroy (demux, session, session->srcv[i]);
 
     free (session->srcv);
     free (session->ptv);
@@ -87,22 +85,52 @@ void rtp_session_destroy (demux_t *demux, rtp_session_t *session)
     (void)demux;
 }
 
+static void *no_init (demux_t *demux)
+{
+    (void)demux;
+    return NULL;
+}
+
+static void no_destroy (demux_t *demux, void *opaque)
+{
+    (void)demux; (void)opaque;
+}
+
+static void no_decode (demux_t *demux, void *opaque, block_t *block)
+{
+    (void)demux; (void)opaque;
+    block_Release (block);
+}
+
 /**
  * Adds a payload type to an RTP session.
  */
-int rtp_add_type(rtp_session_t *ses, rtp_pt_t *pt)
+int rtp_add_type (demux_t *demux, rtp_session_t *ses, const rtp_pt_t *pt)
 {
-    assert(pt->frequency > 0); /* SIGFPE! */
-
     if (ses->srcc > 0)
-        return EBUSY;
+    {
+        msg_Err (demux, "cannot change RTP payload formats during session");
+        return EINVAL;
+    }
 
-    rtp_pt_t **ppt = realloc(ses->ptv, (ses->ptc + 1) * sizeof (pt));
+    rtp_pt_t *ppt = realloc (ses->ptv, (ses->ptc + 1) * sizeof (rtp_pt_t));
     if (ppt == NULL)
         return ENOMEM;
 
     ses->ptv = ppt;
-    ses->ptv[ses->ptc++] = pt;
+    ppt += ses->ptc++;
+
+    ppt->init = pt->init ? pt->init : no_init;
+    ppt->destroy = pt->destroy ? pt->destroy : no_destroy;
+    ppt->decode = pt->decode ? pt->decode : no_decode;
+    ppt->header = NULL;
+    ppt->frequency = pt->frequency;
+    ppt->number = pt->number;
+    msg_Dbg (demux, "added payload type %"PRIu8" (f = %"PRIu32" Hz)",
+             ppt->number, ppt->frequency);
+
+    assert (ppt->frequency > 0); /* SIGFPE! */
+    (void)demux;
     return 0;
 }
 
@@ -122,10 +150,7 @@ struct rtp_source_t
 
     uint16_t last_seq; /* sequence of the next dequeued packet */
     block_t *blocks; /* re-ordered blocks queue */
-    struct {
-        struct vlc_rtp_pt *instance; /* Per-source current payload format */
-        void *opaque; /* Per-source payload format private data */
-    } pt;
+    void    *opaque[]; /* Per-source private payload data */
 };
 
 /**
@@ -144,11 +169,16 @@ rtp_source_create (demux_t *demux, const rtp_session_t *session,
     source->ssrc = ssrc;
     source->jitter = 0;
     source->ref_rtp = 0;
-    source->ref_ntp = UINT64_C (1) << 51;
+    /* TODO: use VLC_TICK_0, but VLC does not like negative PTS at the moment */
+    source->ref_ntp = UINT64_C (1) << 62;
     source->max_seq = source->bad_seq = init_seq;
     source->last_seq = init_seq - 1;
     source->blocks = NULL;
-    source->pt.instance = NULL;
+
+    /* Initializes all payload */
+    for (unsigned i = 0; i < session->ptc; i++)
+        source->opaque[i] = session->ptv[i].init (demux);
+
     msg_Dbg (demux, "added RTP source (%08x)", ssrc);
     return source;
 }
@@ -157,11 +187,14 @@ rtp_source_create (demux_t *demux, const rtp_session_t *session,
 /**
  * Destroys an RTP source and its associated streams.
  */
-static void rtp_source_destroy(demux_t *demux, rtp_source_t *source)
+static void
+rtp_source_destroy (demux_t *demux, const rtp_session_t *session,
+                    rtp_source_t *source)
 {
     msg_Dbg (demux, "removing RTP source (%08x)", source->ssrc);
-    if (source->pt.instance != NULL)
-        vlc_rtp_pt_end(source->pt.instance, source->pt.opaque);
+
+    for (unsigned i = 0; i < session->ptc; i++)
+        session->ptv[i].destroy (demux, source->opaque[i]);
     block_ChainRelease (source->blocks);
     free (source);
 }
@@ -178,17 +211,20 @@ static inline uint32_t rtp_timestamp (const block_t *block)
     return GetDWBE (block->p_buffer + 4);
 }
 
-static struct vlc_rtp_pt *rtp_find_ptype(const rtp_session_t *session,
-                                         const block_t *block)
+static const struct rtp_pt_t *
+rtp_find_ptype (const rtp_session_t *session, rtp_source_t *source,
+                const block_t *block, void **pt_data)
 {
     uint8_t ptype = rtp_ptype (block);
 
     for (unsigned i = 0; i < session->ptc; i++)
     {
-        struct vlc_rtp_pt *pt = session->ptv[i];
-
-        if (pt->number == ptype)
-            return pt;
+        if (session->ptv[i].number == ptype)
+        {
+            if (pt_data != NULL)
+                *pt_data = source->opaque[i];
+            return &session->ptv[i];
+        }
     }
     return NULL;
 }
@@ -221,7 +257,7 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
         block->i_buffer -= padding;
     }
 
-    vlc_tick_t     now = vlc_tick_now ();
+    vlc_tick_t     now = mdate ();
     rtp_source_t  *src  = NULL;
     const uint16_t seq  = rtp_seq (block);
     const uint32_t ssrc = GetDWBE (block->p_buffer + 8);
@@ -239,7 +275,7 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
         /* RTP source garbage collection */
         if ((tmp->last_rx + p_sys->timeout) < now)
         {
-            rtp_source_destroy(demux, tmp);
+            rtp_source_destroy (demux, session, tmp);
             if (--session->srcc > 0)
                 session->srcv[i] = session->srcv[session->srcc - 1];
         }
@@ -269,7 +305,7 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
     }
     else
     {
-        const rtp_pt_t *pt = rtp_find_ptype(session, block);
+        const rtp_pt_t *pt = rtp_find_ptype (session, src, block, NULL);
 
         if (pt != NULL)
         {
@@ -278,7 +314,7 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
              * It is independent of RTP sequence. */
             uint32_t freq = pt->frequency;
             int64_t ts = rtp_timestamp (block);
-            int64_t d = samples_from_vlc_tick(now - src->last_rx, freq);
+            int64_t d = ((now - src->last_rx) * freq) / CLOCK_FREQ;
             d        -=    ts - src->last_ts;
             if (d < 0) d = -d;
             src->jitter += ((d - src->jitter) + 8) >> 4;
@@ -291,13 +327,9 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
     /* Check sequence number */
     /* NOTE: the sequence number is per-source,
      * but is independent from the payload type. */
-    union {
-        uint16_t u;
-        int16_t s;
-    } delta_seq = { .u = seq - src->max_seq };
-
-    if ((delta_seq.s >= 0) ? (delta_seq.u > p_sys->max_dropout)
-                           : (delta_seq.u < p_sys->max_misorder))
+    int16_t delta_seq = seq - src->max_seq;
+    if ((delta_seq > 0) ? (delta_seq > p_sys->max_dropout)
+                        : (-delta_seq > p_sys->max_misorder))
     {
         msg_Dbg (demux, "sequence discontinuity"
                  " (got: %"PRIu16", expected: %"PRIu16")", seq, src->max_seq);
@@ -316,7 +348,7 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
         }
     }
     else
-    if (delta_seq.s >= 0)
+    if (delta_seq >= 0)
         src->max_seq = seq + 1;
 
     /* Queues the block in sequence order,
@@ -324,10 +356,10 @@ rtp_queue (demux_t *demux, rtp_session_t *session, block_t *block)
     block_t **pp = &src->blocks;
     for (block_t *prev = *pp; prev != NULL; prev = *pp)
     {
-        delta_seq.u = seq - rtp_seq (prev);
-        if (delta_seq.s < 0)
+        delta_seq = seq - rtp_seq (prev);
+        if (delta_seq < 0)
             break;
-        if (delta_seq.s == 0)
+        if (delta_seq == 0)
         {
             msg_Dbg (demux, "duplicate packet (sequence: %"PRIu16")", seq);
             goto drop; /* duplicate */
@@ -362,10 +394,10 @@ static void rtp_decode (demux_t *, const rtp_session_t *, rtp_source_t *);
 bool rtp_dequeue (demux_t *demux, const rtp_session_t *session,
                   vlc_tick_t *restrict deadlinep)
 {
-    vlc_tick_t now = vlc_tick_now ();
+    vlc_tick_t now = mdate ();
     bool pending = false;
 
-    *deadlinep = VLC_TICK_MAX;
+    *deadlinep = INT64_MAX;
 
     for (unsigned i = 0, max = session->srcc; i < max; i++)
     {
@@ -400,15 +432,15 @@ bool rtp_dequeue (demux_t *demux, const rtp_session_t *session,
              * match for random gaussian jitter).
              */
             vlc_tick_t deadline;
-            const rtp_pt_t *pt = rtp_find_ptype(session, block);
+            const rtp_pt_t *pt = rtp_find_ptype (session, src, block, NULL);
             if (pt)
-                deadline = vlc_tick_from_samples(3 * src->jitter, pt->frequency);
+                deadline = CLOCK_FREQ * 3 * src->jitter / pt->frequency;
             else
                 deadline = 0; /* no jitter estimate with no frequency :( */
 
             /* Make sure we wait at least for 25 msec */
-            if (deadline < VLC_TICK_FROM_MS(25))
-                deadline = VLC_TICK_FROM_MS(25);
+            if (deadline < (CLOCK_FREQ / 40))
+                deadline = CLOCK_FREQ / 40;
 
             /* Additionally, we implicitly wait for the packetization time
              * multiplied by the number of missing packets. block is the first
@@ -428,6 +460,22 @@ bool rtp_dequeue (demux_t *demux, const rtp_session_t *session,
         }
     }
     return pending;
+}
+
+/**
+ * Dequeues all RTP packets and pass them to decoder. Not cancellation-safe(?).
+ * This function can be used when the packet source is known not to reorder.
+ */
+void rtp_dequeue_force (demux_t *demux, const rtp_session_t *session)
+{
+    for (unsigned i = 0, max = session->srcc; i < max; i++)
+    {
+        rtp_source_t *src = session->srcv[i];
+        block_t *block;
+
+        while (((block = src->blocks)) != NULL)
+            rtp_decode (demux, session, src);
+    }
 }
 
 /**
@@ -458,7 +506,8 @@ rtp_decode (demux_t *demux, const rtp_session_t *session, rtp_source_t *src)
     src->last_seq = rtp_seq (block);
 
     /* Match the payload type */
-    struct vlc_rtp_pt *pt = rtp_find_ptype(session, block);
+    void *pt_data;
+    const rtp_pt_t *pt = rtp_find_ptype (session, src, block, &pt_data);
     if (pt == NULL)
     {
         msg_Dbg (demux, "unknown payload (%"PRIu8")",
@@ -466,27 +515,16 @@ rtp_decode (demux_t *demux, const rtp_session_t *session, rtp_source_t *src)
         goto drop;
     }
 
-    if (src->pt.instance != pt) {
-        /* Change the active payload type for this source. */
-        if (src->pt.instance != NULL)
-            vlc_rtp_pt_end(src->pt.instance, src->pt.opaque);
-
-        src->pt.instance = pt;
-        src->pt.opaque = vlc_rtp_pt_begin(pt);
-    }
+    if(pt->header)
+        pt->header(demux, pt_data, block);
 
     /* Computes the PTS from the RTP timestamp and payload RTP frequency.
      * DTS is unknown. Also, while the clock frequency depends on the payload
      * format, a single source MUST only use payloads of a chosen frequency.
      * Otherwise it would be impossible to compute consistent timestamps. */
     const uint32_t timestamp = rtp_timestamp (block);
-    union {
-        uint32_t u;
-        int32_t s;
-    } ts_delta = { .u = timestamp - src->ref_rtp };
-    vlc_tick_t ticks = vlc_tick_from_samples(ts_delta.s, pt->frequency);
-
-    block->i_pts = src->ref_ntp + ticks;
+    block->i_pts = src->ref_ntp
+       + CLOCK_FREQ * (int32_t)(timestamp - src->ref_rtp) / pt->frequency;
     /* TODO: proper inter-medias/sessions sync (using RTCP-SR) */
     src->ref_ntp = block->i_pts;
     src->ref_rtp = timestamp;
@@ -507,15 +545,10 @@ rtp_decode (demux_t *demux, const rtp_session_t *session, rtp_source_t *src)
     if (block->i_buffer < skip)
         goto drop;
 
-    struct vlc_rtp_pktinfo pktinfo = {
-        .m = block->p_buffer[1] >> 7,
-        /* TODO: extension headers (e.g. AV-1 deps) */
-    };
-
     block->p_buffer += skip;
     block->i_buffer -= skip;
 
-    vlc_rtp_pt_decode(pt, src->pt.opaque, block, &pktinfo);
+    pt->decode (demux, pt_data, block);
     return;
 
 drop:

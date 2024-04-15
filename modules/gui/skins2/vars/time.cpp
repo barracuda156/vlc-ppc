@@ -2,6 +2,7 @@
  * time.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 8ca8c4a21317af18745bf6c1508c903a40b48376 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -22,20 +23,12 @@
  *****************************************************************************/
 
 #include "time.hpp"
+#include <vlc_input.h>
 
 
 inline bool StreamTime::havePosition() const {
-
-    float position = 0.0;
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-
-    if( player )
-    {
-        vlc_playlist_Lock( getPL() );
-        position = vlc_player_GetPosition( player );
-        vlc_playlist_Unlock( getPL() );
-    }
-    return player && (position != 0.0);
+    input_thread_t *p_input = getIntf()->p_sys->p_input;
+    return p_input && ( var_GetFloat( p_input, "position" ) != 0.0 );
 }
 
 
@@ -44,13 +37,8 @@ void StreamTime::set( float percentage, bool updateVLC )
     VarPercent::set( percentage );
 
     // Avoid looping forever...
-    if( updateVLC )
-    {
-        vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
-        vlc_playlist_Lock( getPL() );
-        vlc_player_SetPosition( player, percentage );
-        vlc_playlist_Unlock( getPL() );
-    }
+    if( updateVLC && getIntf()->p_sys->p_input )
+        var_SetFloat( getIntf()->p_sys->p_input, "position", percentage );
 }
 
 
@@ -86,39 +74,31 @@ std::string StreamTime::formatTime( int seconds, bool bShortFormat ) const
 
 std::string StreamTime::getAsStringCurrTime( bool bShortFormat ) const
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
     if( !havePosition() )
         return "-:--:--";
 
-    vlc_playlist_Lock( getPL() );
-    vlc_tick_t time = vlc_player_GetTime( player );
-    vlc_playlist_Unlock( getPL() );
-    return formatTime( SEC_FROM_VLC_TICK(time), bShortFormat );
+    vlc_tick_t time = var_GetInteger( getIntf()->p_sys->p_input, "time" );
+    return formatTime( time / CLOCK_FREQ, bShortFormat );
 }
 
 
 std::string StreamTime::getAsStringTimeLeft( bool bShortFormat ) const
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
     if( !havePosition() )
         return "-:--:--";
 
-    vlc_playlist_Lock( getPL() );
-    vlc_tick_t time = vlc_player_GetTime( player );
-    vlc_tick_t duration = vlc_player_GetLength( player );
-    vlc_playlist_Unlock( getPL() );
-    return formatTime( SEC_FROM_VLC_TICK(duration - time), bShortFormat );
+    vlc_tick_t time = var_GetInteger( getIntf()->p_sys->p_input, "time" ),
+        duration = var_GetInteger( getIntf()->p_sys->p_input, "length" );
+
+    return formatTime( (duration - time) / CLOCK_FREQ, bShortFormat );
 }
 
 
 std::string StreamTime::getAsStringDuration( bool bShortFormat ) const
 {
-    vlc_player_t *player = vlc_playlist_GetPlayer( getPL() );
     if( !havePosition() )
         return "-:--:--";
 
-    vlc_playlist_Lock( getPL() );
-    vlc_tick_t duration = vlc_player_GetLength( player );
-    vlc_playlist_Unlock( getPL() );
-    return formatTime( SEC_FROM_VLC_TICK(duration), bShortFormat );
+    vlc_tick_t time = var_GetInteger( getIntf()->p_sys->p_input, "length" );
+    return formatTime( time / CLOCK_FREQ, bShortFormat );
 }

@@ -2,6 +2,7 @@
  * sharpen.c: Sharpen video filter
  *****************************************************************************
  * Copyright (C) 2003-2007 VLC authors and VideoLAN
+ * $Id: e01fec0664b151af415ad82324ee0f43398bcfa9 $
  *
  * Author: Jérémy DEMEULE <dj_mulder at djduron dot no-ip dot org>
  *         Jean-Baptiste Kempf <jb at videolan dot org>
@@ -37,11 +38,12 @@
 #endif
 
 #include <assert.h>
-#include <stdatomic.h>
 #include <vlc_common.h>
+#include <vlc_atomic.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
 #include <vlc_picture.h>
+#include "filter_picture.h"
 
 #define SIG_TEXT N_("Sharpen strength (0-2)")
 #define SIG_LONGTEXT N_("Set the Sharpen strength, between 0 and 2. Defaults to 0.05.")
@@ -49,11 +51,12 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static int SharpenCallback( vlc_object_t *, char const *,
                             vlc_value_t, vlc_value_t, void * );
-VIDEO_FILTER_WRAPPER_CLOSE(Filter, Destroy)
 
 #define SHARPEN_HELP N_("Augment contrast between contours.")
 #define FILTER_PREFIX "sharpen-"
@@ -65,12 +68,14 @@ vlc_module_begin ()
     set_description( N_("Sharpen video filter") )
     set_shortname( N_("Sharpen") )
     set_help(SHARPEN_HELP)
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
     add_float_with_range( FILTER_PREFIX "sigma", 0.05, 0.0, 2.0,
-        SIG_TEXT, SIG_LONGTEXT )
+        SIG_TEXT, SIG_LONGTEXT, false )
     change_safe()
     add_shortcut( "sharpen" )
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -84,18 +89,20 @@ static const char *const ppsz_filter_options[] = {
  * It describes the Sharpen specific properties of an output thread.
  *****************************************************************************/
 
-typedef struct
+struct filter_sys_t
 {
     atomic_int sigma;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Create: allocates Sharpen video thread output method
  *****************************************************************************
  * This function allocates and initializes a Sharpen vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     const vlc_fourcc_t fourcc = p_filter->fmt_in.video.i_chroma;
     const vlc_chroma_description_t *p_chroma = vlc_fourcc_GetChromaDescription( fourcc );
     if( !p_chroma || p_chroma->plane_count != 3 ||
@@ -107,22 +114,21 @@ static int Create( filter_t *p_filter )
     }
 
     /* Allocate structure */
-    filter_sys_t *p_sys = malloc( sizeof( filter_sys_t ) );
-    if( p_sys == NULL )
+    p_filter->p_sys = malloc( sizeof( filter_sys_t ) );
+    if( p_filter->p_sys == NULL )
         return VLC_ENOMEM;
-    p_filter->p_sys = p_sys;
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     config_ChainParse( p_filter, FILTER_PREFIX, ppsz_filter_options,
                    p_filter->p_cfg );
 
-    atomic_init(&p_sys->sigma,
+    atomic_init(&p_filter->p_sys->sigma,
                 var_CreateGetFloatCommand(p_filter, FILTER_PREFIX "sigma")
                 * (1 << 20));
 
     var_AddCallback( p_filter, FILTER_PREFIX "sigma",
-                     SharpenCallback, p_sys );
+                     SharpenCallback, p_filter->p_sys );
 
     return VLC_SUCCESS;
 }
@@ -133,8 +139,9 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method created by SharpenCreateOutputMethod
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     var_DelCallback( p_filter, FILTER_PREFIX "sigma", SharpenCallback, p_sys );
@@ -159,9 +166,9 @@ static void Destroy( filter_t *p_filter )
         data_t *restrict p_src = (data_t *)p_pic->p[Y_PLANE].p_pixels;  \
         data_t *restrict p_out = (data_t *)p_outpic->p[Y_PLANE].p_pixels; \
         const unsigned data_sz = sizeof(data_t);                        \
-        const int i_src_line_len = p_pic->p[Y_PLANE].i_pitch / data_sz; \
-        const int i_out_line_len = p_outpic->p[Y_PLANE].i_pitch / data_sz; \
-        const int sigma = atomic_load(&p_sys->sigma);         \
+        const int i_src_line_len = p_outpic->p[Y_PLANE].i_pitch / data_sz; \
+        const int i_out_line_len = p_pic->p[Y_PLANE].i_pitch / data_sz; \
+        const int sigma = atomic_load(&p_filter->p_sys->sigma);         \
                                                                         \
         memcpy(p_out, p_src, i_visible_pitch);                          \
                                                                         \
@@ -197,14 +204,20 @@ static void Destroy( filter_t *p_filter )
                i_visible_pitch);                                        \
     } while (0)
 
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
     const int v1 = -1;
     const int v2 = 3; /* 2^3 = 8 */
     const unsigned i_visible_lines = p_pic->p[Y_PLANE].i_visible_lines;
     const unsigned i_visible_pitch = p_pic->p[Y_PLANE].i_visible_pitch;
 
-    filter_sys_t *p_sys = p_filter->p_sys;
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     if (!IS_YUV_420_10BITS(p_pic->format.i_chroma))
         SHARPEN_FRAME(255, uint8_t);
@@ -213,6 +226,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
 
     plane_CopyPixels( &p_outpic->p[U_PLANE], &p_pic->p[U_PLANE] );
     plane_CopyPixels( &p_outpic->p[V_PLANE], &p_pic->p[V_PLANE] );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 static int SharpenCallback( vlc_object_t *p_this, char const *psz_var,
@@ -220,7 +235,7 @@ static int SharpenCallback( vlc_object_t *p_this, char const *psz_var,
                             void *p_data )
 {
     VLC_UNUSED(p_this); VLC_UNUSED(oldval); VLC_UNUSED(psz_var);
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *)p_data;
 
     atomic_store(&p_sys->sigma,
                  VLC_CLIP(newval.f_float, 0.f, 2.f) * (1 << 20));

@@ -90,7 +90,7 @@ MRESULT EXPENTRY OS2Factory::OS2FrameProc( HWND hwnd, ULONG msg,
         // If closing parent window
         if( SHORT1FROMMP(mp1) == SC_CLOSE )
         {
-            libvlc_Quit( vlc_object_instance(p_intf) );
+            libvlc_Quit( p_intf->obj.libvlc );
 
             return 0;
         }
@@ -217,23 +217,17 @@ bool OS2Factory::init()
     changeCursor( kDefaultArrow );
 
     // Initialize the resource path
-    char *datadir = config_GetUserDir( VLC_USERDATA_DIR );
-    if (likely(datadir != nullptr))
-    {
-        m_resourcePath.push_back( (std::string)datadir + "\\skins" );
-        free( datadir );
-    }
-    datadir = config_GetSysPath(VLC_PKG_DATA_DIR, NULL);
-    if (likely(datadir != nullptr))
-    {
-        m_resourcePath.push_back( (std::string)datadir + "\\skins" );
-        m_resourcePath.push_back( (std::string)datadir + "\\skins2" );
-        m_resourcePath.push_back( (std::string)datadir + "\\share\\skins" );
-        m_resourcePath.push_back( (std::string)datadir + "\\share\\skins2" );
-        m_resourcePath.push_back( (std::string)datadir + "\\vlc\\skins" );
-        m_resourcePath.push_back( (std::string)datadir + "\\vlc\\skins2" );
-        free( datadir );
-    }
+    char *datadir = config_GetUserDir( VLC_DATA_DIR );
+    m_resourcePath.push_back( (std::string)datadir + "\\skins" );
+    free( datadir );
+    datadir = config_GetDataDir();
+    m_resourcePath.push_back( (std::string)datadir + "\\skins" );
+    m_resourcePath.push_back( (std::string)datadir + "\\skins2" );
+    m_resourcePath.push_back( (std::string)datadir + "\\share\\skins" );
+    m_resourcePath.push_back( (std::string)datadir + "\\share\\skins2" );
+    m_resourcePath.push_back( (std::string)datadir + "\\vlc\\skins" );
+    m_resourcePath.push_back( (std::string)datadir + "\\vlc\\skins2" );
+    free( datadir );
 
     // All went well
     return true;
@@ -369,7 +363,7 @@ int OS2Factory::getScreenHeight() const
 }
 
 
-void OS2Factory::getMonitorInfo( OSWindow* pWindow,
+void OS2Factory::getMonitorInfo( const GenericWindow &rWindow,
                                  int* p_x, int* p_y,
                                  int* p_width, int* p_height ) const
 {
@@ -432,17 +426,17 @@ void OS2Factory::changeCursor( CursorType_t type ) const
 
 void OS2Factory::rmDir( const std::string &rPath )
 {
-    const char *file;
-    vlc_DIR *dir;
+    struct dirent *file;
+    DIR *dir;
 
-    dir = vlc_opendir( rPath.c_str() );
+    dir = opendir( rPath.c_str() );
     if( !dir ) return;
 
     // Parse the directory and remove everything it contains
-    while( (file = vlc_readdir( dir )) )
+    while( (file = readdir( dir )) )
     {
         struct stat statbuf;
-        std::string filename = file;
+        std::string filename = file->d_name;
 
         // Skip "." and ".."
         if( filename == "." || filename == ".." )
@@ -452,7 +446,7 @@ void OS2Factory::rmDir( const std::string &rPath )
 
         filename = rPath + "\\" + filename;
 
-        if( !stat( filename.c_str(), &statbuf ) && S_ISDIR(statbuf.st_mode) )
+        if( !stat( filename.c_str(), &statbuf ) && statbuf.st_mode & S_IFDIR )
         {
             rmDir( filename );
         }
@@ -463,7 +457,7 @@ void OS2Factory::rmDir( const std::string &rPath )
     }
 
     // Close the directory
-    vlc_closedir( dir );
+    closedir( dir );
 
     // And delete it
     rmdir( rPath.c_str() );

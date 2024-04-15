@@ -2,6 +2,7 @@
  * win32_window.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: adb939d864c85d66bdf93bf76dfe81a9237aca23 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -45,11 +46,11 @@
 
 Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
                           HINSTANCE hInst, HWND hParentWindow,
-                          bool dragDrop,
+                          bool dragDrop, bool playOnDrop,
                           Win32Window *pParentWindow,
                           GenericWindow::WindowType_t type ):
     OSWindow( pIntf ), m_dragDrop( dragDrop ), m_isLayered( false ),
-    m_type ( type )
+    m_pParent( pParentWindow ), m_type ( type )
 {
     (void)hParentWindow;
     Win32Factory *pFactory = (Win32Factory*)Win32Factory::instance( getIntf() );
@@ -73,6 +74,9 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
         m_hWnd = CreateWindowEx( WS_EX_APPWINDOW, vlc_class,
                                  vlc_name, WS_POPUP | WS_CLIPCHILDREN,
                                  0, 0, 0, 0, NULL, 0, hInst, NULL );
+
+        // Store with it a pointer to the interface thread
+        SetWindowLongPtr( m_hWnd, GWLP_USERDATA, (LONG_PTR)getIntf() );
     }
     else if( type == GenericWindow::FscWindow )
     {
@@ -80,13 +84,15 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
         GenericWindow* pParent =
            (GenericWindow*)pVoutManager->getVoutMainWindow();
 
-        Win32Window *pWin = (Win32Window*)pParent->getOSWindow();
-        m_hWnd_parent = pWin->getHandle();
+        m_hWnd_parent = (HWND)pParent->getOSHandle();
 
         // top-level window
         m_hWnd = CreateWindowEx( WS_EX_APPWINDOW, vlc_class, vlc_name,
                                  WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                                  0, 0, 0, 0, m_hWnd_parent, 0, hInst, NULL );
+
+        // Store with it a pointer to the interface thread
+        SetWindowLongPtr( m_hWnd, GWLP_USERDATA, (LONG_PTR)getIntf() );
     }
     else
     {
@@ -95,6 +101,9 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
         m_hWnd = CreateWindowEx( 0, vlc_class, vlc_name,
                                  WS_POPUP | WS_CLIPCHILDREN,
                                  0, 0, 0, 0, hWnd_owner, 0, hInst, NULL );
+
+        // Store with it a pointer to the interface thread
+        SetWindowLongPtr( m_hWnd, GWLP_USERDATA, (LONG_PTR)getIntf() );
     }
 
     if( !m_hWnd )
@@ -103,9 +112,6 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
         return;
     }
 
-    // Store with it a pointer to the interface thread
-    SetWindowLongPtr( m_hWnd, GWLP_USERDATA, (LONG_PTR)getIntf() );
-
     // Store a pointer to the GenericWindow in a map
     pFactory->m_windowMap[m_hWnd] = &rWindow;
 
@@ -113,7 +119,7 @@ Win32Window::Win32Window( intf_thread_t *pIntf, GenericWindow &rWindow,
     if( m_dragDrop )
     {
         m_pDropTarget = (LPDROPTARGET)
-            new Win32DragDrop( getIntf(), &rWindow );
+            new Win32DragDrop( getIntf(), playOnDrop, &rWindow );
         // Register the window as a drop target
         RegisterDragDrop( m_hWnd, m_pDropTarget );
     }
@@ -139,11 +145,10 @@ Win32Window::~Win32Window()
 }
 
 
-void Win32Window::reparent( OSWindow* parent, int x, int y, int w, int h )
+void Win32Window::reparent( void* OSHandle, int x, int y, int w, int h )
 {
-    Win32Window *pParentWin = (Win32Window*)parent;
     // Reparent the window
-    if( !SetParent( m_hWnd, pParentWin->getHandle() ) )
+    if( !SetParent( m_hWnd, (HWND)OSHandle ) )
         msg_Err( getIntf(), "SetParent failed (%lu)", GetLastError() );
     MoveWindow( m_hWnd, x, y, w, h, TRUE );
 }

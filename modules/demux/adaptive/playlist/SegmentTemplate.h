@@ -2,6 +2,7 @@
  * SegmentTemplate.cpp: Implement the UrlTemplate element.
  *****************************************************************************
  * Copyright (C) 1998-2007 VLC authors and VideoLAN
+ * $Id: 79d27a30b774e1e377071098f5d52371640ca811 $
  *
  * Authors: Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
@@ -54,7 +55,7 @@ namespace adaptive
                 SegmentTemplate( SegmentTemplateSegment *, SegmentInformation * = nullptr );
                 virtual ~SegmentTemplate();
                 void setSourceUrl( const std::string &url );
-                uint64_t getLiveTemplateNumber(vlc_tick_t, bool = true) const;
+                uint64_t getLiveTemplateNumber(mtime_t, bool = true) const;
                 void pruneByPlaybackTime(vlc_tick_t);
                 size_t pruneBySequenceNumber(uint64_t);
 

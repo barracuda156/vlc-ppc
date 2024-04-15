@@ -47,7 +47,7 @@ static vlc_tick_t str_duration( const char *psz_duration )
         return -1;
     do
     {
-        double number = vlc_strtod_c( psz_duration, &end_ptr );
+        double number = us_strtod( psz_duration, &end_ptr );
         double      mul = 0;
         if ( psz_duration != end_ptr )
             psz_duration = end_ptr;
@@ -79,7 +79,7 @@ static vlc_tick_t str_duration( const char *psz_duration )
             default:
                 break ;
         }
-        res += vlc_tick_from_sec(mul * number);
+        res += mul * number * CLOCK_FREQ;
         if ( *psz_duration )
             psz_duration++;
     } while ( *psz_duration );
@@ -179,12 +179,11 @@ UTCTime::UTCTime(const std::string &str)
             tm.tm_sec = values[UTCTIME_SEC];
             tm.tm_isdst = 0;
 
-            int64_t mst = timegm( &tm );
-            mst += values[UTCTIME_TZ] * -60;
-            mst *= 1000;
-            t = VLC_TICK_FROM_MS(mst);
+            int64_t st = timegm( &tm );
+            st += values[UTCTIME_TZ] * -60;
+            t = st * CLOCK_FREQ;
             if(values[UTCTIME_FRAC_DEN] > 0)
-                t += vlc_tick_from_samples(values[UTCTIME_FRAC_NUM], values[UTCTIME_FRAC_DEN]);
+                t += CLOCK_FREQ * values[UTCTIME_FRAC_NUM] / values[UTCTIME_FRAC_DEN];
         } else {
             // Failure parsing time string
             t = 0;

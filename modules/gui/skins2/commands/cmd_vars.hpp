@@ -2,6 +2,7 @@
  * cmd_vars.hpp
  *****************************************************************************
  * Copyright (C) 2004 the VideoLAN team
+ * $Id: 73aab301053b616c3225ad0d23a1e51a1a343f87 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *
@@ -28,6 +29,9 @@
 #endif
 
 #include <vlc_common.h>
+#include <vlc_playlist.h>
+#include <vlc_input_item.h>
+
 #include "cmd_generic.hpp"
 #include "../utils/ustring.hpp"
 
@@ -39,9 +43,17 @@ class VarText;
 class CmdItemUpdate: public CmdGeneric
 {
 public:
-    CmdItemUpdate( intf_thread_t *pIntf, int pos ):
-        CmdGeneric( pIntf ), m_pos( pos ) {}
-    virtual ~CmdItemUpdate() {}
+    CmdItemUpdate( intf_thread_t *pIntf, input_item_t* pItem ):
+        CmdGeneric( pIntf ), m_pItem( pItem )
+    {
+        if( pItem )
+            input_item_Hold( pItem );
+    }
+    virtual ~CmdItemUpdate()
+    {
+        if( m_pItem )
+            input_item_Release( m_pItem );
+    }
     virtual void execute();
     virtual std::string getType() const { return "playtree update"; }
 
@@ -49,49 +61,37 @@ public:
     virtual bool checkRemove( CmdGeneric * ) const;
 
 private:
-    int m_pos;
-};
-
-/// Command to notify the playtree of a change in item playing
-class CmdItemPlaying: public CmdGeneric
-{
-public:
-    CmdItemPlaying( intf_thread_t *pIntf, int pos ):
-        CmdGeneric( pIntf ), m_pos( pos ) {}
-    virtual ~CmdItemPlaying() {}
-    virtual void execute();
-    virtual std::string getType() const { return "playtree playing"; }
-
-private:
-    int m_pos;
+    /// input item changed
+    input_item_t* m_pItem;
 };
 
 /// Command to notify the playtree of an item append
 class CmdPlaytreeAppend: public CmdGeneric
 {
 public:
-    CmdPlaytreeAppend( intf_thread_t *pIntf, int pos ):
-        CmdGeneric( pIntf ), m_pos( pos ) { }
+    CmdPlaytreeAppend( intf_thread_t *pIntf, int i_id ):
+        CmdGeneric( pIntf ), m_id( i_id )
+    { }
     virtual ~CmdPlaytreeAppend() { }
     virtual void execute();
     virtual std::string getType() const { return "playtree append"; }
 
 private:
-    int m_pos;
+    int m_id;
 };
 
 /// Command to notify the playtree of an item deletion
 class CmdPlaytreeDelete: public CmdGeneric
 {
 public:
-    CmdPlaytreeDelete( intf_thread_t *pIntf, int pos ):
-        CmdGeneric( pIntf ), m_pos( pos ) { }
+    CmdPlaytreeDelete( intf_thread_t *pIntf, int i_id ):
+        CmdGeneric( pIntf ), m_id( i_id ) { }
     virtual ~CmdPlaytreeDelete() { }
     virtual void execute();
     virtual std::string getType() const { return "playtree append"; }
 
 private:
-    int m_pos;
+    int m_id;
 };
 
 

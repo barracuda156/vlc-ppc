@@ -28,7 +28,7 @@ class IsoTime
 {
     public:
         IsoTime(const std::string&);
-        operator vlc_tick_t() const;
+        operator mtime_t() const;
 
     private:
         vlc_tick_t time;

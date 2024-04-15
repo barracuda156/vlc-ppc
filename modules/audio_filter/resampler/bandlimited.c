@@ -2,6 +2,7 @@
  * bandlimited.c : band-limited interpolation resampler
  *****************************************************************************
  * Copyright (C) 2002, 2006 VLC authors and VideoLAN
+ * $Id: abd8a5016143701d2c8e9ed88eefe62348dd715c $
  *
  * Authors: Gildas Bazin <gbazin@netcourrier.com>
  *
@@ -52,7 +53,7 @@
 
 /* audio filter */
 static int  OpenFilter ( vlc_object_t * );
-static void CloseFilter( filter_t * );
+static void CloseFilter( vlc_object_t * );
 static block_t *Resample( filter_t *, block_t * );
 
 static void ResampleFloat( filter_t *p_filter,
@@ -65,7 +66,7 @@ static void ResampleFloat( filter_t *p_filter,
 /*****************************************************************************
  * Local structures
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     int32_t *p_buf;                        /* this filter introduces a delay */
     size_t i_buf_size;
@@ -77,20 +78,21 @@ typedef struct
     bool b_first;
 
     date_t end_date;
-} filter_sys_t;
+};
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_RESAMPLER )
     set_description( N_("Audio filter for band-limited interpolation resampling") )
     set_capability( "audio converter", 20 )
-    set_callback( OpenFilter )
+    set_callbacks( OpenFilter, CloseFilter )
 
     add_submodule()
     set_capability( "audio resampler", 20 )
-    set_callback( OpenFilter )
+    set_callbacks( OpenFilter, CloseFilter )
 vlc_module_end ()
 
 /*****************************************************************************
@@ -278,10 +280,6 @@ static block_t *Resample( filter_t * p_filter, block_t * p_in_buf )
     return p_out_buf;
 }
 
-static const struct vlc_filter_operations filter_ops = {
-    .filter_audio = Resample, .close = CloseFilter,
-};
-
 /*****************************************************************************
  * OpenFilter:
  *****************************************************************************/
@@ -309,7 +307,7 @@ static int OpenFilter( vlc_object_t *p_this )
 
     p_sys->i_old_wing = 0;
     p_sys->b_first = true;
-    p_filter->ops = &filter_ops;
+    p_filter->pf_audio_filter = Resample;
 
     msg_Dbg( p_this, "%4.4s/%iKHz/%i->%4.4s/%iKHz/%i",
              (char *)&p_filter->fmt_in.i_codec,
@@ -328,8 +326,9 @@ static int OpenFilter( vlc_object_t *p_this )
 /*****************************************************************************
  * CloseFilter : deallocate data structures
  *****************************************************************************/
-static void CloseFilter( filter_t *p_filter )
+static void CloseFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     free( p_filter->p_sys->p_buf );
     free( p_filter->p_sys );
 }

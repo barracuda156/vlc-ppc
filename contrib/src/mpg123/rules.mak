@@ -7,10 +7,11 @@ ifeq ($(call need_pkg,"libmpg123"),)
 PKGS_FOUND += mpg123
 endif
 
+MPG123_CFLAGS := $(CFLAGS)
 # Same forced value as in VLC
-MPG123CONF := CFLAGS="$(CFLAGS) -D_FILE_OFFSET_BITS=64"
+MPG123_CFLAGS += -D_FILE_OFFSET_BITS=64
 
-MPG123CONF =
+MPG123CONF = $(HOSTCONF)
 MPG123CONF += --with-default-audio=dummy --enable-buffer=no --enable-modules=no --disable-network
 
 ifdef HAVE_ANDROID
@@ -36,13 +37,12 @@ $(TARBALLS)/mpg123-$(MPG123_VERSION).tar.bz2:
 
 mpg123: mpg123-$(MPG123_VERSION).tar.bz2 .sum-mpg123
 	$(UNPACK)
+	$(APPLY) $(SRC)/mpg123/no-programs.patch
 	$(call pkg_static,"libmpg123.pc.in")
 	$(MOVE)
 
 .mpg123: mpg123
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(MPG123CONF)
-	+$(MAKEBUILD) bin_PROGRAMS=
-	+$(MAKEBUILD) bin_PROGRAMS= install
+	cd $< && $(HOSTVARS) CFLAGS="$(MPG123_CFLAGS)" ./configure $(MPG123CONF)
+	cd $< && $(MAKE) install
 	touch $@

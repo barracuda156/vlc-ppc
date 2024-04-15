@@ -1,6 +1,6 @@
 # opus
 
-OPUS_VERSION := 1.3.1
+OPUS_VERSION := 1.3
 
 OPUS_URL := https://archive.mozilla.org/pub/opus/opus-$(OPUS_VERSION).tar.gz
 
@@ -16,20 +16,15 @@ $(TARBALLS)/opus-$(OPUS_VERSION).tar.gz:
 
 opus: opus-$(OPUS_VERSION).tar.gz .sum-opus
 	$(UNPACK)
-	$(APPLY) $(SRC)/opus/0001-CMake-set-the-pkg-config-version-to-the-library-vers.patch
-	$(APPLY) $(SRC)/opus/0002-CMake-set-the-pkg-config-string-as-with-autoconf-mes.patch
-	# fix missing included file in packaged source
-	cd $(UNPACK_DIR) && sed -e 's,include(opus_buildtype,#include(opus_buildtype,' -i.orig CMakeLists.txt
+	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 
-OPUS_CONF=
+OPUS_CONF= --disable-extra-programs --disable-doc
 ifndef HAVE_FPU
-OPUS_CONF += -DOPUS_FIXED_POINT=ON
+OPUS_CONF += --enable-fixed-point
 endif
 
-.opus: opus toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE) $(OPUS_CONF)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+.opus: opus
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) $(OPUS_CONF)
+	cd $< && $(MAKE) install
 	touch $@

@@ -32,13 +32,13 @@
 #include <vlc_block_helper.h>
 #include <vlc_network.h>
 
-typedef struct
+typedef struct sout_access_out_sys_t
 {
     SRTSOCKET     sock;
     int           i_poll_id;
     bool          b_interrupted;
     vlc_mutex_t   lock;
-    size_t        i_payload_size;
+    int           i_payload_size;
     block_bytestream_t block_stream;
 } sout_access_out_sys_t;
 
@@ -63,16 +63,12 @@ static void srt_wait_interrupted(void *p_data)
 
 static bool srt_schedule_reconnect(sout_access_out_t *p_access)
 {
-    vlc_object_t *access_obj = VLC_OBJECT(p_access);
+    vlc_object_t *access_obj = (vlc_object_t *) p_access;
     int stat;
     char *psz_dst_addr = NULL;
     int i_dst_port;
     int i_latency=var_InheritInteger( p_access, SRT_PARAM_LATENCY );
-
     int i_payload_size = var_InheritInteger( p_access, SRT_PARAM_PAYLOAD_SIZE );
-    if (i_payload_size <= 0)
-        i_payload_size = SRT_DEFAULT_PAYLOAD_SIZE;
-
     char *psz_passphrase = var_InheritString( p_access, SRT_PARAM_PASSPHRASE );
     bool passphrase_needs_free = true;
     char *psz_streamid = var_InheritString( p_access, SRT_PARAM_STREAMID );
@@ -125,7 +121,7 @@ static bool srt_schedule_reconnect(sout_access_out_t *p_access)
         srt_close( p_sys->sock );
     }
 
-    p_sys->sock = srt_create_socket( );
+    p_sys->sock = srt_socket( res->ai_family, SOCK_DGRAM, 0 );
     if ( p_sys->sock == SRT_INVALID_SOCK )
     {
         msg_Err( p_access, "Failed to open socket." );
@@ -188,7 +184,7 @@ static bool srt_schedule_reconnect(sout_access_out_t *p_access)
                 SRTO_STREAMID, psz_streamid, strlen(psz_streamid) );
     }
 
-    /* set maximum payload size */
+    /* set maximumu payload size */
     stat = srt_set_socket_option( access_obj, SRT_PARAM_PAYLOAD_SIZE, p_sys->sock,
             SRTO_PAYLOADSIZE, &i_payload_size, sizeof(i_payload_size) );
     if ( stat == SRT_ERROR )
@@ -433,6 +429,8 @@ static int Open( vlc_object_t *p_this )
     return VLC_SUCCESS;
 
 failed:
+    vlc_mutex_destroy( &p_sys->lock );
+
     if ( p_sys->sock != -1 ) srt_close( p_sys->sock );
     if ( p_sys->i_poll_id != -1 ) srt_epoll_release( p_sys->i_poll_id );
 
@@ -443,6 +441,8 @@ static void Close( vlc_object_t * p_this )
 {
     sout_access_out_t     *p_access = (sout_access_out_t*)p_this;
     sout_access_out_sys_t *p_sys = p_access->p_sys;
+
+    vlc_mutex_destroy( &p_sys->lock );
 
     srt_epoll_remove_usock( p_sys->i_poll_id, p_sys->sock );
     srt_close( p_sys->sock );
@@ -456,27 +456,28 @@ static void Close( vlc_object_t * p_this )
 vlc_module_begin()
     set_shortname( N_( "SRT" ) )
     set_description( N_( "SRT stream output" ) )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_ACO )
 
     add_obsolete_integer( SRT_PARAM_CHUNK_SIZE )
     add_integer( SRT_PARAM_POLL_TIMEOUT, SRT_DEFAULT_POLL_TIMEOUT,
             N_( "Return poll wait after timeout milliseconds (-1 = infinite)" ),
-            NULL )
+            NULL, true )
     add_integer( SRT_PARAM_LATENCY, SRT_DEFAULT_LATENCY, N_( "SRT latency (ms)" ),
-            NULL )
+            NULL, true )
     add_password( SRT_PARAM_PASSPHRASE, "", N_( "Password for stream encryption" ),
-            NULL )
+            NULL, false )
     add_integer( SRT_PARAM_PAYLOAD_SIZE, SRT_DEFAULT_PAYLOAD_SIZE,
-            N_( "SRT maximum payload size (bytes)" ), NULL )
+            N_( "SRT maximum payload size (bytes)" ), NULL, true )
         change_integer_range( 1, SRT_LIVE_MAX_PLSIZE )
     add_integer( SRT_PARAM_BANDWIDTH_OVERHEAD_LIMIT,
             SRT_DEFAULT_BANDWIDTH_OVERHEAD_LIMIT,
-            N_( "SRT maximum bandwidth ceiling (bytes)" ), NULL )
+            N_( "SRT maximum bandwidth ceiling (bytes)" ), NULL, true )
     add_integer( SRT_PARAM_KEY_LENGTH, SRT_DEFAULT_KEY_LENGTH, SRT_KEY_LENGTH_TEXT,
-            NULL )
+            SRT_KEY_LENGTH_TEXT, false )
     change_integer_list( srt_key_lengths, srt_key_length_names )
     add_string(SRT_PARAM_STREAMID, "",
-            N_(" SRT Stream ID"), NULL)
+            N_(" SRT Stream ID"), NULL, false)
     change_safe()
 
     set_capability( "sout access", 0 )

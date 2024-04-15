@@ -2,6 +2,7 @@
  * SegmentTimeline.cpp: Implement the SegmentTimeline tag.
  *****************************************************************************
  * Copyright (C) 1998-2007 VLC authors and VideoLAN
+ * $Id: f5c909880e2a2a558b6f73071f16262699b4fd5f $
  *
  * Authors: Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
@@ -63,7 +64,7 @@ void SegmentTimeline::addElement(uint64_t number, stime_t d, uint64_t r, stime_t
     }
 }
 
-stime_t SegmentTimeline::getMinAheadScaledTime(uint64_t number) const
+vlc_tick_t SegmentTimeline::getMinAheadScaledTime(uint64_t number) const
 {
     stime_t totalscaledtime = 0;
 
@@ -100,7 +101,7 @@ uint64_t SegmentTimeline::getElementNumberByScaledPlaybackTime(stime_t scaled) c
         const Element *el = *it;
         if(scaled >= el->t)
         {
-            if((uint64_t)scaled < el->t + (el->d * (el->r + 1)))
+            if((uint64_t)scaled < el->t + (el->d * el->r))
                 return el->number + (scaled - el->t) / el->d;
         }
         /* might have been discontinuity */

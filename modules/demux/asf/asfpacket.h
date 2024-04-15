@@ -24,11 +24,9 @@
 
 #include <vlc_demux.h>
 #include <vlc_es.h>
-#include <vlc_messages.h>
 #include "libasf.h"
 
 #define ASFPACKET_PREROLL_FROM_CURRENT -1
-#define ASFPACKET_DEDUPLICATE 8
 
 typedef struct
 {
@@ -36,28 +34,17 @@ typedef struct
     asf_object_stream_properties_t *p_sp;
     asf_object_extended_stream_properties_t *p_esp;
     int i_cat;
-    struct
-    {
-        unsigned media_number;
-        unsigned media_offset;
-    } prev[ASFPACKET_DEDUPLICATE];
-    unsigned i_pkt;
-    unsigned i_pktcount;
 } asf_track_info_t;
 
 typedef struct asf_packet_sys_s asf_packet_sys_t;
 
 struct asf_packet_sys_s
 {
-    void *priv;
-    stream_t *s;
-    struct vlc_logger *logger;
+    demux_t *p_demux;
 
     /* global stream info */
-    vlc_tick_t *pi_preroll;
-    vlc_tick_t *pi_preroll_start;
-    bool b_deduplicate; /* Flip4mac repeats data object payloads */
-    bool b_can_hold_multiple_packets; /* Flip4mac passes multiple buffers */
+    uint64_t *pi_preroll;
+    int64_t *pi_preroll_start;
 
     /* callbacks */
     void (*pf_send)(asf_packet_sys_t *, uint8_t, block_t **);
@@ -65,12 +52,10 @@ struct asf_packet_sys_s
 
     /* optional callbacks */
     bool (*pf_doskip)(asf_packet_sys_t *, uint8_t, bool);
-    void (*pf_updatesendtime)(asf_packet_sys_t *, vlc_tick_t);
-    void (*pf_updatetime)(asf_packet_sys_t *, uint8_t, vlc_tick_t);
+    void (*pf_updatesendtime)(asf_packet_sys_t *, mtime_t);
+    void (*pf_updatetime)(asf_packet_sys_t *, uint8_t, mtime_t);
     void (*pf_setaspectratio)(asf_packet_sys_t *, uint8_t, uint8_t, uint8_t);
 };
 
 int DemuxASFPacket( asf_packet_sys_t *, uint32_t, uint32_t, uint64_t, uint64_t );
-void ASFPacketTrackInit( asf_track_info_t * );
-void ASFPacketTrackReset( asf_track_info_t * );
 #endif

@@ -2,6 +2,7 @@
  * ram.c : RAM playlist format import
  *****************************************************************************
  * Copyright (C) 2009 VLC authors and VideoLAN
+ * $Id: b01b92025fbef728021ef7b0674f13ca91fcd624 $
  *
  * Authors: Srikanth Raju <srikiraju@gmail.com>
  *
@@ -73,12 +74,13 @@ int Import_RAM( vlc_object_t *p_this )
     stream_t *p_demux = (stream_t *)p_this;
     const uint8_t *p_peek;
 
+    CHECK_FILE(p_demux);
     if( !stream_HasExtension( p_demux, ".ram" )
      && !stream_HasExtension( p_demux, ".rm" ) )
         return VLC_EGENERIC;
 
     /* Many Real Media Files are misdetected */
-    if( vlc_stream_Peek( p_demux->s, &p_peek, 4 ) < 4 )
+    if( vlc_stream_Peek( p_demux->p_source, &p_peek, 4 ) < 4 )
         return VLC_EGENERIC;
     if( !memcmp( p_peek, ".ra", 3 ) || !memcmp( p_peek, ".RMF", 4 ) )
     {
@@ -87,7 +89,7 @@ int Import_RAM( vlc_object_t *p_this )
 
     msg_Dbg( p_demux, "found valid RAM playlist" );
     p_demux->pf_readdir = ReadDir;
-    p_demux->pf_control = PlaylistControl;
+    p_demux->pf_control = access_vaDirectoryControlHelper;
 
     return VLC_SUCCESS;
 }
@@ -200,12 +202,13 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
     char       *psz_line;
     char       *psz_artist = NULL, *psz_album = NULL, *psz_genre = NULL, *psz_year = NULL;
     char       *psz_author = NULL, *psz_title = NULL, *psz_copyright = NULL, *psz_cdnum = NULL, *psz_comments = NULL;
+    vlc_tick_t i_duration = -1;
     const char **ppsz_options = NULL;
     int        i_options = 0, i_start = 0, i_stop = 0;
     bool b_cleanup = false;
     input_item_t *p_input;
 
-    psz_line = vlc_stream_ReadLine( p_demux->s );
+    psz_line = vlc_stream_ReadLine( p_demux->p_source );
     while( psz_line )
     {
         char *psz_parse = psz_line;
@@ -315,7 +318,8 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
             }
 
             /* Create the input item and pump in all the options into playlist item */
-            p_input = input_item_New( psz_mrl, psz_title );
+            p_input = input_item_NewExt( psz_mrl, psz_title, i_duration,
+                                         ITEM_TYPE_UNKNOWN, ITEM_NET_UNKNOWN );
             if( !p_input )
             {
                 free( psz_mrl );
@@ -342,7 +346,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
  error:
         /* Fetch another line */
         free( psz_line );
-        psz_line = vlc_stream_ReadLine( p_demux->s );
+        psz_line = vlc_stream_ReadLine( p_demux->p_source );
         if( !psz_line ) b_cleanup = true;
 
         if( b_cleanup )
@@ -360,6 +364,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
             FREENULL( psz_cdnum );
             FREENULL( psz_comments );
             i_options = 0;
+            i_duration = -1;
             i_start = 0;
             i_stop = 0;
             b_cleanup = false;

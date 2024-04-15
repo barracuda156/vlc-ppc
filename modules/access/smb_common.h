@@ -28,7 +28,8 @@
 #define SMB_DOMAIN_LONGTEXT N_("Domain/Workgroup that " \
         "will be used for the connection.")
 
-#define SMB1_LOGIN_DIALOG_TITLE N_( "SMBv1 authentication required" )
+/* Not translated since added after the VLC 3.0 release */
+#define SMB1_LOGIN_DIALOG_TITLE "SMBv1 authentication required"
 
 #define SMB_LOGIN_DIALOG_TITLE N_( "SMB authentication required" )
 #define SMB_LOGIN_DIALOG_TEXT N_( "The computer (%s) you are trying to connect "   \

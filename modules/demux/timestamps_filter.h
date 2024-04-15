@@ -66,7 +66,6 @@ struct tf_es_out_s
     DECL_ARRAY(struct tf_es_out_id_s *) es_list;
     struct timestamps_filter_s pcrtf;
     bool b_discontinuity;
-    es_out_t es_out;
 };
 
 static void timestamps_filter_init(struct timestamps_filter_s *tf)
@@ -95,11 +94,7 @@ static bool timestamps_filter_push(const char *s, struct timestamps_filter_s *tf
 
         if(b_contiguous)
         {
-            int64_t i_maxdiff = 0;
-            if(tf->mva.i_packet > MVA_PACKETS)
-                i_maxdiff = mva_get(&tf->mva) * 2;
-            if(i_maxdiff < CLOCK_FREQ)
-                i_maxdiff = CLOCK_FREQ;
+            const int64_t i_maxdiff = tf->mva.i_packet > MVA_PACKETS ? mva_get(&tf->mva) * 2 : CLOCK_FREQ;
             if(llabs(i_dts - prev->dts) > i_maxdiff || b_discontinuity) /* Desync */
             {
                 prev->diff = mva_get(&tf->mva);
@@ -117,8 +112,7 @@ static bool timestamps_filter_push(const char *s, struct timestamps_filter_s *tf
 #ifdef DEBUG_TIMESTAMPS_FILTER
         vlc_tick_t next = prev->dts + mva_get(&tf->mva);
 
-        printf("%4.4s expected %" PRId64 " / %" PRId64 " , prev %" PRId64 "+%" PRId64
-               " error %lld comp %" PRId64 "\n",
+        printf("%4.4s expected %ld / %ld , prev %ld+%ld error %ld comp %ld\n",
                s, next, i_dts, prev->dts, mva_get(&tf->mva),
                b_contiguous ? llabs(i_dts - next): 0, i_dts + tf->sequence_offset);
 #else
@@ -156,10 +150,9 @@ static void timestamps_filter_es_out_Reset(struct tf_es_out_s *out)
     out->b_discontinuity = false;
 }
 
-static int timestamps_filter_es_out_Control(es_out_t *out, input_source_t *in, int i_query, va_list va_list)
+static int timestamps_filter_es_out_Control(es_out_t *out, int i_query, va_list va_list)
 {
-    VLC_UNUSED(in);
-    struct tf_es_out_s *p_sys = container_of(out, struct tf_es_out_s, es_out);
+    struct tf_es_out_s *p_sys = (struct tf_es_out_s *) out->p_sys;
     switch(i_query)
     {
         case ES_OUT_SET_PCR:
@@ -244,7 +237,7 @@ static int timestamps_filter_es_out_Control(es_out_t *out, input_source_t *in, i
 
 static int timestamps_filter_es_out_Send(es_out_t *out, es_out_id_t *id, block_t *p_block)
 {
-    struct tf_es_out_s *p_sys = container_of(out, struct tf_es_out_s, es_out);
+    struct tf_es_out_s *p_sys = (struct tf_es_out_s *) out->p_sys;
     struct tf_es_out_id_s *cur = timestamps_filter_es_out_getID(p_sys, id);
 
     timestamps_filter_push((char*)&cur->fourcc, &cur->tf,
@@ -263,7 +256,7 @@ static int timestamps_filter_es_out_Send(es_out_t *out, es_out_id_t *id, block_t
             if(i_offsetdiff != 0)
                 cur->tf.sequence_offset -= i_offsetdiff;
 #ifdef DEBUG_TIMESTAMPS_FILTER
-            printf("    ^ diff pcr %" PRId64 " off %" PRId64 " ********** pcrnum %u seq %u/%u\n",
+            printf("    ^ diff pcr %ld off %ld ********** pcrnum %ld seq %d/%d\n",
                    cur->pcrdiff, i_offsetdiff, p_sys->pcrtf.mva.i_packet,
                    cur->tf.sequence, p_sys->pcrtf.sequence);
 #endif
@@ -297,17 +290,17 @@ static int timestamps_filter_es_out_Send(es_out_t *out, es_out_id_t *id, block_t
 
 static void timestamps_filter_es_out_Delete(es_out_t *out)
 {
-    struct tf_es_out_s *p_sys = container_of(out, struct tf_es_out_s, es_out);
+    struct tf_es_out_s *p_sys = (struct tf_es_out_s *) out->p_sys;
     for(int i=0; i<p_sys->es_list.i_size; i++)
         free(p_sys->es_list.p_elems[i]);
     ARRAY_RESET(p_sys->es_list);
     free(p_sys);
+    free(out);
 }
 
-static es_out_id_t *timestamps_filter_es_out_Add(es_out_t *out, input_source_t *in, const es_format_t *fmt)
+static es_out_id_t *timestamps_filter_es_out_Add(es_out_t *out, const es_format_t *fmt)
 {
-    VLC_UNUSED(in);
-    struct tf_es_out_s *p_sys = container_of(out, struct tf_es_out_s, es_out);
+    struct tf_es_out_s *p_sys = (struct tf_es_out_s *) out->p_sys;
 
     struct tf_es_out_id_s *tf_es_sys = malloc(sizeof(*tf_es_sys));
     if(!tf_es_sys)
@@ -333,7 +326,7 @@ static es_out_id_t *timestamps_filter_es_out_Add(es_out_t *out, input_source_t *
 
 static void timestamps_filter_es_out_Del(es_out_t *out, es_out_id_t *id)
 {
-    struct tf_es_out_s *p_sys = container_of(out, struct tf_es_out_s, es_out);
+    struct tf_es_out_s *p_sys = (struct tf_es_out_s *) out->p_sys;
 
     es_out_Del(p_sys->original_es_out, id);
 
@@ -348,32 +341,28 @@ static void timestamps_filter_es_out_Del(es_out_t *out, es_out_id_t *id)
     }
 }
 
-static const struct es_out_callbacks timestamps_filter_es_out_cbs =
-{
-    timestamps_filter_es_out_Add,
-    timestamps_filter_es_out_Send,
-    timestamps_filter_es_out_Del,
-    timestamps_filter_es_out_Control,
-    timestamps_filter_es_out_Delete,
-    NULL,
-};
-
 static es_out_t * timestamps_filter_es_out_New(es_out_t *orig)
 {
+    es_out_t *p_out = malloc(sizeof(*p_out));
+    if(!p_out)
+        return NULL;
     struct tf_es_out_s *tf = malloc(sizeof(*tf));
     if(!tf)
     {
-        free(tf);
+        free(p_out);
         return NULL;
     }
     tf->original_es_out = orig;
     tf->b_discontinuity = false;
     timestamps_filter_init(&tf->pcrtf);
     ARRAY_INIT(tf->es_list);
-
-    tf->es_out.cbs = &timestamps_filter_es_out_cbs;
-
-    return &tf->es_out;
+    p_out->p_sys = (es_out_sys_t *)tf;
+    p_out->pf_add = timestamps_filter_es_out_Add;
+    p_out->pf_send = timestamps_filter_es_out_Send;
+    p_out->pf_del = timestamps_filter_es_out_Del;
+    p_out->pf_control = timestamps_filter_es_out_Control;
+    p_out->pf_destroy = timestamps_filter_es_out_Delete;
+    return p_out;
 }
 
 #endif

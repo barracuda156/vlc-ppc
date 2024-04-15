@@ -2,6 +2,7 @@
  * ddummy.c: dummy decoder plugin for vlc.
  *****************************************************************************
  * Copyright (C) 2002 VLC authors and VideoLAN
+ * $Id: 266e636b491563b647621c81c789325771221af1 $
  *
  * Authors: Samuel Hocevar <sam@zoy.org>
  *
@@ -46,8 +47,9 @@ vlc_module_begin ()
     set_description( N_("Dummy decoder") )
     set_capability( "spu decoder", 0 )
     set_callbacks( OpenDecoder, CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
-    add_bool( "dummy-save-es", false, SAVE_TEXT, SAVE_LONGTEXT )
+    add_bool( "dummy-save-es", false, SAVE_TEXT, SAVE_LONGTEXT, true )
     add_shortcut( "dummy" )
     add_submodule()
     add_shortcut( "dummy" )
@@ -109,7 +111,7 @@ static int OpenDecoderCommon( vlc_object_t *p_this, bool b_force_dump )
     /* Set callbacks */
     p_dec->pf_decode = DecodeBlock;
 
-    es_format_Copy( &p_dec->fmt_out, p_dec->fmt_in );
+    es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );
 
     return VLC_SUCCESS;
 }

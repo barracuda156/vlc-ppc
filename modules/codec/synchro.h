@@ -1,7 +1,8 @@
 /*****************************************************************************
- * synchro.h: frame-dropping structures
+ * vlc_codec_synchro.h: frame-dropping structures
  *****************************************************************************
  * Copyright (C) 1999-2005 VLC authors and VideoLAN
+ * $Id: 58792a17ff3de9a1653134492d99031b25eb6cd1 $
  *
  * Authors: Christophe Massiot <massiot@via.ecp.fr>
  *          Jean-Marc Dressler <polux@via.ecp.fr>
@@ -25,9 +26,7 @@
 /*****************************************************************************
  * decoder_synchro_t : timers for the video synchro
  *****************************************************************************/
-typedef struct decoder_synchro_t decoder_synchro_t;
-
-/* Read the discussion on top of synchro.c for more information. */
+/* Read the discussion on top of decoder_synchro.c for more information. */
 /* Pictures types */
 #define I_CODING_TYPE           1
 #define P_CODING_TYPE           2
@@ -41,7 +40,7 @@ typedef struct decoder_synchro_t decoder_synchro_t;
 decoder_synchro_t * decoder_SynchroInit( decoder_t *, int ) VLC_USED;
 void decoder_SynchroRelease( decoder_synchro_t * );
 void decoder_SynchroReset( decoder_synchro_t * );
-bool decoder_SynchroChoose( decoder_synchro_t *, int, vlc_tick_t, bool );
+bool decoder_SynchroChoose( decoder_synchro_t *, int, int, bool );
 void decoder_SynchroTrash( decoder_synchro_t * );
 void decoder_SynchroDecode( decoder_synchro_t * );
 void decoder_SynchroEnd( decoder_synchro_t *, int, bool );

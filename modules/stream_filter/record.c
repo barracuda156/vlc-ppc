@@ -2,6 +2,7 @@
  * record.c
  *****************************************************************************
  * Copyright (C) 2008 Laurent Aimar
+ * $Id: 67ac7bd41b37734ef8fe1422b4c42ec21e87859f $
  *
  * Author: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -32,7 +33,7 @@
 
 #include <assert.h>
 #include <vlc_stream.h>
-#include <vlc_input_item.h>
+#include <vlc_input.h>
 #include <vlc_fs.h>
 
 
@@ -43,6 +44,7 @@ static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
 vlc_module_begin()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_STREAM_FILTER )
     set_description( N_("Internal stream record") )
     set_capability( "stream_filter", 0 )
@@ -52,11 +54,11 @@ vlc_module_end()
 /*****************************************************************************
  *
  *****************************************************************************/
-typedef struct
+struct stream_sys_t
 {
     FILE *f;        /* TODO it could be replaced by access_output_t one day */
     bool b_error;
-} stream_sys_t;
+};
 
 
 /****************************************************************************
@@ -66,7 +68,7 @@ static ssize_t Read( stream_t *, void *p_read, size_t i_read );
 static int  Seek   ( stream_t *, uint64_t );
 static int  Control( stream_t *, int i_query, va_list );
 
-static int  Start  ( stream_t *, const char *dir_path, const char *psz_extension );
+static int  Start  ( stream_t *, const char *psz_extension );
 static int  Stop   ( stream_t * );
 static void Write  ( stream_t *, const uint8_t *p_buffer, size_t i_buffer );
 
@@ -89,6 +91,7 @@ static int Open ( vlc_object_t *p_this )
     s->pf_read = Read;
     s->pf_seek = Seek;
     s->pf_control = Control;
+    stream_FilterSetDefaultReadDir( s );
 
     return VLC_SUCCESS;
 }
@@ -114,7 +117,7 @@ static ssize_t Read( stream_t *s, void *p_read, size_t i_read )
 {
     stream_sys_t *p_sys = s->p_sys;
     void *p_record = p_read;
-    const ssize_t i_record = vlc_stream_Read( s->s, p_record, i_read );
+    const ssize_t i_record = vlc_stream_Read( s->p_source, p_record, i_read );
 
     /* Dump read data */
     if( p_sys->f )
@@ -128,48 +131,33 @@ static ssize_t Read( stream_t *s, void *p_read, size_t i_read )
 
 static int Seek( stream_t *s, uint64_t offset )
 {
-    return vlc_stream_Seek( s->s, offset );
+    return vlc_stream_Seek( s->p_source, offset );
 }
 
 static int Control( stream_t *s, int i_query, va_list args )
 {
     if( i_query != STREAM_SET_RECORD_STATE )
-        return vlc_stream_vaControl( s->s, i_query, args );
+        return vlc_stream_vaControl( s->p_source, i_query, args );
 
     stream_sys_t *sys = s->p_sys;
     bool b_active = (bool)va_arg( args, int );
-    const char *psz_extension = NULL, *dir_path = NULL;
+    const char *psz_extension = NULL;
     if( b_active )
-    {
-        dir_path = va_arg( args, const char* );
         psz_extension = va_arg( args, const char* );
-    }
 
     if( !sys->f == !b_active )
         return VLC_SUCCESS;
 
     if( b_active )
-        return Start( s, dir_path, psz_extension );
+        return Start( s, psz_extension );
     else
         return Stop( s );
-}
-
-static void set_record_file_var(vlc_object_t *obj, const char *file)
-{
-    while ((obj = vlc_object_parent(obj)) != NULL)
-    {
-        if (var_Type(obj, "record-file") != 0)
-        {
-            var_SetString(obj, "record-file", file);
-            break;
-        }
-    }
 }
 
 /****************************************************************************
  * Helpers
  ****************************************************************************/
-static int Start( stream_t *s, const char *dir_path, const char *psz_extension )
+static int Start( stream_t *s, const char *psz_extension )
 {
     stream_sys_t *p_sys = s->p_sys;
 
@@ -181,22 +169,16 @@ static int Start( stream_t *s, const char *dir_path, const char *psz_extension )
         psz_extension = "dat";
 
     /* Retrieve path */
-    char *psz_path = NULL;
-    if( dir_path == NULL )
-    {
-        psz_path = var_CreateGetNonEmptyString( s, "input-record-path" );
-        if( psz_path == NULL )
-            psz_path = config_GetUserDir( VLC_DOWNLOAD_DIR );
-        dir_path = psz_path;
-    }
+    char *psz_path = var_CreateGetNonEmptyString( s, "input-record-path" );
+    if( !psz_path )
+        psz_path = config_GetUserDir( VLC_DOWNLOAD_DIR );
 
-    if( dir_path == NULL )
+    if( !psz_path )
         return VLC_ENOMEM;
 
     /* Create file name
      * TODO allow prefix configuration */
-    psz_file = input_item_CreateFilename( s->p_input_item, dir_path,
-                                          INPUT_RECORD_PREFIX, psz_extension );
+    psz_file = input_CreateFilename( s->p_input, psz_path, INPUT_RECORD_PREFIX, psz_extension );
 
     free( psz_path );
 
@@ -211,7 +193,7 @@ static int Start( stream_t *s, const char *dir_path, const char *psz_extension )
     }
 
     /* signal new record file */
-    set_record_file_var(VLC_OBJECT(s), psz_file);
+    var_SetString( s->obj.libvlc, "record-file", psz_file );
 
     msg_Dbg( s, "Recording into %s", psz_file );
     free( psz_file );

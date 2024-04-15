@@ -2,6 +2,7 @@
  * motiondetect.c : Second version of a motion detection plugin.
  *****************************************************************************
  * Copyright (C) 2000-2008 VLC authors and VideoLAN
+ * $Id: 6a61101a6500b6ba1100f59cc09ee51079956df8 $
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *
@@ -38,18 +39,20 @@
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
-static int  Create    ( filter_t * );
-static void Destroy   ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
 #define FILTER_PREFIX "motiondetect-"
 
 vlc_module_begin ()
     set_description( N_("Motion detect video filter") )
     set_shortname( N_( "Motion Detect" ))
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "video filter", 0 )
 
     add_shortcut( "motion" )
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 
@@ -63,7 +66,7 @@ static int FindShapes( uint32_t *, uint32_t *, int, int, int,
 static void Draw( filter_t *p_filter, uint8_t *p_pix, int i_pix_pitch, int i_pix_size );
 #define NUM_COLORS (5000)
 
-typedef struct
+struct filter_sys_t
 {
     bool is_yuv_planar;
     picture_t *p_old;
@@ -77,23 +80,14 @@ typedef struct
     int color_x_max[NUM_COLORS];
     int color_y_min[NUM_COLORS];
     int color_y_max[NUM_COLORS];
-} filter_sys_t;
-
-static void Flush(filter_t *p_filter)
-{
-    filter_sys_t *p_sys = p_filter->p_sys;
-    if (p_sys->p_old != NULL)
-    {
-        picture_Release(p_sys->p_old);
-        p_sys->p_old = NULL;
-    }
-}
+};
 
 /*****************************************************************************
  * Create
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     const video_format_t *p_fmt = &p_filter->fmt_in.video;
     filter_sys_t *p_sys;
     bool is_yuv_planar;
@@ -113,11 +107,7 @@ static int Create( filter_t *p_filter )
                      (char*)&(p_fmt->i_chroma) );
             return VLC_EGENERIC;
     }
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_video = Filter, .flush = Flush, .close = Destroy,
-    };
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     /* Allocate structure */
     p_filter->p_sys = p_sys = malloc( sizeof( filter_sys_t ) );
@@ -142,8 +132,9 @@ static int Create( filter_t *p_filter )
 /*****************************************************************************
  * Destroy
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     free( p_sys->p_buf2 );
@@ -317,7 +308,6 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_inpic )
     p_sys->p_old = picture_Hold( p_inpic );
 
 exit:
-    picture_CopyProperties(p_outpic, p_inpic);
     picture_Release( p_inpic );
     return p_outpic;
 }

@@ -2,6 +2,7 @@
  * filter.cpp : DirectShow access module for vlc
  *****************************************************************************
  * Copyright (C) 2002-2010 VLC authors and VideoLAN
+ * $Id: bf33cc79db1f795ccadc69de44d5f7d3f9e0d491 $
  *
  * Author: Gildas Bazin <gbazin@videolan.org>
  *
@@ -43,8 +44,6 @@
 #include <initguid.h>
 
 #include <new>
-
-namespace dshow {
 
 DEFINE_GUID(MEDIASUBTYPE_HDYC ,0x43594448 /* CYDH */ , 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
 DEFINE_GUID(MEDIASUBTYPE_DIVX ,0x58564944 /* XVID */ , 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
@@ -178,11 +177,6 @@ int GetFourCCFromMediaType( const AM_MEDIA_TYPE &media_type )
             else if( media_type.subtype == MEDIASUBTYPE_MJPG )
                 i_fourcc = VLC_CODEC_MJPG;
 
-            else if( media_type.subtype == MEDIASUBTYPE_H264 ||
-                     media_type.subtype == MEDIASUBTYPE_h264 ||
-                     media_type.subtype == MEDIASUBTYPE_x264 ||
-                     media_type.subtype == MEDIASUBTYPE_X264 )
-                i_fourcc = VLC_CODEC_H264;
         }
     }
     else if( media_type.majortype == MEDIATYPE_Audio )
@@ -644,7 +638,8 @@ STDMETHODIMP CapturePin::Receive( IMediaSample *pSample )
     msg_Dbg( p_input, "CapturePin::Receive" );
 #endif
 
-    VLCMediaSample vlc_sample = {pSample, vlc_tick_now()};
+    vlc_tick_t i_timestamp = mdate() * 10;
+    VLCMediaSample vlc_sample = {pSample, i_timestamp};
 
     vlc_mutex_lock( &p_sys->lock );
     samples_queue.push_front( vlc_sample );
@@ -1171,5 +1166,3 @@ STDMETHODIMP CaptureEnumMediaTypes::Clone( IEnumMediaTypes **ppEnum )
 
     return NOERROR;
 };
-
-} // namespace

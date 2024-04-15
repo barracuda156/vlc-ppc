@@ -17,8 +17,6 @@ ebml: libebml-$(EBML_VERSION).tar.xz .sum-ebml
 	$(MOVE)
 
 .ebml: ebml toolchain.cmake
-	$(CMAKECLEAN)
-	$(HOSTVARS) $(CMAKE)
-	+$(CMAKEBUILD)
-	$(CMAKEINSTALL)
+	cd $< && $(HOSTVARS_PIC) $(CMAKE) -DENABLE_WIN32_IO=OFF
+	cd $< && $(CMAKEBUILD) . --target install
 	touch $@

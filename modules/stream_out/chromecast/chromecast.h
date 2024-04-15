@@ -32,10 +32,8 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_tls.h>
-#include <vlc_threads.h>
 #include <vlc_interrupt.h>
 #include <vlc_httpd.h>
-#include <vlc_cxx_helpers.hpp>
 
 #include <atomic>
 #include <sstream>
@@ -151,7 +149,7 @@ private:
 
 private:
     vlc_object_t* m_module;
-    vlc_tls_client_t *m_creds;
+    vlc_tls_creds_t *m_creds;
     vlc_tls_t *m_tls;
     unsigned m_receiver_requestId;
     unsigned m_requestId;
@@ -254,9 +252,9 @@ private:
     unsigned m_last_request_id;
     int64_t m_mediaSessionId;
 
-    mutable vlc::threads::mutex  m_lock;
-    vlc::threads::condition_variable m_stateChangedCond;
-    vlc::threads::condition_variable m_pace_cond;
+    mutable vlc_mutex_t  m_lock;
+    vlc_cond_t   m_stateChangedCond;
+    vlc_cond_t   m_pace_cond;
     vlc_thread_t m_chromecastThread;
 
     on_input_event_itf    m_on_input_event;
@@ -270,7 +268,6 @@ private:
     States m_state;
     bool m_retry_on_fail;
     bool m_played_once;
-    bool m_paused_once;
     bool m_request_stop;
     bool m_request_load;
     bool m_paused;

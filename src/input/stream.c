@@ -3,6 +3,7 @@
  *****************************************************************************
  * Copyright (C) 1999-2004 VLC authors and VideoLAN
  * Copyright 2008-2015 Rémi Denis-Courmont
+ * $Id: b94279b4316e127c2d0d4b0d146b524e62afff1c $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -26,8 +27,6 @@
 #endif
 
 #include <assert.h>
-#include <stdbool.h>
-#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
@@ -35,6 +34,7 @@
 
 #include <vlc_common.h>
 #include <vlc_block.h>
+#include <vlc_memory.h>
 #include <vlc_access.h>
 #include <vlc_charset.h>
 #include <vlc_interrupt.h>
@@ -59,40 +59,30 @@ typedef struct stream_priv_t
         unsigned char char_width;
         bool          little_endian;
     } text;
-
-    max_align_t private_data[];
 } stream_priv_t;
 
 /**
  * Allocates a VLC stream object
  */
-stream_t *vlc_stream_CustomNew(vlc_object_t *parent,
-                               void (*destroy)(stream_t *), size_t size,
-                               const char *type_name)
+stream_t *vlc_stream_CommonNew(vlc_object_t *parent,
+                               void (*destroy)(stream_t *))
 {
-    stream_priv_t *priv = vlc_custom_create(parent, sizeof (*priv) + size,
-                                            type_name);
+    stream_priv_t *priv = vlc_custom_create(parent, sizeof (*priv), "stream");
     if (unlikely(priv == NULL))
         return NULL;
 
     stream_t *s = &priv->stream;
 
-    s->psz_name = NULL;
+    s->p_module = NULL;
     s->psz_url = NULL;
-    s->psz_location = NULL;
-    s->psz_filepath = NULL;
-    s->b_preparsing = false;
-    s->p_input_item = NULL;
-    s->s = NULL;
-    s->out = NULL;
+    s->p_source = NULL;
     s->pf_read = NULL;
     s->pf_block = NULL;
     s->pf_readdir = NULL;
-    s->pf_demux = NULL;
     s->pf_seek = NULL;
     s->pf_control = NULL;
     s->p_sys = NULL;
-    s->ops = NULL;
+    s->p_input = NULL;
     assert(destroy != NULL);
     priv->destroy = destroy;
     priv->block = NULL;
@@ -105,25 +95,12 @@ stream_t *vlc_stream_CustomNew(vlc_object_t *parent,
     priv->text.char_width = 1;
     priv->text.little_endian = false;
 
-    return &priv->stream;
-}
-
-#define stream_priv(s) container_of(s, stream_priv_t, stream)
-
-void *vlc_stream_Private(stream_t *stream)
-{
-    return stream_priv(stream)->private_data;
-}
-
-stream_t *vlc_stream_CommonNew(vlc_object_t *parent,
-                               void (*destroy)(stream_t *))
-{
-    return vlc_stream_CustomNew(parent, destroy, 0, "stream");
+    return s;
 }
 
 void stream_CommonDelete(stream_t *s)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
 
     if (priv->text.conv != (vlc_iconv_t)(-1))
         vlc_iconv_close(priv->text.conv);
@@ -134,7 +111,7 @@ void stream_CommonDelete(stream_t *s)
         block_Release(priv->block);
 
     free(s->psz_url);
-    vlc_object_delete(s);
+    vlc_object_release(s);
 }
 
 /**
@@ -142,11 +119,8 @@ void stream_CommonDelete(stream_t *s)
  */
 void vlc_stream_Delete(stream_t *s)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
 
-    if (s->ops != NULL && s->ops->close != NULL) {
-        s->ops->close(s);
-    }
     priv->destroy(s);
     stream_CommonDelete(s);
 }
@@ -156,11 +130,9 @@ stream_t *(vlc_stream_NewURL)(vlc_object_t *p_parent, const char *psz_url)
     if( !psz_url )
         return NULL;
 
-    stream_t *s = stream_AccessNew( p_parent, NULL, NULL, false, psz_url );
+    stream_t *s = stream_AccessNew( p_parent, NULL, false, psz_url );
     if( s == NULL )
         msg_Err( p_parent, "no suitable access module for `%s'", psz_url );
-    else
-        s = stream_FilterAutoNew(s);
     return s;
 }
 
@@ -199,33 +171,39 @@ stream_t *(vlc_stream_NewMRL)(vlc_object_t* parent, const char* mrl )
 #define STREAM_LINE_MAX (2048*100)
 char *vlc_stream_ReadLine( stream_t *s )
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
+    char *p_line = NULL;
+    int i_line = 0, i_read = 0;
 
     /* Let's fail quickly if this is a readdir access */
     if( s->pf_read == NULL && s->pf_block == NULL )
         return NULL;
 
-    /* BOM detection */
-    if( vlc_stream_Tell( s ) == 0 )
+    for( ;; )
     {
+        char *psz_eol;
         const uint8_t *p_data;
-        ssize_t i_data = vlc_stream_Peek( s, &p_data, 2 );
+        int i_data;
+        int64_t i_pos;
 
-        if( i_data <= 0 )
-            return NULL;
+        /* Probe new data */
+        i_data = vlc_stream_Peek( s, &p_data, STREAM_PROBE_LINE );
+        if( i_data <= 0 ) break; /* No more data */
 
-        if( unlikely(priv->text.conv != (vlc_iconv_t)-1) )
-        {   /* seek back to beginning? reset */
-            vlc_iconv_close( priv->text.conv );
-            priv->text.conv = (vlc_iconv_t)-1;
-        }
-        priv->text.char_width = 1;
-        priv->text.little_endian = false;
-
-        if( i_data >= 2 )
+        /* BOM detection */
+        i_pos = vlc_stream_Tell( s );
+        if( i_pos == 0 && i_data >= 2 )
         {
             const char *psz_encoding = NULL;
             bool little_endian = false;
+
+            if( unlikely(priv->text.conv != (vlc_iconv_t)-1) )
+            {   /* seek back to beginning? reset */
+                vlc_iconv_close( priv->text.conv );
+                priv->text.conv = (vlc_iconv_t)-1;
+            }
+            priv->text.char_width = 1;
+            priv->text.little_endian = false;
 
             if( !memcmp( p_data, "\xFF\xFE", 2 ) )
             {
@@ -245,62 +223,31 @@ char *vlc_stream_ReadLine( stream_t *s )
                 if( unlikely(priv->text.conv == (vlc_iconv_t)-1) )
                 {
                     msg_Err( s, "iconv_open failed" );
-                    return NULL;
+                    goto error;
                 }
                 priv->text.char_width = 2;
                 priv->text.little_endian = little_endian;
             }
         }
-    }
 
-    size_t i_line = 0;
-    const uint8_t *p_data;
-
-    for( ;; )
-    {
-        size_t i_peek = i_line == 0 ? STREAM_PROBE_LINE
-                                    : __MIN( i_line * 2, STREAM_LINE_MAX );
-
-        /* Probe more data */
-        ssize_t i_data = vlc_stream_Peek( s, &p_data, i_peek );
-        if( i_data <= 0 )
-            return NULL;
-
-        /* Deal here with lone-byte incomplete UTF-16 sequences at EOF
-           that we won't be able to process anyway */
-        if( i_data < priv->text.char_width )
+        if( i_data % priv->text.char_width )
         {
-            assert( priv->text.char_width == 2 );
-            uint8_t inc;
-            ssize_t i_inc = vlc_stream_Read( s, &inc, priv->text.char_width );
-            assert( i_inc == i_data );
-            if( i_inc > 0 )
-                msg_Err( s, "discarding incomplete UTF-16 sequence at EOF: 0x%02x", inc );
-            return NULL;
+            /* keep i_char_width boundary */
+            i_data = i_data - ( i_data % priv->text.char_width );
+            msg_Warn( s, "the read is not i_char_width compatible");
         }
 
-        /* Keep to text encoding character width boundary */
-        if( i_data % priv->text.char_width )
-            i_data = i_data - ( i_data % priv->text.char_width );
+        if( i_data == 0 )
+            break;
 
-        if( (size_t) i_data == i_line )
-            break; /* No more data */
-
-        assert( (size_t) i_data > i_line );
-
-        /* Resume search for an EOL where we left off */
-        const uint8_t *p_cur = p_data + i_line, *psz_eol;
-
-        /* FIXME: <CR> behavior varies depending on where buffer
-           boundaries happen to fall; a <CR><LF> across the boundary
-           creates a bogus empty line. */
+        /* Check if there is an EOL */
         if( priv->text.char_width == 1 )
         {
             /* UTF-8: 0A <LF> */
-            psz_eol = memchr( p_cur, '\n', i_data - i_line );
+            psz_eol = memchr( p_data, '\n', i_data );
             if( psz_eol == NULL )
                 /* UTF-8: 0D <CR> */
-                psz_eol = memchr( p_cur, '\r', i_data - i_line );
+                psz_eol = memchr( p_data, '\r', i_data );
         }
         else
         {
@@ -310,11 +257,11 @@ char *vlc_stream_ReadLine( stream_t *s )
             assert( priv->text.char_width == 2 );
             psz_eol = NULL;
             /* UTF-16: 000A <LF> */
-            for( const uint8_t *p = p_cur; p <= p_last; p += 2 )
+            for( const uint8_t *p = p_data; p <= p_last; p += 2 )
             {
                 if( U16_AT( p ) == eol )
                 {
-                     psz_eol = p;
+                     psz_eol = (char *)p + 1;
                      break;
                 }
             }
@@ -322,11 +269,11 @@ char *vlc_stream_ReadLine( stream_t *s )
             if( psz_eol == NULL )
             {   /* UTF-16: 000D <CR> */
                 eol = priv->text.little_endian ? 0x0D00 : 0x000D;
-                for( const uint8_t *p = p_cur; p <= p_last; p += 2 )
+                for( const uint8_t *p = p_data; p <= p_last; p += 2 )
                 {
                     if( U16_AT( p ) == eol )
                     {
-                        psz_eol = p;
+                        psz_eol = (char *)p + 1;
                         break;
                     }
                 }
@@ -335,72 +282,80 @@ char *vlc_stream_ReadLine( stream_t *s )
 
         if( psz_eol )
         {
-            i_line = (psz_eol - p_data) + priv->text.char_width;
+            i_data = (psz_eol - (char *)p_data) + 1;
+            p_line = realloc_or_free( p_line,
+                        i_line + i_data + priv->text.char_width ); /* add \0 */
+            if( !p_line )
+                goto error;
+            i_data = vlc_stream_Read( s, &p_line[i_line], i_data );
+            if( i_data <= 0 ) break; /* Hmmm */
+            i_line += i_data - priv->text.char_width; /* skip \n */;
+            i_read += i_data;
+
             /* We have our line */
             break;
         }
 
-        i_line = i_data;
+        /* Read data (+1 for easy \0 append) */
+        p_line = realloc_or_free( p_line,
+                          i_line + STREAM_PROBE_LINE + priv->text.char_width );
+        if( !p_line )
+            goto error;
+        i_data = vlc_stream_Read( s, &p_line[i_line], STREAM_PROBE_LINE );
+        if( i_data <= 0 ) break; /* Hmmm */
+        i_line += i_data;
+        i_read += i_data;
 
-        if( i_line >= STREAM_LINE_MAX )
-        {
-            msg_Err( s, "line too long, exceeding %zu bytes",
-                     (size_t) STREAM_LINE_MAX );
-            return NULL;
-        }
+        if( i_read >= STREAM_LINE_MAX )
+            goto error; /* line too long */
     }
 
-    if( i_line == 0 ) /* We failed to read any data, probably EOF */
-        return NULL;
-
-    /* If encoding conversion is required, UTF-8 needs at most 150%
-       as long a buffer as UTF-16 */
-    size_t i_line_conv = priv->text.char_width == 1 ? i_line : i_line * 3 / 2;
-    char *p_line = malloc( i_line_conv + 1 ); /* +1 for easy \0 append */
-    if( !p_line )
-        return NULL;
-    void *p_read = p_line;
-
-    if( priv->text.char_width > 1 )
+    if( i_read > 0 )
     {
-        size_t i_in = i_line, i_out = i_line_conv;
-        const char * p_in = (char *) p_data;
-        char * p_out = p_line;
-
-        if( vlc_iconv( priv->text.conv, &p_in, &i_in, &p_out, &i_out ) == VLC_ICONV_ERR )
+        if( priv->text.char_width > 1 )
         {
-            msg_Err( s, "conversion error: %s", vlc_strerror_c( errno ) );
-            msg_Dbg( s, "original: %zu, in %zu, out %zu", i_line, i_in, i_out );
-            /* Reset state */
-            size_t r = vlc_iconv( priv->text.conv, NULL, NULL, NULL, NULL );
-            VLC_UNUSED( r );
-            /* FIXME: the rest of the line is discarded and lost */
+            int i_new_line = 0;
+            size_t i_in = 0, i_out = 0;
+            const char * p_in = NULL;
+            char * p_out = NULL;
+            char * psz_new_line = NULL;
+
+            /* iconv */
+            /* UTF-8 needs at most 150% of the buffer as many as UTF-16 */
+            i_new_line = i_line * 3 / 2 + 1;
+            psz_new_line = malloc( i_new_line );
+            if( psz_new_line == NULL )
+                goto error;
+            i_in = (size_t)i_line;
+            i_out = (size_t)i_new_line;
+            p_in = p_line;
+            p_out = psz_new_line;
+
+            if( vlc_iconv( priv->text.conv, &p_in, &i_in, &p_out, &i_out ) == (size_t)-1 )
+            {
+                msg_Err( s, "conversion error: %s", vlc_strerror_c( errno ) );
+                msg_Dbg( s, "original: %d, in %zu, out %zu", i_line, i_in, i_out );
+            }
+            free( p_line );
+            p_line = psz_new_line;
+            i_line = (size_t)i_new_line - i_out; /* does not include \0 */
         }
 
-        i_line_conv -= i_out;
-        p_read = NULL; /* Line already read, only need to advance the stream */
+        /* Remove trailing LF/CR */
+        while( i_line >= 1 &&
+               (p_line[i_line - 1] == '\r' || p_line[i_line - 1] == '\n') )
+            i_line--;
+
+        /* Make sure the \0 is there */
+        p_line[i_line] = '\0';
+
+        return p_line;
     }
 
-    ssize_t i_data = vlc_stream_Read( s, p_read, i_line );
-    assert( i_data > 0 && (size_t) i_data == i_line );
-    if( i_data <= 0 )
-    {
-        /* Hmmm */
-        free( p_line );
-        return NULL;
-    }
-
-    i_line = i_line_conv;
-
-    /* Remove trailing LF/CR */
-    while( i_line >= 1 &&
-           (p_line[i_line - 1] == '\r' || p_line[i_line - 1] == '\n') )
-        i_line--;
-
-    /* Make sure the \0 is there */
-    p_line[i_line] = '\0';
-
-    return p_line;
+error:
+    /* We failed to read any data, probably EOF */
+    free( p_line );
+    return NULL;
 }
 
 static ssize_t vlc_stream_CopyBlock(block_t **restrict pp,
@@ -431,7 +386,7 @@ static ssize_t vlc_stream_CopyBlock(block_t **restrict pp,
 
 static ssize_t vlc_stream_ReadRaw(stream_t *s, void *buf, size_t len)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
     ssize_t ret;
 
     assert(len <= SSIZE_MAX);
@@ -447,8 +402,8 @@ static ssize_t vlc_stream_ReadRaw(stream_t *s, void *buf, size_t len)
             if (unlikely(len == 0))
                 return 0;
 
-            char dummy[256];
-            ret = s->pf_read(s, dummy, len <= 256 ? len : 256);
+            char dummy[(len <= 256 ? len : 256)];
+            ret = s->pf_read(s, dummy, sizeof (dummy));
         }
         else
             ret = s->pf_read(s, buf, len);
@@ -475,7 +430,7 @@ static ssize_t vlc_stream_ReadRaw(stream_t *s, void *buf, size_t len)
 
 ssize_t vlc_stream_ReadPartial(stream_t *s, void *buf, size_t len)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
     ssize_t ret;
 
     ret = vlc_stream_CopyBlock(&priv->peek, buf, len);
@@ -519,7 +474,7 @@ ssize_t vlc_stream_Read(stream_t *s, void *buf, size_t len)
 
 ssize_t vlc_stream_Peek(stream_t *s, const uint8_t **restrict bufp, size_t len)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
     block_t *peek;
 
     peek = priv->peek;
@@ -573,7 +528,7 @@ ssize_t vlc_stream_Peek(stream_t *s, const uint8_t **restrict bufp, size_t len)
 
 block_t *vlc_stream_ReadBlock(stream_t *s)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
     block_t *block;
 
     if (vlc_killed())
@@ -623,21 +578,21 @@ block_t *vlc_stream_ReadBlock(stream_t *s)
 
 uint64_t vlc_stream_Tell(const stream_t *s)
 {
-    const stream_priv_t *priv = stream_priv(s);
+    const stream_priv_t *priv = (const stream_priv_t *)s;
 
     return priv->offset;
 }
 
 bool vlc_stream_Eof(const stream_t *s)
 {
-    const stream_priv_t *priv = stream_priv(s);
+    const stream_priv_t *priv = (const stream_priv_t *)s;
 
     return priv->eof;
 }
 
 int vlc_stream_Seek(stream_t *s, uint64_t offset)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
 
     priv->eof = false;
 
@@ -699,25 +654,14 @@ int vlc_stream_Seek(stream_t *s, uint64_t offset)
  */
 int vlc_stream_vaControl(stream_t *s, int cmd, va_list args)
 {
-    stream_priv_t *priv = stream_priv(s);
+    stream_priv_t *priv = (stream_priv_t *)s;
 
     switch (cmd)
     {
         case STREAM_SET_TITLE:
         case STREAM_SET_SEEKPOINT:
         {
-            int ret;
-
-            if (s->ops != NULL && cmd == STREAM_SET_TITLE) {
-                int title = va_arg(args, int);
-                ret = s->ops->set_title(s, title);
-            } else if (s->ops != NULL && cmd == STREAM_SET_SEEKPOINT) {
-                int seekpoint = va_arg(args, int);
-                ret = s->ops->set_seek_point(s, seekpoint);
-            } else {
-                ret = s->pf_control(s, cmd, args);
-            }
-
+            int ret = s->pf_control(s, cmd, args);
             if (ret != VLC_SUCCESS)
                 return ret;
 
@@ -738,154 +682,7 @@ int vlc_stream_vaControl(stream_t *s, int cmd, va_list args)
             return VLC_SUCCESS;
         }
     }
-
-    if (s->ops == NULL)
-        return s->pf_control(s, cmd, args);
-
-    switch (cmd) {
-        case STREAM_CAN_SEEK:
-        {
-            bool *can_seek = va_arg(args, bool *);
-            if (s->ops->can_seek != NULL) {
-                *can_seek = s->ops->can_seek(s);
-            } else {
-                *can_seek = false;
-            }
-            return VLC_SUCCESS;
-        }
-        case STREAM_CAN_FASTSEEK:
-        {
-            bool *can_fastseek = va_arg(args, bool *);
-            if (s->ops->stream.can_fastseek != NULL) {
-                *can_fastseek = s->ops->stream.can_fastseek(s);
-            } else {
-                *can_fastseek = false;
-            }
-            return VLC_SUCCESS;
-        }
-        case STREAM_CAN_PAUSE:
-        {
-            bool *can_pause = va_arg(args, bool *);
-            if (s->ops->can_pause != NULL) {
-                *can_pause = s->ops->can_pause(s);
-            } else {
-                *can_pause = false;
-            }
-            return VLC_SUCCESS;
-        }
-        case STREAM_CAN_CONTROL_PACE:
-        {
-            bool *can_control_pace = va_arg(args, bool *);
-            if (s->ops->can_control_pace != NULL) {
-                *can_control_pace = s->ops->can_control_pace(s);
-            } else {
-                *can_control_pace = false;
-            }
-            return VLC_SUCCESS;
-        }
-        case STREAM_GET_SIZE:
-            if (s->ops->stream.get_size != NULL) {
-                uint64_t *size = va_arg(args, uint64_t *);
-                return s->ops->stream.get_size(s, size);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_PTS_DELAY:
-            if (s->ops->get_pts_delay != NULL) {
-                vlc_tick_t *pts_delay = va_arg(args, vlc_tick_t *);
-                return s->ops->get_pts_delay(s, pts_delay);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_TITLE_INFO:
-            if (s->ops->stream.get_title_info != NULL) {
-                input_title_t ***title_info = va_arg(args, input_title_t ***);
-                int *unk = va_arg(args, int *);
-                return s->ops->stream.get_title_info(s, title_info, unk);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_TITLE:
-            if (s->ops->stream.get_title != NULL) {
-                unsigned *title = va_arg(args, unsigned *);
-                return s->ops->stream.get_title(s, title);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_SEEKPOINT:
-            if (s->ops->stream.get_seekpoint != NULL) {
-                unsigned *seekpoint = va_arg(args, unsigned *);
-                return s->ops->stream.get_seekpoint(s, seekpoint);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_META:
-            if (s->ops->get_meta != NULL) {
-                vlc_meta_t *meta = va_arg(args, vlc_meta_t *);
-                return s->ops->get_meta(s, meta);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_CONTENT_TYPE:
-            if (s->ops->stream.get_content_type != NULL) {
-                char **content_type = va_arg(args, char **);
-                return s->ops->stream.get_content_type(s, content_type);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_SIGNAL:
-            if (s->ops->get_signal != NULL) {
-                double *quality = va_arg(args, double *);
-                double *strength = va_arg(args, double *);
-                return s->ops->get_signal(s, quality, strength);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_TAGS:
-            if (s->ops->stream.get_tags != NULL) {
-                const block_t **block = va_arg(args, const block_t **);
-                return s->ops->stream.get_tags(s, block);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_TYPE:
-            if (s->ops->get_type != NULL) {
-                int *type = va_arg(args, int *);
-                return s->ops->get_type(s, type);
-            }
-            return VLC_EGENERIC;
-        case STREAM_GET_PRIVATE_ID_STATE:
-            if (s->ops->stream.get_private_id_state != NULL) {
-                int priv_data = va_arg(args, int);
-                bool *selected = va_arg(args, bool *);
-                return s->ops->stream.get_private_id_state(s, priv_data, selected);
-            }
-            return VLC_EGENERIC;
-        case STREAM_SET_PAUSE_STATE:
-            if (s->ops->set_pause_state != NULL) {
-                bool pause_state = (bool)va_arg(args, int);
-                return s->ops->set_pause_state(s, pause_state);
-            }
-            return VLC_EGENERIC;
-        case STREAM_SET_RECORD_STATE:
-            if (s->ops->stream.set_record_state != NULL) {
-                bool record_state = (bool)va_arg(args, int);
-                const char *dir_path = NULL;
-                const char *ext = NULL;
-                if (record_state) {
-                    dir_path = va_arg(args, const char *);
-                    ext = va_arg(args, const char *);
-                }
-                return s->ops->stream.set_record_state(s, record_state, dir_path, ext);
-            }
-            return VLC_EGENERIC;
-        case STREAM_SET_PRIVATE_ID_STATE:
-            if (s->ops->stream.set_private_id_state != NULL) {
-                int priv_data = va_arg(args, int);
-                bool selected = (bool)va_arg(args, int);
-                return s->ops->stream.set_private_id_state(s, priv_data, selected);
-            }
-            return VLC_EGENERIC;
-        case STREAM_SET_PRIVATE_ID_CA:
-            if (s->ops->stream.set_private_id_ca != NULL) {
-                void *payload = va_arg(args, void *);
-                return s->ops->stream.set_private_id_ca(s, payload);
-            }
-            return VLC_EGENERIC;
-        default:
-            vlc_assert_unreachable();
-    }
+    return s->pf_control(s, cmd, args);
 }
 
 /**
@@ -917,8 +714,11 @@ block_t *vlc_stream_Block( stream_t *s, size_t size )
     return block;
 }
 
+/**
+ * Returns a node containing all the input_item of the directory pointer by
+ * this stream. returns VLC_SUCCESS on success.
+ */
 int vlc_stream_ReadDir( stream_t *s, input_item_node_t *p_node )
 {
-    assert(s->pf_readdir != NULL);
     return s->pf_readdir( s, p_node );
 }

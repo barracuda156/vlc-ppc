@@ -27,7 +27,6 @@
 #include <vlc_keystore.h>
 #include <vlc_modules.h>
 #include <vlc_url.h>
-#include <vlc_interrupt.h>
 #include <libvlc.h>
 
 #include <assert.h>
@@ -44,7 +43,7 @@ keystore_create(vlc_object_t *p_parent, const char *psz_name)
     p_keystore->p_module = module_need(p_keystore, "keystore", psz_name, true);
     if (p_keystore->p_module == NULL)
     {
-        vlc_object_delete(p_keystore);
+        vlc_object_release(p_keystore);
         return NULL;
     }
     assert(p_keystore->pf_store);
@@ -59,12 +58,7 @@ vlc_keystore *
 vlc_keystore_create(vlc_object_t *p_parent)
 {
     assert(p_parent);
-
-    char *modlist = var_InheritString(p_parent, "keystore");
-    vlc_keystore *p_keystore = keystore_create(p_parent, modlist);
-
-    free(modlist);
-    return p_keystore;
+    return keystore_create(p_parent, "$keystore");
 }
 
 void
@@ -73,7 +67,7 @@ vlc_keystore_release(vlc_keystore *p_keystore)
     assert(p_keystore);
     module_unneed(p_keystore, p_keystore->p_module);
 
-    vlc_object_delete(p_keystore);
+    vlc_object_release(p_keystore);
 }
 
 int
@@ -157,7 +151,7 @@ libvlc_InternalKeystoreClean(libvlc_int_t *p_libvlc)
 static vlc_keystore *
 get_memory_keystore(vlc_object_t *p_obj)
 {
-    return libvlc_priv(vlc_object_instance(p_obj))->p_memory_keystore;
+    return libvlc_priv(p_obj->obj.libvlc)->p_memory_keystore;
 }
 
 static vlc_keystore_entry *
@@ -234,7 +228,8 @@ protocol_set_port(const vlc_url_t *p_url, char *psz_port)
         i_port = p_url->i_port;
     else
     {
-        for (unsigned int i = 0; i < ARRAY_SIZE(protocol_default_ports); ++i)
+        for (unsigned int i = 0; i < sizeof(protocol_default_ports)
+                                   / sizeof(*protocol_default_ports); ++i)
         {
             if (strcasecmp(p_url->psz_protocol,
                            protocol_default_ports[i].psz_protocol) == 0)
@@ -246,7 +241,7 @@ protocol_set_port(const vlc_url_t *p_url, char *psz_port)
     }
     if (i_port != -1)
     {
-        sprintf(psz_port, "%" PRIu16, (uint16_t) i_port);
+        sprintf(psz_port, "%u", (uint16_t) i_port);
         return true;
     }
     return false;
@@ -373,7 +368,7 @@ vlc_credential_clean(vlc_credential *p_credential)
 }
 
 #undef vlc_credential_get
-int
+bool
 vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
                    const char *psz_option_username,
                    const char *psz_option_password,
@@ -386,7 +381,7 @@ vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
     if (!is_url_valid(p_url))
     {
         msg_Err(p_parent, "vlc_credential_get: invalid url");
-        return -EINVAL;
+        return false;
     }
 
     p_credential->b_from_keystore = false;
@@ -447,13 +442,13 @@ vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
         }
 
         case GET_FROM_KEYSTORE:
+            if (!psz_dialog_title || !psz_dialog_fmt)
+                return false;
+
             if (p_credential->p_keystore == NULL)
                 p_credential->p_keystore = vlc_keystore_create(p_parent);
             if (p_credential->p_keystore != NULL)
                 credential_find_keystore(p_credential, p_credential->p_keystore);
-
-            if (vlc_killed())
-                return -EINTR;
 
             p_credential->i_get_order++;
             break;
@@ -461,7 +456,7 @@ vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
         default:
         case GET_FROM_DIALOG:
             if (!psz_dialog_title || !psz_dialog_fmt)
-                return -ENOENT;
+                return false;
             char *psz_dialog_username = NULL;
             char *psz_dialog_password = NULL;
             va_list ap;
@@ -487,7 +482,7 @@ vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
             if (i_ret != 1)
             {
                 p_credential->psz_username = p_credential->psz_password = NULL;
-                return vlc_killed() ? -EINTR : -ENOENT;
+                return false;
             }
 
             p_credential->psz_username = p_credential->psz_dialog_username;
@@ -499,7 +494,7 @@ vlc_credential_get(vlc_credential *p_credential, vlc_object_t *p_parent,
             break;
         }
     }
-    return is_credential_valid(p_credential) ? 0 : -ENOENT;
+    return is_credential_valid(p_credential);
 }
 
 #undef vlc_credential_store

@@ -2,6 +2,7 @@
  * vlc_meta.h: Stream meta-data
  *****************************************************************************
  * Copyright (C) 2004 VLC authors and VideoLAN
+ * $Id: d390d0bc4df47994d296c5720d1869c458b16cb5 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -91,8 +92,6 @@ VLC_API void vlc_meta_Merge( vlc_meta_t *dst, const vlc_meta_t *src );
 VLC_API int vlc_meta_GetStatus( vlc_meta_t *m );
 VLC_API void vlc_meta_SetStatus( vlc_meta_t *m, int status );
 
-VLC_API const char *vlc_meta_TypeToString(vlc_meta_type_t meta_type);
-
 /**
  * Returns a localizes string describing the meta
  */
@@ -100,7 +99,7 @@ VLC_API const char * vlc_meta_TypeToLocalizedString( vlc_meta_type_t meta_type )
 
 typedef struct meta_export_t
 {
-    struct vlc_object_t obj;
+    VLC_COMMON_MEMBERS
     input_item_t *p_item;
     const char *psz_file;
 } meta_export_t;

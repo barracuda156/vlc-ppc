@@ -82,14 +82,13 @@ void ProbePES( demux_t *p_demux, ts_pid_t *pid, const uint8_t *p_pesstart, size_
         return;
 
     size_t i_pesextoffset = 8;
-    stime_t i_dts = -1;
+    vlc_tick_t i_dts = -1;
     if( p_pes[7] & 0x80 ) // PTS
     {
         i_pesextoffset += 5;
         if ( i_data < i_pesextoffset ||
             !ExtractPESTimestamp( &p_pes[9], p_pes[7] >> 6, &i_dts ) )
             return;
-        pid->probed.i_dts_count++;
     }
     if( p_pes[7] & 0x40 ) // DTS
     {
@@ -108,9 +107,6 @@ void ProbePES( demux_t *p_demux, ts_pid_t *pid, const uint8_t *p_pesstart, size_
         i_pesextoffset += 1;
     if( p_pes[7] & 0x02 ) // PESCRC
         i_pesextoffset += 2;
-
-    if( pid->probed.i_fourcc != 0 )
-        goto codecprobingend;
 
     if ( i_data < i_pesextoffset )
         return;
@@ -195,7 +191,6 @@ void ProbePES( demux_t *p_demux, ts_pid_t *pid, const uint8_t *p_pesstart, size_
         }
     }
 
-codecprobingend:
     /* Track timestamps and flag missing PAT */
     if( !p_sys->patfix.i_timesourcepid && i_dts > -1 )
     {
@@ -252,7 +247,6 @@ void MissingPATPMTFixup( demux_t *p_demux )
         }
     }
 
-    const ts_pid_t * candidates[4] = { NULL };
     const ts_pid_t *p_pid = NULL;
     ts_pid_next_context_t pidnextctx = ts_pid_NextContextInitValue;
     while( (p_pid = ts_pid_Next( &p_sys->pids, &pidnextctx )) )
@@ -260,31 +254,11 @@ void MissingPATPMTFixup( demux_t *p_demux )
         if( !SEEN(p_pid) || p_pid->probed.i_fourcc == 0 )
             continue;
 
-        if( p_pid->probed.i_pcr_count && candidates[0] == NULL && false )
-            candidates[0] = p_pid;
-
-        if( p_pid->probed.i_cat == AUDIO_ES &&
-            (candidates[1] == NULL ||
-             candidates[1]->probed.i_dts_count > p_pid->probed.i_dts_count) )
-            candidates[1] = p_pid;
-
-        if( candidates[2] == NULL && p_pid != candidates[1] &&
-            p_pid->probed.i_dts_count > 0 )
-            candidates[2] = p_pid;
-
-        if( candidates[3] == NULL )
-            candidates[3] = p_pid;
+        if( i_pcr_pid == 0x1FFF && ( p_pid->probed.i_cat == AUDIO_ES ||
+                                     p_pid->probed.i_pcr_count ) )
+            i_pcr_pid = p_pid->i_pid;
 
         i_num_pes++;
-    }
-
-    for(int i=0; i<4; i++)
-    {
-        if(!candidates[i])
-            continue;
-        i_pcr_pid = candidates[i]->i_pid;
-        p_sys->patfix.b_pcrhasnopcrfield = (candidates[i]->probed.i_pcr_count < 1);
-        break;
     }
 
     if( i_num_pes == 0 )

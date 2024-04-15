@@ -40,11 +40,13 @@ vlc_module_begin ()
     set_shortname( N_("WEBVTT decoder"))
     set_description( N_("WEBVTT subtitles decoder") )
     set_callbacks( webvtt_OpenDecoder, webvtt_CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
     add_submodule()
         set_shortname( "WEBVTT" )
         set_description( N_("WEBVTT subtitles parser") )
         set_capability( "demux", 11 )
+        set_category( CAT_INPUT )
         set_subcategory( SUBCAT_INPUT_DEMUX )
         set_callbacks( webvtt_OpenDemux, webvtt_CloseDemux )
         add_shortcut( "webvtt" )
@@ -52,16 +54,10 @@ vlc_module_begin ()
         set_shortname( "WEBVTT" )
         set_description( N_("WEBVTT subtitles parser") )
         set_capability( "demux", 0 )
+        set_category( CAT_INPUT )
         set_subcategory( SUBCAT_INPUT_DEMUX )
         set_callbacks( webvtt_OpenDemuxStream, webvtt_CloseDemux )
         add_shortcut( "webvttstream" )
-#ifdef ENABLE_SOUT
-    add_submodule()
-        set_description( "WEBVTT text encoder" )
-        set_capability( "spu encoder", 101 )
-        set_subcategory( SUBCAT_INPUT_SCODEC )
-        set_callback( webvtt_OpenEncoder )
-#endif
 vlc_module_end ()
 
 struct webvtt_text_parser_t
@@ -86,8 +82,10 @@ struct webvtt_text_parser_t
 
 static vlc_tick_t MakeTime( unsigned t[4] )
 {
-    return vlc_tick_from_sec( t[0] * 3600 + t[1] * 60 + t[2] ) +
-           VLC_TICK_FROM_MS(t[3]);
+    return t[0] * 3600 * CLOCK_FREQ +
+           t[1] * 60 * CLOCK_FREQ +
+           t[2] * CLOCK_FREQ +
+           t[3] * 1000;
 }
 
 bool webvtt_scan_time( const char *psz, vlc_tick_t *p_time )
@@ -149,8 +147,7 @@ void webvtt_text_parser_Delete( webvtt_text_parser_t *p )
 static void forward_line( webvtt_text_parser_t *p, const char *psz_line, bool b_new )
 {
     if( p->pf_header )
-        p->pf_header( p->priv, (enum webvtt_header_line_e)p->section,
-                      b_new, psz_line );
+        p->pf_header( p->priv, p->section, b_new, psz_line );
 }
 
 void webvtt_text_parser_Feed( webvtt_text_parser_t *p, char *psz_line )

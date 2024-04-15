@@ -58,6 +58,7 @@ VLC_RD_PROBE_HELPER( "avahi_renderer", "Avahi Zeroconf renderer Discovery" )
 vlc_module_begin ()
     set_shortname( "Avahi" )
     set_description( N_("Zeroconf services") )
+    set_category( CAT_PLAYLIST )
     set_subcategory( SUBCAT_PLAYLIST_SD )
     set_capability( "services_discovery", 0 )
     set_callbacks( OpenSD, CloseSD )
@@ -66,6 +67,7 @@ vlc_module_begin ()
     VLC_SD_PROBE_SUBMODULE
     add_submodule() \
         set_description( N_( "Avahi Renderer Discovery" ) )
+        set_category( CAT_SOUT )
         set_subcategory( SUBCAT_SOUT_RENDERER )
         set_capability( "renderer_discovery", 0 )
         set_callbacks( OpenRD, CloseRD )
@@ -101,27 +103,6 @@ static const struct
 };
 #define NB_PROTOCOLS (sizeof(protocols) / sizeof(*protocols))
 
-static char* get_string_list_value( AvahiStringList* txt, const char* key )
-{
-    AvahiStringList *asl = avahi_string_list_find( txt, key );
-    if( asl == NULL )
-        return NULL;
-    char* res = NULL;
-    char *sl_key = NULL;
-    char *sl_value = NULL;
-    if( avahi_string_list_get_pair( asl, &sl_key, &sl_value, NULL ) == 0 &&
-        sl_value != NULL )
-    {
-        res = strdup( sl_value );
-    }
-
-    if( sl_key != NULL )
-        avahi_free( (void *)sl_key );
-    if( sl_value != NULL )
-        avahi_free( (void *)sl_value );
-    return res;
-}
-
 /*****************************************************************************
  * helpers
  *****************************************************************************/
@@ -134,12 +115,13 @@ static void add_renderer( const char *psz_protocol, const char *psz_name,
     char *friendly_name = NULL;
     char *icon_uri = NULL;
     char *uri = NULL;
-    char *model = NULL;
     const char *demux = NULL;
     const char *extra_uri = NULL;
     int renderer_flags = 0;
 
     if( !strcmp( "chromecast", psz_protocol ) ) {
+        int ret = 0;
+
         /* Capabilities */
         asl = avahi_string_list_find( txt, "ca" );
         if( asl != NULL ) {
@@ -163,36 +145,49 @@ static void add_renderer( const char *psz_protocol, const char *psz_name,
         }
 
         /* Friendly name */
-        friendly_name = get_string_list_value( txt, "fn" );
+        asl = avahi_string_list_find( txt, "fn" );
+        if( asl != NULL )
+        {
+            char *key = NULL;
+            char *value = NULL;
+            if( avahi_string_list_get_pair( asl, &key, &value, NULL ) == 0 &&
+                value != NULL )
+            {
+                friendly_name = strdup( value );
+                if( !friendly_name )
+                    ret = -1;
+            }
+
+            if( key != NULL )
+                avahi_free( (void *)key );
+            if( value != NULL )
+                avahi_free( (void *)value );
+        }
+        if( ret < 0 )
+            goto error;
 
         /* Icon */
-        char* icon_raw = get_string_list_value( txt, "ic" );
-        if( icon_raw != NULL ) {
-            if( asprintf( &icon_uri, "http://%s:8008%s", psz_addr, icon_raw) < 0 )
-                icon_uri = NULL;
-            free( icon_raw );
-        }
+        asl = avahi_string_list_find( txt, "ic" );
+        if( asl != NULL ) {
+            char *key = NULL;
+            char *value = NULL;
+            if( avahi_string_list_get_pair( asl, &key, &value, NULL ) == 0 &&
+                value != NULL )
+                ret = asprintf( &icon_uri, "http://%s:8008%s", psz_addr, value);
 
-        model = get_string_list_value( txt, "md" );
+            if( key != NULL )
+                avahi_free( (void *)key );
+            if( value != NULL )
+                avahi_free( (void *)value );
+        }
+        if( ret < 0 )
+            goto error;
 
         if( asprintf( &uri, "%s://%s:%u", psz_protocol, psz_addr, i_port ) < 0 )
-        {
-            uri = NULL;
             goto error;
-        }
 
         extra_uri = renderer_flags & VLC_RENDERER_CAN_VIDEO ? NULL : "no-video";
         demux = "cc_demux";
-    }
-
-    if ( friendly_name && model ) {
-        char* combined;
-        if ( asprintf( &combined, "%s (%s)", friendly_name, model ) == -1 )
-            combined = NULL;
-        if ( combined != NULL ) {
-            free(friendly_name);
-            friendly_name = combined;
-        }
     }
 
     vlc_renderer_item_t *p_renderer_item =
@@ -209,7 +204,6 @@ error:
     free( friendly_name );
     free( icon_uri );
     free( uri );
-    free( model );
 }
 
 /*****************************************************************************
@@ -489,7 +483,8 @@ static int OpenSD( vlc_object_t *p_this )
     services_discovery_t *p_sd = ( services_discovery_t* )p_this;
     p_sd->description = _("Zeroconf network services");
 
-    discovery_sys_t *p_sys = p_sd->p_sys = calloc( 1, sizeof( discovery_sys_t ) );
+    p_sd->p_sys = calloc( 1, sizeof( discovery_sys_t ) );
+    discovery_sys_t *p_sys = (void *) p_sd->p_sys;
     if( !p_sd->p_sys )
         return VLC_ENOMEM;
     p_sys->parent = p_this;
@@ -509,7 +504,8 @@ static int OpenRD( vlc_object_t *p_this )
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
 
-    discovery_sys_t *p_sys = p_rd->p_sys = calloc( 1, sizeof( discovery_sys_t ) );
+    p_rd->p_sys = calloc( 1, sizeof( discovery_sys_t ) );
+    discovery_sys_t *p_sys = (void *) p_rd->p_sys;
     if( !p_rd->p_sys )
         return VLC_ENOMEM;
     p_sys->parent = p_this;
@@ -540,7 +536,7 @@ static void CloseCommon( discovery_sys_t *p_sys )
 static void CloseSD( vlc_object_t *p_this )
 {
     services_discovery_t *p_sd = ( services_discovery_t* )p_this;
-    discovery_sys_t *p_sys = p_sd->p_sys;
+    discovery_sys_t *p_sys = (void *) p_sd->p_sys;
     CloseCommon( p_sys );
     vlc_dictionary_clear( &p_sys->services_name_to_input_item,
                           clear_input_item, NULL );
@@ -550,7 +546,7 @@ static void CloseSD( vlc_object_t *p_this )
 static void CloseRD( vlc_object_t *p_this )
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
-    discovery_sys_t *p_sys = p_rd->p_sys;
+    discovery_sys_t *p_sys = (void *) p_rd->p_sys;
     CloseCommon( p_sys );
     vlc_dictionary_clear( &p_sys->services_name_to_input_item,
                           clear_renderer_item, NULL );

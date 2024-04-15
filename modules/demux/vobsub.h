@@ -2,6 +2,7 @@
  * vobsub.h: Vobsub support
  *****************************************************************************
  * Copyright (C) 2009 VLC authors and VideoLAN
+ * $Id: 4b9334fc3b974b54439efdcf9943ab6e3f744dd9 $
  *
  * Authors: John Stebbins
  *
@@ -20,36 +21,35 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-static inline void vobsub_palette_argb2ayvu( const uint32_t *src, uint32_t *dst )
+static inline void vobsub_palette_rgb2yuv( uint32_t *pu_palette )
 {
     int i;
     for( i = 0; i < 16; i++ )
     {
         uint8_t r, g, b, y, u, v;
-        r = (src[i] >> 16) & 0xff;
-        g = (src[i] >> 8) & 0xff;
-        b = (src[i] >> 0) & 0xff;
+        r = (pu_palette[i] >> 16) & 0xff;
+        g = (pu_palette[i] >> 8) & 0xff;
+        b = (pu_palette[i] >> 0) & 0xff;
         y = (uint8_t) __MIN(abs(r * 2104 + g * 4130 + b * 802 + 4096 + 131072) >> 13, 235);
         u = (uint8_t) __MIN(abs(r * -1214 + g * -2384 + b * 3598 + 4096 + 1048576) >> 13, 240);
         v = (uint8_t) __MIN(abs(r * 3598 + g * -3013 + b * -585 + 4096 + 1048576) >> 13, 240);
-        dst[i] = (y&0xff)<<16 | (v&0xff)<<8 | (u&0xff);
+        pu_palette[i] = (y&0xff)<<16 | (v&0xff)<<8 | (u&0xff);
     }
 }
 
 static inline int vobsub_palette_parse( const char *psz_buf, uint32_t *pu_palette )
 {
-    uint32_t palette[16];
     if( sscanf( psz_buf, "palette: "
-                "%" SCNx32", %" SCNx32 ", %" SCNx32 ", %" SCNx32 ", "
-                "%" SCNx32", %" SCNx32 ", %" SCNx32 ", %" SCNx32 ", "
-                "%" SCNx32", %" SCNx32 ", %" SCNx32 ", %" SCNx32 ", "
-                "%" SCNx32", %" SCNx32 ", %" SCNx32 ", %" SCNx32 "",
-                &palette[0], &palette[1], &palette[2], &palette[3],
-                &palette[4], &palette[5], &palette[6], &palette[7],
-                &palette[8], &palette[9], &palette[10], &palette[11],
-                &palette[12], &palette[13], &palette[14], &palette[15] ) == 16 )
+                "%" PRIx32", %" PRIx32 ", %" PRIx32 ", %" PRIx32 ", "
+                "%" PRIx32", %" PRIx32 ", %" PRIx32 ", %" PRIx32 ", "
+                "%" PRIx32", %" PRIx32 ", %" PRIx32 ", %" PRIx32 ", "
+                "%" PRIx32", %" PRIx32 ", %" PRIx32 ", %" PRIx32 "",
+                &pu_palette[0], &pu_palette[1], &pu_palette[2], &pu_palette[3],
+                &pu_palette[4], &pu_palette[5], &pu_palette[6], &pu_palette[7],
+                &pu_palette[8], &pu_palette[9], &pu_palette[10], &pu_palette[11],
+                &pu_palette[12], &pu_palette[13], &pu_palette[14], &pu_palette[15] ) == 16 )
     {
-        vobsub_palette_argb2ayvu( palette, pu_palette );
+        vobsub_palette_rgb2yuv( pu_palette );
         return VLC_SUCCESS;
     }
     else
@@ -62,11 +62,9 @@ static inline int vobsub_size_parse( const char *psz_buf,
                                      int *pi_original_frame_width,
                                      int *pi_original_frame_height )
 {
-    int w, h;
-    if( sscanf( psz_buf, "size: %dx%d", &w, &h ) == 2 )
+    if( sscanf( psz_buf, "size: %dx%d",
+                pi_original_frame_width, pi_original_frame_height ) == 2 )
     {
-        *pi_original_frame_width = w;
-        *pi_original_frame_height = h;
         return VLC_SUCCESS;
     }
     else

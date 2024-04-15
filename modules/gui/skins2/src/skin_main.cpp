@@ -2,6 +2,7 @@
  * skin_main.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 69bbf0fd441646f98358134a78ce2c52033b7dab $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -26,14 +27,13 @@
 #endif
 
 #define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
-
-#include <atomic>
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+#include <vlc_input.h>
 #include <vlc_playlist.h>
 #include <vlc_threads.h>
-#include <vlc_window.h>
-#include <vlc_cxx_helpers.hpp>
+#include <vlc_vout_window.h>
+#include <vlc_vout_display.h>
 
 #include "dialogs.hpp"
 #include "os_factory.hpp"
@@ -64,10 +64,11 @@ static int  Open  ( vlc_object_t * );
 static void Close ( vlc_object_t * );
 static void *Run  ( void * );
 
-static std::atomic<intf_thread_t *> skin_load_intf;
-static vlc::threads::mutex skin_load_lock;
-static vlc::threads::condition_variable skin_load_wait;
-static uintptr_t skin_load_rc = 0;
+static struct
+{
+    intf_thread_t *intf;
+    vlc_mutex_t mutex;
+} skin_load = { NULL, VLC_STATIC_MUTEX };
 
 //---------------------------------------------------------------------------
 // Open: initialize interface
@@ -81,12 +82,15 @@ static int Open( vlc_object_t *p_this )
     if( p_intf->p_sys == NULL )
         return VLC_ENOMEM;
 
+    p_intf->p_sys->p_input = NULL;
+
     // Initialize "singleton" objects
     p_intf->p_sys->p_logger = NULL;
     p_intf->p_sys->p_queue = NULL;
     p_intf->p_sys->p_dialogs = NULL;
     p_intf->p_sys->p_interpreter = NULL;
     p_intf->p_sys->p_osFactory = NULL;
+    p_intf->p_sys->p_osLoop = NULL;
     p_intf->p_sys->p_varManager = NULL;
     p_intf->p_sys->p_voutManager = NULL;
     p_intf->p_sys->p_vlcProc = NULL;
@@ -95,27 +99,43 @@ static int Open( vlc_object_t *p_this )
     // No theme yet
     p_intf->p_sys->p_theme = NULL;
 
-    vlc_sem_init( &p_intf->p_sys->init_wait, 0 );
-    p_intf->p_sys->b_error = false;
+    vlc_mutex_init( &p_intf->p_sys->init_lock );
+    vlc_cond_init( &p_intf->p_sys->init_wait );
 
-    if( vlc_clone( &p_intf->p_sys->thread, Run, p_intf ) )
+    vlc_mutex_lock( &p_intf->p_sys->init_lock );
+    p_intf->p_sys->b_error = false;
+    p_intf->p_sys->b_ready = false;
+
+    if( vlc_clone( &p_intf->p_sys->thread, Run, p_intf,
+                               VLC_THREAD_PRIORITY_LOW ) )
     {
+        vlc_mutex_unlock( &p_intf->p_sys->init_lock );
+
+        vlc_cond_destroy( &p_intf->p_sys->init_wait );
+        vlc_mutex_destroy( &p_intf->p_sys->init_lock );
         free( p_intf->p_sys );
         return VLC_EGENERIC;
     }
 
-    vlc_sem_wait( &p_intf->p_sys->init_wait );
+    while( !p_intf->p_sys->b_ready )
+        vlc_cond_wait( &p_intf->p_sys->init_wait, &p_intf->p_sys->init_lock );
+    vlc_mutex_unlock( &p_intf->p_sys->init_lock );
 
     if( p_intf->p_sys->b_error )
     {
         vlc_join( p_intf->p_sys->thread, NULL );
 
+        vlc_mutex_destroy( &p_intf->p_sys->init_lock );
+        vlc_cond_destroy( &p_intf->p_sys->init_wait );
+
         free( p_intf->p_sys );
         return VLC_EGENERIC;
     }
 
-    vlc::threads::mutex_locker guard {skin_load_lock};
-    skin_load_intf = p_intf;
+    vlc_mutex_lock( &skin_load.mutex );
+    skin_load.intf = p_intf;
+    vlc_mutex_unlock( &skin_load.mutex );
+
     return VLC_SUCCESS;
 }
 
@@ -128,21 +148,12 @@ static void Close( vlc_object_t *p_this )
 
     msg_Dbg( p_intf, "closing skins2 module" );
 
-    // ensure the playlist is stopped
-    vlc_playlist_t *playlist = vlc_intf_GetMainPlaylist( p_intf );
-    vlc_playlist_Lock( playlist );
-    vlc_playlist_Stop ( playlist );
-    vlc_playlist_Unlock( playlist );
+    /* Terminate input to ensure that our window provider is released. */
+    playlist_Deactivate( pl_Get(p_intf) );
 
-    {
-        vlc::threads::mutex_locker guard {skin_load_lock};
-        while (skin_load_rc != 0)
-            skin_load_wait.wait(skin_load_lock);
-
-        /* We don't need the skin_load_lock anymore since the interface
-         * will signaled that it doesn't exist anymore below. */
-        skin_load_intf = NULL;
-    }
+    vlc_mutex_lock( &skin_load.mutex );
+    skin_load.intf = NULL;
+    vlc_mutex_unlock( &skin_load.mutex);
 
     AsyncQueue *pQueue = p_intf->p_sys->p_queue;
     if( pQueue )
@@ -158,6 +169,9 @@ static void Close( vlc_object_t *p_this )
 
     vlc_join( p_intf->p_sys->thread, NULL );
 
+    vlc_mutex_destroy( &p_intf->p_sys->init_lock );
+    vlc_cond_destroy( &p_intf->p_sys->init_wait );
+
     // Destroy structure
     free( p_intf->p_sys );
 }
@@ -168,14 +182,16 @@ static void Close( vlc_object_t *p_this )
 //---------------------------------------------------------------------------
 static void *Run( void * p_obj )
 {
-    vlc_thread_set_name("vlc-skins2");
+    int canc = vlc_savecancel();
 
     intf_thread_t *p_intf = (intf_thread_t *)p_obj;
 
     bool b_error = false;
     char *skin_last = NULL;
+    ThemeLoader *pLoader = NULL;
     OSLoop *loop = NULL;
-    std::unique_ptr<ThemeLoader> pLoader;
+
+    vlc_mutex_lock( &p_intf->p_sys->init_lock );
 
     // Initialize singletons
     if( OSFactory::instance( p_intf ) == NULL )
@@ -234,8 +250,8 @@ static void *Run( void * p_obj )
     }
 
     // Load a theme
-    skin_last = config_GetPsz( "skins2-last" );
-    pLoader = std::make_unique<ThemeLoader>(p_intf);
+    skin_last = config_GetPsz( p_intf, "skins2-last" );
+    pLoader = new ThemeLoader( p_intf );
 
     if( !skin_last || !pLoader->load( skin_last ) )
     {
@@ -246,7 +262,7 @@ static void *Run( void * p_obj )
         msg_Err( p_intf, "no skins found : exiting");
     }
 
-    pLoader.reset();
+    delete pLoader;
     free( skin_last );
 
     // Get the instance of OSLoop
@@ -254,7 +270,9 @@ static void *Run( void * p_obj )
 
     // Signal the main thread this thread is now ready
     p_intf->p_sys->b_error = false;
-    vlc_sem_post( &p_intf->p_sys->init_wait );
+    p_intf->p_sys->b_ready = true;
+    vlc_cond_signal( &p_intf->p_sys->init_wait );
+    vlc_mutex_unlock( &p_intf->p_sys->init_lock );
 
     // Enter the main event loop
     loop->run();
@@ -266,7 +284,10 @@ static void *Run( void * p_obj )
     if( p_intf->p_sys->p_theme )
     {
         p_intf->p_sys->p_theme->saveConfig();
-        p_intf->p_sys->p_theme.reset();
+
+        delete p_intf->p_sys->p_theme;
+        p_intf->p_sys->p_theme = NULL;
+
         msg_Dbg( p_intf, "current theme deleted" );
     }
 
@@ -288,186 +309,183 @@ end:
     if( b_error )
     {
         p_intf->p_sys->b_error = true;
-        vlc_sem_post( &p_intf->p_sys->init_wait );
+        p_intf->p_sys->b_ready = true;
+        vlc_cond_signal( &p_intf->p_sys->init_wait );
+        vlc_mutex_unlock( &p_intf->p_sys->init_lock );
     }
 
+    vlc_restorecancel(canc);
     return NULL;
 }
 
-static int  WindowOpen( vlc_window_t * );
-static void WindowClose( vlc_window_t * );
+static int  WindowOpen( vout_window_t *, const vout_window_cfg_t * );
+static void WindowClose( vout_window_t * );
+static int  WindowControl( vout_window_t *, int, va_list );
 
-typedef struct
+struct vout_window_sys_t
 {
     intf_thread_t*     pIntf;
-    vlc_window_cfg_t  cfg;
-} vout_window_skins_t;
+    vout_window_cfg_t  cfg;
+};
 
 static void WindowOpenLocal( intf_thread_t* pIntf, vlc_object_t *pObj )
 {
-    vlc_window_t* pWnd = (vlc_window_t*)pObj;
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
-    int width = sys->cfg.width;
-    int height = sys->cfg.height;
-
+    vout_window_t* pWnd = (vout_window_t*)pObj;
+    int width = (int)pWnd->sys->cfg.width;
+    int height = (int)pWnd->sys->cfg.height;
     VoutManager::instance( pIntf )->acceptWnd( pWnd, width, height );
 }
 
 static void WindowCloseLocal( intf_thread_t* pIntf, vlc_object_t *pObj )
 {
-    vlc_window_t* pWnd = (vlc_window_t*)pObj;
+    vout_window_t* pWnd = (vout_window_t*)pObj;
     VoutManager::instance( pIntf )->releaseWnd( pWnd );
 }
 
-static void WindowSetFullscreen( vlc_window_t *pWnd, const char * );
-
-static int WindowEnable( vlc_window_t *pWnd, const vlc_window_cfg_t *cfg )
+static int WindowOpen( vout_window_t *pWnd, const vout_window_cfg_t *cfg )
 {
-    vout_window_skins_t* sys = static_cast<vout_window_skins_t*>(pWnd->sys);
+    if( cfg->type != VOUT_WINDOW_TYPE_INVALID )
+    {
+#ifdef X11_SKINS
+        if( cfg->type != VOUT_WINDOW_TYPE_XID )
+#else
+        if( cfg->type != VOUT_WINDOW_TYPE_HWND )
+#endif
+            return VLC_EGENERIC;
+    }
 
-    /* Protect from races against the main interface closing. */
-    vlc::threads::mutex_locker guard {skin_load_lock};
+    vout_window_sys_t* sys;
 
-    /* If the interface has already been closed, we cannot enable the window
-     * anymore and we need to report that. */
-    if (skin_load_intf == NULL)
+    vlc_mutex_lock( &skin_load.mutex );
+    intf_thread_t *pIntf = skin_load.intf;
+    if( pIntf )
+        vlc_object_hold( pIntf );
+    vlc_mutex_unlock( &skin_load.mutex );
+
+    if( pIntf == NULL )
         return VLC_EGENERIC;
-    intf_thread_t *pIntf = skin_load_intf;
 
-    sys->cfg = *cfg;
+    if( !var_InheritBool( pIntf, "skinned-video") ||
+        cfg->is_standalone )
+    {
+        vlc_object_release( pIntf );
+        return VLC_EGENERIC;
+    }
+
+    sys = (vout_window_sys_t*)calloc( 1, sizeof( *sys ) );
+    if( !sys )
+    {
+        vlc_object_release( pIntf );
+        return VLC_ENOMEM;
+    }
+
+    pWnd->sys = sys;
+    pWnd->sys->cfg = *cfg;
+    pWnd->sys->pIntf = pIntf;
+#ifdef X11_SKINS
+    pWnd->type = VOUT_WINDOW_TYPE_XID;
+#else
+    pWnd->type = VOUT_WINDOW_TYPE_HWND;
+#endif
+    pWnd->control = WindowControl;
 
     // force execution in the skins2 thread context
     CmdExecuteBlock* cmd = new CmdExecuteBlock( pIntf, VLC_OBJECT( pWnd ),
                                                 WindowOpenLocal );
     CmdExecuteBlock::executeWait( CmdGenericPtr( cmd ) );
 
-    if( pWnd->type == VLC_WINDOW_TYPE_DUMMY )
+#ifdef X11_SKINS
+    pWnd->display.x11 = NULL;
+
+    if( !pWnd->handle.xid )
+#else
+    if( !pWnd->handle.hwnd )
+#endif
     {
-        msg_Dbg( pIntf, "Vout window creation failed" );
+        free( sys );
+        vlc_object_release( pIntf );
         return VLC_EGENERIC;
     }
 
-    if (cfg->is_fullscreen)
-        WindowSetFullscreen( pWnd, NULL );
-
-    /* Prevent the interface from closing before we get disabled. */
-    skin_load_rc++;
+    vout_window_SetFullScreen( pWnd, cfg->is_fullscreen );
     return VLC_SUCCESS;
 }
 
-static void WindowDisable( vlc_window_t *pWnd )
+static void WindowClose( vout_window_t *pWnd )
 {
-    /* Protect from races against the main interface closing. */
-    vlc::threads::mutex_locker guard {skin_load_lock};
-    intf_thread_t *pIntf = skin_load_intf;
+    vout_window_sys_t* sys = pWnd->sys;
+    intf_thread_t *pIntf = sys->pIntf;
 
     // force execution in the skins2 thread context
     CmdExecuteBlock* cmd = new CmdExecuteBlock( pIntf, VLC_OBJECT( pWnd ),
                                                 WindowCloseLocal );
     CmdExecuteBlock::executeWait( CmdGenericPtr( cmd ) );
 
-    pWnd->type = VLC_WINDOW_TYPE_DUMMY;
-
-    /* Now the interface can be closed. */
-    skin_load_rc--;
-    skin_load_wait.signal();
+    vlc_object_release( sys->pIntf );
+    free( sys );
 }
 
-static void WindowResize( vlc_window_t *pWnd,
-                          unsigned i_width, unsigned i_height )
+static int WindowControl( vout_window_t *pWnd, int query, va_list args )
 {
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
-    intf_thread_t *pIntf = sys->pIntf;
-
-    if( i_width == 0 || i_height == 0 )
-        return;
-
-    // Post a vout resize command
-    AsyncQueue *pQueue = AsyncQueue::instance( pIntf );
-    CmdResizeVout *pCmd = new CmdResizeVout( pIntf, pWnd,
-                                             (int)i_width, (int)i_height );
-    pQueue->push( CmdGenericPtr( pCmd ) );
-}
-
-static void WindowSetState( vlc_window_t *pWnd, unsigned i_arg )
-{
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
+    vout_window_sys_t* sys = pWnd->sys;
     intf_thread_t *pIntf = sys->pIntf;
     AsyncQueue *pQueue = AsyncQueue::instance( pIntf );
-    bool on_top = i_arg & VLC_WINDOW_STATE_ABOVE;
 
-    // Post a SetOnTop command
-    CmdSetOnTop* pCmd = new CmdSetOnTop( pIntf, on_top );
-    pQueue->push( CmdGenericPtr( pCmd ) );
-}
+    switch( query )
+    {
+        case VOUT_WINDOW_SET_SIZE:
+        {
+            unsigned int i_width  = va_arg( args, unsigned int );
+            unsigned int i_height = va_arg( args, unsigned int );
 
-static void WindowUnsetFullscreen( vlc_window_t *pWnd )
-{
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
-    intf_thread_t *pIntf = sys->pIntf;
-    AsyncQueue *pQueue = AsyncQueue::instance( pIntf );
-    CmdSetFullscreen* pCmd = new CmdSetFullscreen( pIntf, pWnd, false );
+            if( i_width && i_height )
+            {
+                // Post a vout resize command
+                CmdResizeVout *pCmd =
+                    new CmdResizeVout( pIntf, pWnd,
+                                       (int)i_width, (int)i_height );
+                pQueue->push( CmdGenericPtr( pCmd ) );
+            }
+            return VLC_EGENERIC;
+        }
 
-    pQueue->push( CmdGenericPtr( pCmd ) );
-}
+        case VOUT_WINDOW_SET_FULLSCREEN:
+        {
+            bool b_fullscreen = va_arg( args, int );
 
-static void WindowSetFullscreen( vlc_window_t *pWnd, const char * )
-{
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
-    intf_thread_t *pIntf = sys->pIntf;
-    AsyncQueue *pQueue = AsyncQueue::instance( pIntf );
-    // Post a set fullscreen command
-    CmdSetFullscreen* pCmd = new CmdSetFullscreen( pIntf, pWnd, true );
+            // Post a set fullscreen command
+            CmdSetFullscreen* pCmd =
+                new CmdSetFullscreen( pIntf, pWnd, b_fullscreen );
+            pQueue->push( CmdGenericPtr( pCmd ) );
+            return VLC_SUCCESS;
+        }
 
-    pQueue->push( CmdGenericPtr( pCmd ) );
-}
+        case VOUT_WINDOW_SET_STATE:
+        {
+            unsigned i_arg = va_arg( args, unsigned );
+            unsigned on_top = i_arg & VOUT_WINDOW_STATE_ABOVE;
 
-static const auto window_ops = []{
-    struct vlc_window_operations ops {};
-    ops.enable = WindowEnable;
-    ops.disable = WindowDisable;
-    ops.resize = WindowResize;
-    ops.destroy = WindowClose;
-    ops.set_state = WindowSetState;
-    ops.unset_fullscreen = WindowUnsetFullscreen;
-    ops.set_fullscreen = WindowSetFullscreen;
-    return ops;
-}();
+            // Post a SetOnTop command
+            CmdSetOnTop* pCmd =
+                new CmdSetOnTop( pIntf, on_top );
+            pQueue->push( CmdGenericPtr( pCmd ) );
+            return VLC_SUCCESS;
+        }
 
-static int WindowOpen( vlc_window_t *pWnd )
-{
-    if( var_InheritBool( pWnd, "video-wallpaper" )
-     || !var_InheritBool( pWnd, "embedded-video" ) )
-        return VLC_EGENERIC;
+        case VOUT_WINDOW_HIDE_MOUSE:
+        {
+            bool hide = va_arg( args, int );
+            // Post a HideMouse command
+            CmdHideMouse* pCmd =
+                new CmdHideMouse( pIntf, pWnd, hide );
+            pQueue->push( CmdGenericPtr( pCmd ) );
+            return VLC_SUCCESS;
+        }
 
-    vout_window_skins_t* sys;
-
-    /* Prevent the interface from closing behind our back. */
-    vlc::threads::mutex_locker guard {skin_load_lock};
-    if (skin_load_intf == NULL)
-        return VLC_EGENERIC;
-
-    intf_thread_t *pIntf = skin_load_intf;
-
-    if( !var_InheritBool( pIntf, "skinned-video") )
-        return VLC_EGENERIC;
-
-    sys = new (std::nothrow) vout_window_skins_t;
-    if( !sys )
-        return VLC_ENOMEM;
-
-    pWnd->sys = sys;
-    sys->pIntf = pIntf;
-    pWnd->ops = &window_ops;
-    pWnd->type = VLC_WINDOW_TYPE_DUMMY;
-    return VLC_SUCCESS;
-}
-
-static void WindowClose( vlc_window_t *pWnd )
-{
-    vout_window_skins_t* sys = (vout_window_skins_t *)pWnd->sys;
-
-    delete sys;
+        default:
+            msg_Dbg( pIntf, "control query not supported" );
+            return VLC_EGENERIC;
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -481,34 +499,39 @@ static void WindowClose( vlc_window_t *pWnd )
 #define SKINS2_SYSTRAY      N_("Systray icon")
 #define SKINS2_SYSTRAY_LONG N_("Show a systray icon for VLC")
 #define SKINS2_TASKBAR      N_("Show VLC on the taskbar")
+#define SKINS2_TASKBAR_LONG N_("Show VLC on the taskbar")
 #define SKINS2_TRANSPARENCY      N_("Enable transparency effects")
 #define SKINS2_TRANSPARENCY_LONG N_("You can disable all transparency effects"\
     " if you want. This is mainly useful when moving windows does not behave" \
     " correctly.")
 #define SKINS2_PLAYLIST N_("Use a skinned playlist")
+#define SKINS2_PLAYLIST_LONG N_("Use a skinned playlist")
 #define SKINS2_VIDEO N_("Display video in a skinned window if any")
 #define SKINS2_VIDEO_LONG N_( \
     "When set to 'no', this parameter is intended to give old skins a chance" \
     " to play back video even though no video tag is implemented")
 
 vlc_module_begin ()
+    set_category( CAT_INTERFACE )
     set_subcategory( SUBCAT_INTERFACE_MAIN )
-    add_loadfile("skins2-last", "", SKINS2_LAST, SKINS2_LAST_LONG)
-    add_string( "skins2-config", "", SKINS2_CONFIG, SKINS2_CONFIG_LONG )
+    add_loadfile( "skins2-last", "", SKINS2_LAST, SKINS2_LAST_LONG,
+                  true )
+    add_string( "skins2-config", "", SKINS2_CONFIG, SKINS2_CONFIG_LONG,
+                true )
         change_private ()
 #ifdef _WIN32
     add_bool( "skins2-systray", true, SKINS2_SYSTRAY,
-              SKINS2_SYSTRAY_LONG );
+              SKINS2_SYSTRAY_LONG, false );
     add_bool( "skins2-taskbar", true, SKINS2_TASKBAR,
-              nullptr );
+              SKINS2_TASKBAR_LONG, false );
 #endif
     add_bool( "skins2-transparency", false, SKINS2_TRANSPARENCY,
-              SKINS2_TRANSPARENCY_LONG );
+              SKINS2_TRANSPARENCY_LONG, false );
 
     add_bool( "skinned-playlist", true, SKINS2_PLAYLIST,
-              nullptr );
+              SKINS2_PLAYLIST_LONG, false );
     add_bool( "skinned-video", true, SKINS2_VIDEO,
-              SKINS2_VIDEO_LONG );
+              SKINS2_VIDEO_LONG, false );
     set_shortname( N_("Skins"))
     set_description( N_("Skinnable Interface") )
     set_capability( "interface", 30 )
@@ -517,6 +540,6 @@ vlc_module_begin ()
 
     add_submodule ()
         set_capability( "vout window", 51 )
-        set_callback( WindowOpen )
+        set_callbacks( WindowOpen, WindowClose )
 
 vlc_module_end ()

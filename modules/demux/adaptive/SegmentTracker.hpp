@@ -143,7 +143,7 @@ namespace adaptive
         public:
             SegmentChangedEvent() = delete;
             SegmentChangedEvent(const ID &, uint64_t,
-                                vlc_tick_t, vlc_tick_t, vlc_tick_t = VLC_TICK_INVALID);
+                                mtime_t, mtime_t, vlc_tick_t = VLC_TICK_INVALID);
             virtual ~SegmentChangedEvent() = default;
 
             const ID *id;
@@ -169,7 +169,7 @@ namespace adaptive
         public:
             BufferingLevelChangedEvent() = delete;
             BufferingLevelChangedEvent(const ID &,
-                                       vlc_tick_t, vlc_tick_t, vlc_tick_t, vlc_tick_t);
+                                       mtime_t, mtime_t, mtime_t, mtime_t);
             virtual ~BufferingLevelChangedEvent() = default;
 
             const ID *id;
@@ -223,17 +223,17 @@ namespace adaptive
             const Role & getStreamRole() const;
             void reset();
             ChunkInterface* getNextChunk(bool);
-            bool setPositionByTime(vlc_tick_t, bool, bool);
+            bool setPositionByTime(mtime_t, bool, bool);
             void setPosition(const Position &, bool);
             bool setStartPosition();
             Position getStartPosition() const;
             vlc_tick_t getPlaybackTime(bool = false) const; /* Current segment start time if selected */
             bool getMediaPlaybackRange(vlc_tick_t *, vlc_tick_t *, vlc_tick_t *) const;
             vlc_tick_t getMinAheadTime() const;
-            bool getSynchronizationReference(uint64_t, vlc_tick_t, SynchronizationReference &) const;
+            bool getSynchronizationReference(uint64_t, mtime_t, SynchronizationReference &) const;
             void updateSynchronizationReference(uint64_t, const Times &);
             void notifyBufferingState(bool) const;
-            void notifyBufferingLevel(vlc_tick_t, vlc_tick_t, vlc_tick_t, vlc_tick_t) const;
+            void notifyBufferingLevel(mtime_t, mtime_t, mtime_t, mtime_t) const;
             void registerListener(SegmentTrackerListenerInterface *);
             bool updateSelected();
             bool bufferingAvailable() const;

@@ -28,7 +28,7 @@
 
 static int Demux(demux_t *demux)
 {
-    return demux_Demux(demux->s);
+    return demux_Demux(demux->p_next);
 }
 
 static int Control(demux_t *demux, int query, va_list args)
@@ -48,15 +48,19 @@ static int Control(demux_t *demux, int query, va_list args)
         {
             unsigned *restrict pf = va_arg(args, unsigned *);
 
-            if (demux_Control(demux->s, DEMUX_TEST_AND_CLEAR_FLAGS, pf))
-                *pf = 0;
+            if (demux_Control(demux->p_next, DEMUX_TEST_AND_CLEAR_FLAGS, pf))
+            {
+                unsigned update = demux->info.i_update & *pf;
+                demux->info.i_update &= ~*pf;
+                *pf = update;
+            }
             *pf &= ~(INPUT_UPDATE_TITLE|INPUT_UPDATE_SEEKPOINT|
                      INPUT_UPDATE_TITLE_LIST);
             break;
         }
 
         default:
-            return demux_vaControl(demux->s, query, args);
+            return demux_vaControl(demux->p_next, query, args);
     }
 
     return VLC_SUCCESS;
@@ -73,7 +77,8 @@ static int Open(vlc_object_t *obj)
 
 vlc_module_begin ()
     set_description(N_("Seek prevention demux filter"))
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_STREAM_FILTER)
     set_capability("demux_filter", 0)
-    set_callback(Open)
+    set_callbacks(Open, NULL)
 vlc_module_end()

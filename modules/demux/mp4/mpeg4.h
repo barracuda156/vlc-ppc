@@ -94,15 +94,10 @@ static inline bool MPEG4_Codec_By_ObjectType(uint8_t oti,
             break;
         case 0xaa: /* DTS-HD HRA */
         case 0xab: /* DTS-HD Master Audio */
-            *pi_profile = PROFILE_DTS_HD;
             *pi_codec = VLC_CODEC_DTS;
             break;
         case 0xac: /* Extension Substream containing only LBR */
-            *pi_profile = PROFILE_DTS_EXPRESS;
             *pi_codec = VLC_CODEC_DTS;
-            break;
-        case 0xad:
-            *pi_codec = VLC_CODEC_OPUS;
             break;
         case 0xDD:
             *pi_codec = VLC_CODEC_VORBIS;

@@ -29,7 +29,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#ifdef HAVE_POLL_H
+#ifdef HAVE_POLL
 #include <poll.h>
 #endif
 #ifdef HAVE_SYS_EVENTFD_H
@@ -71,6 +71,7 @@ vlc_interrupt_t *vlc_interrupt_create(void)
 void vlc_interrupt_deinit(vlc_interrupt_t *ctx)
 {
     assert(ctx->callback == NULL);
+    vlc_mutex_destroy(&ctx->lock);
 }
 
 void vlc_interrupt_destroy(vlc_interrupt_t *ctx)
@@ -128,7 +129,7 @@ static void vlc_interrupt_prepare(vlc_interrupt_t *ctx,
 
 /**
  * Cleans up after an interruptible wait: waits for any pending invocations of
- * the callback previously registered with vlc_interrupt_prepare(), and rechecks
+ * the callback previously registed with vlc_interrupt_prepare(), and rechecks
  * for any pending interruption.
  *
  * @warning As this function waits for ongoing callback invocation to complete,
@@ -217,16 +218,18 @@ static void vlc_mwait_i11e_wake(void *opaque)
 static void vlc_mwait_i11e_cleanup(void *opaque)
 {
     vlc_interrupt_t *ctx = opaque;
+    vlc_cond_t *cond = ctx->data;
 
     vlc_mutex_unlock(&ctx->lock);
     vlc_interrupt_finish(ctx);
+    vlc_cond_destroy(cond);
 }
 
 int vlc_mwait_i11e(vlc_tick_t deadline)
 {
     vlc_interrupt_t *ctx = vlc_interrupt_var;
     if (ctx == NULL)
-        return vlc_tick_wait(deadline), 0;
+        return mwait(deadline), 0;
 
     vlc_cond_t wait;
     vlc_cond_init(&wait);
@@ -240,7 +243,9 @@ int vlc_mwait_i11e(vlc_tick_t deadline)
     vlc_cleanup_pop();
     vlc_mutex_unlock(&ctx->lock);
 
-    return vlc_interrupt_finish(ctx);
+    int ret = vlc_interrupt_finish(ctx);
+    vlc_cond_destroy(&wait);
+    return ret;
 }
 
 static void vlc_interrupt_forward_wake(void *opaque)
@@ -279,12 +284,6 @@ int vlc_interrupt_forward_stop(void *const data[2])
 }
 
 #ifndef _WIN32
-# include <fcntl.h>
-# include <sys/uio.h>
-# ifdef HAVE_SYS_SOCKET_H
-#  include <sys/socket.h>
-# endif
-
 static void vlc_poll_i11e_wake(void *opaque)
 {
     uint64_t value = 1;
@@ -398,21 +397,151 @@ int vlc_poll_i11e(struct pollfd *fds, unsigned nfds, int timeout)
     return ret;
 }
 
-static int vlc_poll_file(int fd, unsigned int mask)
+# include <fcntl.h>
+# include <sys/uio.h>
+# include <sys/socket.h>
+
+
+/* There are currently no ways to atomically force a non-blocking read or write
+ * operations. Even for sockets, the MSG_DONTWAIT flag is non-standard.
+ *
+ * So in the event that more than one thread tries to read or write on the same
+ * file at the same time, there is a race condition where these functions might
+ * block in spite of an interruption. This should never happen in practice.
+ */
+
+/**
+ * Wrapper for readv() that returns the EINTR error upon VLC I/O interruption.
+ * @warning This function ignores the non-blocking file flag.
+ */
+ssize_t vlc_readv_i11e(int fd, struct iovec *iov, int count)
 {
     struct pollfd ufd;
 
     ufd.fd = fd;
-    ufd.events = mask;
-    return vlc_poll_i11e(&ufd, 1, -1);
+    ufd.events = POLLIN;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
+        return -1;
+    return readv(fd, iov, count);
 }
 
-static int vlc_poll_sock(int sock, unsigned int mask)
+/**
+ * Wrapper for writev() that returns the EINTR error upon VLC I/O interruption.
+ *
+ * @note Like writev(), once some but not all bytes are written, the function
+ * might wait for write completion, regardless of signals and interruptions.
+ * @warning This function ignores the non-blocking file flag.
+ */
+ssize_t vlc_writev_i11e(int fd, const struct iovec *iov, int count)
 {
-    return vlc_poll_file(sock, mask);
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLOUT;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
+        return -1;
+    return writev(fd, iov, count);
 }
 
-#else /* !_WIN32 */
+/**
+ * Wrapper for read() that returns the EINTR error upon VLC I/O interruption.
+ * @warning This function ignores the non-blocking file flag.
+ */
+ssize_t vlc_read_i11e(int fd, void *buf, size_t count)
+{
+    struct iovec iov = { .iov_base = buf, .iov_len = count };
+    return vlc_readv_i11e(fd, &iov, 1);
+}
+
+/**
+ * Wrapper for write() that returns the EINTR error upon VLC I/O interruption.
+ *
+ * @note Like write(), once some but not all bytes are written, the function
+ * might wait for write completion, regardless of signals and interruptions.
+ * @warning This function ignores the non-blocking file flag.
+ */
+ssize_t vlc_write_i11e(int fd, const void *buf, size_t count)
+{
+    struct iovec iov = { .iov_base = (void*)buf, .iov_len = count };
+    return vlc_writev_i11e(fd, &iov, 1);
+}
+
+ssize_t vlc_recvmsg_i11e(int fd, struct msghdr *msg, int flags)
+{
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLIN;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
+        return -1;
+    /* NOTE: MSG_OOB and MSG_PEEK should work fine here.
+     * MSG_WAITALL is not supported at this point. */
+    return recvmsg(fd, msg, flags);
+}
+
+ssize_t vlc_recvfrom_i11e(int fd, void *buf, size_t len, int flags,
+                        struct sockaddr *addr, socklen_t *addrlen)
+{
+    struct iovec iov = { .iov_base = buf, .iov_len = len };
+    struct msghdr msg = {
+        .msg_name = addr,
+        .msg_namelen = (addrlen != NULL) ? *addrlen : 0,
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    };
+
+    ssize_t ret = vlc_recvmsg_i11e(fd, &msg, flags);
+    if (ret >= 0 && addrlen != NULL)
+        *addrlen = msg.msg_namelen;
+    return ret;
+}
+
+ssize_t vlc_sendmsg_i11e(int fd, const struct msghdr *msg, int flags)
+{
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLOUT;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
+        return -1;
+    /* NOTE: MSG_EOR, MSG_OOB and MSG_NOSIGNAL should all work fine here. */
+    return sendmsg(fd, msg, flags);
+}
+
+ssize_t vlc_sendto_i11e(int fd, const void *buf, size_t len, int flags,
+                      const struct sockaddr *addr, socklen_t addrlen)
+{
+    struct iovec iov = { .iov_base = (void *)buf, .iov_len = len };
+    struct msghdr msg = {
+        .msg_name = (struct sockaddr *)addr,
+        .msg_namelen = addrlen,
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    };
+
+    return vlc_sendmsg_i11e(fd, &msg, flags);
+}
+
+int vlc_accept_i11e(int fd, struct sockaddr *addr, socklen_t *addrlen,
+                  bool blocking)
+{
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLIN;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
+        return -1;
+
+    return vlc_accept(fd, addr, addrlen, blocking);
+}
+
+#else /* _WIN32 */
+
 static void CALLBACK vlc_poll_i11e_wake_self(ULONG_PTR data)
 {
     (void) data; /* Nothing to do */
@@ -420,8 +549,12 @@ static void CALLBACK vlc_poll_i11e_wake_self(ULONG_PTR data)
 
 static void vlc_poll_i11e_wake(void *opaque)
 {
+#if !VLC_WINSTORE_APP || _WIN32_WINNT >= 0x0A00
     HANDLE th = opaque;
     QueueUserAPC(vlc_poll_i11e_wake_self, th, 0);
+#else
+    (void) opaque;
+#endif
 }
 
 static void vlc_poll_i11e_cleanup(void *opaque)
@@ -466,135 +599,43 @@ int vlc_poll_i11e(struct pollfd *fds, unsigned nfds, int timeout)
     return ret;
 }
 
-static int vlc_poll_file(int fd, unsigned int mask)
-{
-    (void) fd; (void) mask;
-    return 1;
-}
-
-static int vlc_poll_sock(int sock, unsigned int mask)
-{
-    struct pollfd ufd;
-
-    ufd.fd = sock;
-    ufd.events = mask;
-    return vlc_poll_i11e(&ufd, 1, -1);
-}
-#endif /* _WIN32 */
-
-/* There are currently no ways to atomically force a non-blocking read or write
- * operations. Even for sockets, the MSG_DONTWAIT flag is non-standard.
- *
- * So in the event that more than one thread tries to read or write on the same
- * file at the same time, there is a race condition where these functions might
- * block in spite of an interruption. This should never happen in practice.
- */
-
-/**
- * Wrapper for readv() that returns the EINTR error upon VLC I/O interruption.
- * @warning This function ignores the non-blocking file flag.
- */
 ssize_t vlc_readv_i11e(int fd, struct iovec *iov, int count)
 {
-    if (vlc_poll_file(fd, POLLIN) < 0)
-        return -1;
-    return readv(fd, iov, count);
+    (void) fd; (void) iov; (void) count;
+    vlc_assert_unreachable();
 }
 
-/**
- * Wrapper for writev() that returns the EINTR error upon VLC I/O interruption.
- *
- * @note Like writev(), once some but not all bytes are written, the function
- * might wait for write completion, regardless of signals and interruptions.
- * @warning This function ignores the non-blocking file flag.
- */
 ssize_t vlc_writev_i11e(int fd, const struct iovec *iov, int count)
 {
-    if (vlc_poll_file(fd, POLLOUT) < 0)
-        return -1;
-    return vlc_writev(fd, iov, count);
+    (void) fd; (void) iov; (void) count;
+    vlc_assert_unreachable();
 }
 
-/**
- * Wrapper for read() that returns the EINTR error upon VLC I/O interruption.
- * @warning This function ignores the non-blocking file flag.
- */
 ssize_t vlc_read_i11e(int fd, void *buf, size_t count)
 {
-    struct iovec iov = { .iov_base = buf, .iov_len = count };
-    return vlc_readv_i11e(fd, &iov, 1);
+    return read(fd, buf, count);
 }
 
-/**
- * Wrapper for write() that returns the EINTR error upon VLC I/O interruption.
- *
- * @note Like write(), once some but not all bytes are written, the function
- * might wait for write completion, regardless of signals and interruptions.
- * @warning This function ignores the non-blocking file flag.
- */
 ssize_t vlc_write_i11e(int fd, const void *buf, size_t count)
 {
-    struct iovec iov = { .iov_base = (void*)buf, .iov_len = count };
-    return vlc_writev_i11e(fd, &iov, 1);
+    return write(fd, buf, count);
 }
 
 ssize_t vlc_recvmsg_i11e(int fd, struct msghdr *msg, int flags)
 {
-    if (vlc_poll_sock(fd, POLLIN) < 0)
-        return -1;
-    /* NOTE: MSG_OOB and MSG_PEEK should work fine here.
-     * MSG_WAITALL is not supported at this point. */
-    return recvmsg(fd, msg, flags);
+    (void) fd; (void) msg; (void) flags;
+    vlc_assert_unreachable();
 }
-
-#ifndef _WIN32
-ssize_t vlc_recvfrom_i11e(int fd, void *buf, size_t len, int flags,
-                        struct sockaddr *addr, socklen_t *addrlen)
-{
-    struct iovec iov = { .iov_base = buf, .iov_len = len };
-    struct msghdr msg = {
-        .msg_name = addr,
-        .msg_namelen = (addrlen != NULL) ? *addrlen : 0,
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    };
-
-    ssize_t ret = vlc_recvmsg_i11e(fd, &msg, flags);
-    if (ret >= 0 && addrlen != NULL)
-        *addrlen = msg.msg_namelen;
-    return ret;
-}
-#endif
-
-ssize_t vlc_sendmsg_i11e(int fd, const struct msghdr *msg, int flags)
-{
-    if (vlc_poll_sock(fd, POLLOUT) < 0)
-        return -1;
-    /* NOTE: MSG_EOR and MSG_OOB should all work fine here. */
-    return vlc_sendmsg(fd, msg, flags);
-}
-
-#ifndef _WIN32
-ssize_t vlc_sendto_i11e(int fd, const void *buf, size_t len, int flags,
-                      const struct sockaddr *addr, socklen_t addrlen)
-{
-    struct iovec iov = { .iov_base = (void *)buf, .iov_len = len };
-    struct msghdr msg = {
-        .msg_name = (struct sockaddr *)addr,
-        .msg_namelen = addrlen,
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    };
-
-    return vlc_sendmsg_i11e(fd, &msg, flags);
-}
-
-#else /* _WIN32 */
 
 ssize_t vlc_recvfrom_i11e(int fd, void *buf, size_t len, int flags,
                         struct sockaddr *addr, socklen_t *addrlen)
 {
-    if (vlc_poll_sock(fd, POLLIN) < 0)
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLIN;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
         return -1;
 
     ssize_t ret = recvfrom(fd, buf, len, flags, addr, addrlen);
@@ -603,10 +644,21 @@ ssize_t vlc_recvfrom_i11e(int fd, void *buf, size_t len, int flags,
     return ret;
 }
 
+ssize_t vlc_sendmsg_i11e(int fd, const struct msghdr *msg, int flags)
+{
+    (void) fd; (void) msg; (void) flags;
+    vlc_assert_unreachable();
+}
+
 ssize_t vlc_sendto_i11e(int fd, const void *buf, size_t len, int flags,
                       const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (vlc_poll_sock(fd, POLLOUT) < 0)
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLOUT;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
         return -1;
 
     ssize_t ret = sendto(fd, buf, len, flags, addr, addrlen);
@@ -615,13 +667,21 @@ ssize_t vlc_sendto_i11e(int fd, const void *buf, size_t len, int flags,
     return ret;
 }
 
-#endif
-
 int vlc_accept_i11e(int fd, struct sockaddr *addr, socklen_t *addrlen,
-                  bool nonblock)
+                  bool blocking)
 {
-    if (vlc_poll_sock(fd, POLLIN) < 0)
+    struct pollfd ufd;
+
+    ufd.fd = fd;
+    ufd.events = POLLIN;
+
+    if (vlc_poll_i11e(&ufd, 1, -1) < 0)
         return -1;
-    return vlc_accept(fd, addr, addrlen, nonblock);
+
+    int cfd = vlc_accept(fd, addr, addrlen, blocking);
+    if (cfd < 0 && WSAGetLastError() == WSAEWOULDBLOCK)
+        errno = EAGAIN;
+    return cfd;
 }
 
+#endif

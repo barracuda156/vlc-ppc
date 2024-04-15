@@ -78,7 +78,10 @@ static int write_uint32(Packet *p, uint32_t val)
 {
     if (p->pos>p->maxlen-4)
         return 0;
-    SetDWBE(&p->data[p->pos], val);
+    p->data[p->pos  ] = (val    ) & 0xFF;
+    p->data[p->pos+1] = (val>> 8) & 0xFF;
+    p->data[p->pos+2] = (val>>16) & 0xFF;
+    p->data[p->pos+3] = (val>>24) & 0xFF;
     p->pos += 4;
     return 1;
 }
@@ -87,7 +90,8 @@ static int write_uint16(Packet *p, uint16_t val)
 {
     if (p->pos>p->maxlen-2)
         return 0;
-    SetWBE(&p->data[p->pos], val);
+    p->data[p->pos  ] = (val    ) & 0xFF;
+    p->data[p->pos+1] = (val>> 8) & 0xFF;
     p->pos += 2;
     return 1;
 }
@@ -96,8 +100,8 @@ static int write_chars(Packet *p, const unsigned char *str, int nb_chars)
 {
     if (p->pos>p->maxlen-nb_chars)
         return 0;
-    memcpy(&p->data[p->pos], str, nb_chars);
-    p->pos += nb_chars;
+    for (int i=0;i<nb_chars;i++)
+        p->data[p->pos++] = str[i];
     return 1;
 }
 
@@ -105,7 +109,10 @@ static int read_uint32(ROPacket *p, uint32_t *val)
 {
     if (p->pos>p->maxlen-4)
         return 0;
-    *val = GetDWBE(&p->data[p->pos]);
+    *val =  (uint32_t)p->data[p->pos  ];
+    *val |= (uint32_t)p->data[p->pos+1]<< 8;
+    *val |= (uint32_t)p->data[p->pos+2]<<16;
+    *val |= (uint32_t)p->data[p->pos+3]<<24;
     p->pos += 4;
     return 1;
 }
@@ -114,7 +121,8 @@ static int read_uint16(ROPacket *p, uint16_t *val)
 {
     if (p->pos>p->maxlen-2)
         return 0;
-    *val = GetWBE(&p->data[p->pos]);
+    *val =  (uint16_t)p->data[p->pos  ];
+    *val |= (uint16_t)p->data[p->pos+1]<<8;
     p->pos += 2;
     return 1;
 }
@@ -123,8 +131,8 @@ static int read_chars(ROPacket *p, unsigned char *str, int nb_chars)
 {
     if (p->pos>p->maxlen-nb_chars)
         return 0;
-    memcpy(str, &p->data[p->pos], nb_chars);
-    p->pos += nb_chars;
+    for (int i=0;i<nb_chars;i++)
+        str[i] = p->data[p->pos++];
     return 1;
 }
 
@@ -171,16 +179,7 @@ int opus_header_parse(const unsigned char *packet, int len, OpusHeader *h)
         return 0;
     h->channel_mapping = ch;
 
-    if(h->channel_mapping == 0)
-    {
-        if(h->channels>2)
-            return 0;
-        h->nb_streams = 1;
-        h->nb_coupled = h->channels>1;
-        h->stream_map[0]=0;
-        h->stream_map[1]=1;
-    }
-    else if(h->channel_mapping < 4)
+    if (h->channel_mapping != 0)
     {
         if (!read_chars(&p, &ch, 1))
             return 0;
@@ -192,43 +191,26 @@ int opus_header_parse(const unsigned char *packet, int len, OpusHeader *h)
         if (!read_chars(&p, &ch, 1))
             return 0;
 
-        if (ch > h->nb_streams)
+        if (ch>h->nb_streams || (ch+h->nb_streams)>255)
             return 0;
         h->nb_coupled = ch;
 
         /* Multi-stream support */
-        if(h->channel_mapping <= 2)
+        for (int i=0;i<h->channels;i++)
         {
-            if (h->nb_coupled + h->nb_streams > 255)
+            if (!read_chars(&p, &h->stream_map[i], 1))
                 return 0;
-            for (int i=0;i<h->channels;i++)
-            {
-                if (!read_chars(&p, &h->stream_map[i], 1))
-                    return 0;
-                if (h->stream_map[i]>(h->nb_streams+h->nb_coupled) && h->stream_map[i]!=255)
-                    return 0;
-            }
+            if (h->stream_map[i]>(h->nb_streams+h->nb_coupled) && h->stream_map[i]!=255)
+                return 0;
         }
-        else /* Decoding Matrix */
-        {
-            if (h->nb_coupled + h->nb_streams > 255)
-                return 0;
-            int matrix_entries = h->channels * (h->nb_streams + h->nb_coupled);
-            int matrix_size = len - p.pos;
-            if(matrix_size < matrix_entries * 2)
-                return 0;
-            h->dmatrix = malloc(matrix_size);
-            if(h->dmatrix == NULL)
-                return 0;
-            if(!read_chars(&p, h->dmatrix, matrix_size))
-            {
-                free(h->dmatrix);
-                return 0;
-            }
-            h->dmatrix_size = matrix_size;
-        }
+    } else {
+        if(h->channels>2)
+            return 0;
+        h->nb_streams = 1;
+        h->nb_coupled = h->channels>1;
+        h->stream_map[0]=0;
+        h->stream_map[1]=1;
     }
-
     /*For version 0/1 we know there won't be any more data
       so reject any that have data past the end.*/
     if ((h->version==0 || h->version==1) && p.pos != len)
@@ -368,7 +350,7 @@ static int opus_header_to_packet(const OpusHeader *h, unsigned char *packet, int
     if (!write_chars(&p, &ch, 1))
         return 0;
 
-    if (h->channel_mapping == 1)
+    if (h->channel_mapping != 0)
     {
         ch = h->nb_streams;
         if (!write_chars(&p, &ch, 1))
@@ -439,21 +421,3 @@ int opus_write_header(uint8_t **p_extra, int *i_extra, OpusHeader *header, const
     return 0;
 }
 
-void opus_header_init(OpusHeader *h)
-{
-    h->version = 0;
-    h->channels = 0;
-    h->preskip = 3840; /* default is 80 ms */
-    h->input_sample_rate = 0; /* unknown */
-    h->gain = 0;
-    h->channel_mapping = 255; /* unknown */
-    h->nb_streams = 0;
-    h->nb_coupled = 0;
-    h->dmatrix_size = 0;
-    h->dmatrix = NULL;
-}
-
-void opus_header_clean(OpusHeader *h)
-{
-    free(h->dmatrix);
-}

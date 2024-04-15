@@ -28,9 +28,11 @@
 #include <vlc_plugin.h>
 #include <vlc_codec.h>
 
+#ifdef HAVE_ARIBB24
  #include "substext.h"
  #include <aribb24/parser.h>
  #include <aribb24/decoder.h>
+#endif
 
 //#define DEBUG_ARIBSUB 1
 
@@ -51,11 +53,12 @@ vlc_module_begin ()
     set_description( N_("ARIB subtitles decoder") )
     set_shortname( N_("ARIB subtitles") )
     set_capability( "spu decoder", 50 )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
     set_callbacks( Open, Close )
 
-    add_bool( ARIBSUB_CFG_PREFIX "ignore-ruby", false, IGNORE_RUBY_TEXT, IGNORE_RUBY_LONGTEXT )
-    add_bool( ARIBSUB_CFG_PREFIX "use-coretext", false, USE_CORETEXT_TEXT, USE_CORETEXT_LONGTEXT )
+    add_bool( ARIBSUB_CFG_PREFIX "ignore-ruby", false, IGNORE_RUBY_TEXT, IGNORE_RUBY_LONGTEXT, true )
+    add_bool( ARIBSUB_CFG_PREFIX "use-coretext", false, USE_CORETEXT_TEXT, USE_CORETEXT_LONGTEXT, true )
 vlc_module_end ()
 
 
@@ -63,7 +66,7 @@ vlc_module_end ()
  * Local structures
  ****************************************************************************/
 
-typedef struct
+struct decoder_sys_t
 {
     bool              b_a_profile;
     bool              b_ignore_ruby;
@@ -72,7 +75,7 @@ typedef struct
 
     arib_instance_t  *p_arib_instance;
     char             *psz_arib_base_dir;
-} decoder_sys_t;
+};
 
 /*****************************************************************************
  * Local prototypes
@@ -94,8 +97,8 @@ static int Open( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t *) p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_ARIB_A &&
-        p_dec->fmt_in->i_codec != VLC_CODEC_ARIB_C )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_ARIB_A &&
+        p_dec->fmt_in.i_codec != VLC_CODEC_ARIB_C )
     {
         return VLC_EGENERIC;
     }
@@ -117,7 +120,7 @@ static int Open( vlc_object_t *p_this )
     p_dec->pf_decode = Decode;
     p_dec->fmt_out.i_codec = 0;
 
-    p_sys->b_a_profile = ( p_dec->fmt_in->i_codec == VLC_CODEC_ARIB_A );
+    p_sys->b_a_profile = ( p_dec->fmt_in.i_codec == VLC_CODEC_ARIB_A );
 
     p_sys->b_ignore_ruby =
         var_InheritBool( p_this, ARIBSUB_CFG_PREFIX "ignore-ruby" );
@@ -194,7 +197,7 @@ static void messages_callback_handler( void *p_opaque, const char *psz_message )
 
 static char* get_arib_base_dir()
 {
-    char *psz_data_dir = config_GetUserDir( VLC_USERDATA_DIR );
+    char *psz_data_dir = config_GetUserDir( VLC_DATA_DIR );
     if( psz_data_dir == NULL )
     {
         return NULL;
@@ -261,11 +264,11 @@ static subpicture_t *render( decoder_t *p_dec, arib_parser_t *p_parser,
     }
 
     p_spu->i_start = p_block->i_pts;
-    p_spu->i_stop = p_block->i_pts + VLC_TICK_FROM_US(arib_decoder_get_time( p_arib_decoder ));
+    p_spu->i_stop = p_block->i_pts + arib_decoder_get_time( p_arib_decoder );
     p_spu->b_ephemer  = (p_spu->i_start == p_spu->i_stop);
     p_spu->b_absolute = true;
 
-    arib_spu_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
+    subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
 
     arib_text_region_t *p_region = p_spu_sys->p_region =
         (arib_text_region_t*) calloc( 1, sizeof(arib_text_region_t) );

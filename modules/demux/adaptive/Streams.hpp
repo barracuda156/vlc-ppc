@@ -27,6 +27,7 @@
 
 #include "plumbing/CommandsQueue.hpp"
 #include "plumbing/Demuxer.hpp"
+#include "plumbing/SourceStream.hpp"
 #include "plumbing/FakeESOut.hpp"
 
 #include "Time.hpp"
@@ -82,8 +83,8 @@ namespace adaptive
             Ongoing,
             Lessthanmin,
         };
-        BufferingStatus bufferize(Times, vlc_tick_t, vlc_tick_t,
-                                  vlc_tick_t, bool = false);
+        BufferingStatus bufferize(Times, mtime_t, mtime_t,
+                                  mtime_t, bool = false);
         BufferingStatus getBufferAndStatus(const Times &, vlc_tick_t, vlc_tick_t, vlc_tick_t *);
         vlc_tick_t getDemuxedAmount(Times) const;
         Status dequeue(Times, Times *);
@@ -113,7 +114,7 @@ namespace adaptive
     protected:
         bool seekAble() const;
         void setDisabled(bool);
-        virtual block_t *checkBlock(block_t *, bool);
+        virtual block_t *checkBlock(block_t *, bool) = 0;
         AbstractDemuxer * createDemux(const StreamFormat &);
         virtual AbstractDemuxer * newDemux(vlc_object_t *, const StreamFormat &,
                                            es_out_t *, AbstractSourceStream *) const  override;
@@ -163,8 +164,8 @@ namespace adaptive
 
     private:
         void declaredCodecs();
-        BufferingStatus doBufferize(Times, vlc_tick_t, vlc_tick_t,
-                                    vlc_tick_t, bool);
+        BufferingStatus doBufferize(Times, mtime_t, mtime_t,
+                                    mtime_t, bool);
         BufferingStatus last_buffer_status;
         bool valid;
         bool disabled;

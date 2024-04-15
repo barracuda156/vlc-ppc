@@ -2,6 +2,7 @@
  * mpgv.c : MPEG-I/II Video demuxer
  *****************************************************************************
  * Copyright (C) 2001-2004 VLC authors and VideoLAN
+ * $Id: 4bdeaf5184cb81557c5d505600e10e84132c54c1 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *
@@ -40,6 +41,7 @@ static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
 vlc_module_begin ()
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_DEMUX )
     set_description( N_("MPEG-I/II video demuxer" ) )
     set_capability( "demux", 5 )
@@ -50,14 +52,14 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-typedef struct
+struct demux_sys_t
 {
     bool  b_start;
 
     es_out_id_t *p_es;
 
     decoder_t *p_packetizer;
-} demux_sys_t;
+};
 
 static int Demux( demux_t * );
 static int Control( demux_t *, int, va_list );
@@ -76,26 +78,6 @@ static void Close( vlc_object_t * p_this )
     free( p_sys );
 }
 
-static int CheckMPEGStartCode( const uint8_t *p_peek )
-{
-    switch( p_peek[3] )
-    {
-        case 0x00:
-            if( (p_peek[5] & 0x38) == 0x00 )
-                return VLC_EGENERIC;
-            break;
-        case 0xB0:
-        case 0xB1:
-        case 0xB6:
-            return VLC_EGENERIC;
-        default:
-            if( p_peek[3] > 0xB9 )
-                return VLC_EGENERIC;
-            break;
-    }
-    return VLC_SUCCESS;
-}
-
 /*****************************************************************************
  * Open: initializes demux structures
  *****************************************************************************/
@@ -109,8 +91,11 @@ static int Open( vlc_object_t * p_this )
 
     es_format_t  fmt;
 
-    if( vlc_stream_Peek( p_demux->s, &p_peek, 8 ) < 8 )
+    if( vlc_stream_Peek( p_demux->s, &p_peek, 4 ) < 4 )
+    {
+        msg_Dbg( p_demux, "cannot peek" );
         return VLC_EGENERIC;
+    }
 
     if( p_demux->obj.force )
         b_forced = true;
@@ -122,11 +107,12 @@ static int Open( vlc_object_t * p_this )
         msg_Err( p_demux, "this doesn't look like an MPEG ES stream, continuing" );
     }
 
-    if( CheckMPEGStartCode( p_peek ) != VLC_SUCCESS )
+    if( p_peek[3] > 0xb9 )
     {
         if( !b_forced ) return VLC_EGENERIC;
         msg_Err( p_demux, "this seems to be a system stream (PS plug-in ?), but continuing" );
     }
+
     p_demux->pf_demux  = Demux;
     p_demux->pf_control= Control;
     p_demux->p_sys     = p_sys = malloc( sizeof( demux_sys_t ) );
@@ -135,7 +121,7 @@ static int Open( vlc_object_t * p_this )
 
     /* Load the mpegvideo packetizer */
     es_format_Init( &fmt, VIDEO_ES, VLC_CODEC_MPGV );
-    p_sys->p_packetizer = demux_PacketizerNew( VLC_OBJECT(p_demux), &fmt, "mpeg video" );
+    p_sys->p_packetizer = demux_PacketizerNew( p_demux, &fmt, "mpeg video" );
     if( !p_sys->p_packetizer )
     {
         free( p_sys );

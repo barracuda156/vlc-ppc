@@ -29,6 +29,7 @@
 #include "Representationselectors.hpp"
 
 #include "../playlist/BaseRepresentation.h"
+#include "../playlist/BasePeriod.h"
 #include "../http/Chunk.h"
 #include "../tools/Debug.hpp"
 
@@ -48,6 +49,7 @@ RateBasedAdaptationLogic::RateBasedAdaptationLogic  (vlc_object_t *obj) :
 
 RateBasedAdaptationLogic::~RateBasedAdaptationLogic()
 {
+    vlc_mutex_destroy(&lock);
 }
 
 BaseRepresentation *RateBasedAdaptationLogic::getNextRepresentation(BaseAdaptationSet *adaptSet, BaseRepresentation *currep)
@@ -76,7 +78,7 @@ BaseRepresentation *RateBasedAdaptationLogic::getNextRepresentation(BaseAdaptati
 }
 
 void RateBasedAdaptationLogic::updateDownloadRate(const ID &, size_t size,
-                                                  vlc_tick_t time, vlc_tick_t)
+                                                  vlc_tick_t time, mtime_t)
 {
     if(unlikely(time == 0))
         return;
@@ -84,12 +86,12 @@ void RateBasedAdaptationLogic::updateDownloadRate(const ID &, size_t size,
     dllength += time;
     dlsize += size;
 
-    if(dllength < VLC_TICK_FROM_MS(250))
+    if(dllength < CLOCK_FREQ / 4)
         return;
 
     const size_t bps = CLOCK_FREQ * dlsize * 8 / dllength;
 
-    vlc_mutex_locker locker(&lock);
+    vlc_mutex_lock(&lock);
     bpsAvg = average.push(bps);
 
 //    BwDebug(msg_Dbg(p_obj, "alpha1 %lf alpha0 %lf dmax %ld ds %ld", alpha,
@@ -102,6 +104,7 @@ void RateBasedAdaptationLogic::updateDownloadRate(const ID &, size_t size,
 
     BwDebug(msg_Info(p_obj, "Current bandwidth %zu KiB/s using %u%%",
                     (bpsAvg / 8000), (bpsAvg) ? (unsigned)(usedBps * 100.0 / bpsAvg) : 0));
+    vlc_mutex_unlock(&lock);
 }
 
 void RateBasedAdaptationLogic::trackerEvent(const TrackerEvent &ev)
@@ -110,7 +113,7 @@ void RateBasedAdaptationLogic::trackerEvent(const TrackerEvent &ev)
     {
         const RepresentationSwitchEvent &event =
                 static_cast<const RepresentationSwitchEvent &>(ev);
-        vlc_mutex_locker locker(&lock);
+        vlc_mutex_lock(&lock);
         if(event.prev)
             usedBps -= event.prev->getBandwidth();
         if(event.next)
@@ -118,6 +121,7 @@ void RateBasedAdaptationLogic::trackerEvent(const TrackerEvent &ev)
 
         BwDebug(msg_Info(p_obj, "New bandwidth usage %zu KiB/s %u%%",
                         (usedBps / 8000), (bpsAvg) ? (unsigned)(usedBps * 100.0 / bpsAvg) : 0 ));
+        vlc_mutex_unlock(&lock);
     }
 }
 

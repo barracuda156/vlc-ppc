@@ -2,6 +2,7 @@
  * subsusf.c : USF subtitles decoder
  *****************************************************************************
  * Copyright (C) 2000-2006 VLC authors and VideoLAN
+ * $Id: 147f45f2648749a35f7e3309d3bc1d924f0dbc76 $
  *
  * Authors: Bernie Purcell <bitmap@videolan.org>
  *
@@ -49,8 +50,10 @@ vlc_module_begin ()
     set_shortname( N_("USFSubs"))
     set_description( N_("USF subtitles decoder") )
     set_callbacks( OpenDecoder, CloseDecoder )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
-    add_bool( "subsdec-formatted", true, FORMAT_TEXT, FORMAT_LONGTEXT )
+    add_bool( "subsdec-formatted", true, FORMAT_TEXT, FORMAT_LONGTEXT,
+                 false )
 vlc_module_end ()
 
 
@@ -83,7 +86,7 @@ typedef struct
     int             i_margin_percent_v;
 }  ssa_style_t;
 
-typedef struct
+struct decoder_sys_t
 {
     int                 i_original_height;
     int                 i_original_width;
@@ -94,11 +97,10 @@ typedef struct
 
     image_attach_t      **pp_images;
     int                 i_images;
-} decoder_sys_t;
+};
 
 static int           DecodeBlock   ( decoder_t *, block_t * );
 static char         *CreatePlainText( char * );
-static char         *StripTags( char *psz_subtitle );
 static int           ParseImageAttachments( decoder_t *p_dec );
 
 static subpicture_t        *ParseText     ( decoder_t *, block_t * );
@@ -117,7 +119,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_USF )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_USF )
         return VLC_EGENERIC;
 
     /* Allocate the memory needed to store the decoder's structure */
@@ -139,7 +141,7 @@ static int OpenDecoder( vlc_object_t *p_this )
 
     if( var_CreateGetBool( p_dec, "subsdec-formatted" ) )
     {
-        if( p_dec->fmt_in->i_extra > 0 )
+        if( p_dec->fmt_in.i_extra > 0 )
             ParseUSFHeader( p_dec );
     }
 
@@ -219,7 +221,7 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
         return NULL;
 
     /* We cannot display a subpicture with no date */
-    if( p_block->i_pts == VLC_TICK_INVALID )
+    if( p_block->i_pts <= VLC_TICK_INVALID )
     {
         msg_Warn( p_dec, "subtitle without a date" );
         return NULL;
@@ -261,7 +263,7 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
 
     p_spu->i_start = p_block->i_pts;
     p_spu->i_stop = p_block->i_pts + p_block->i_length;
-    p_spu->b_ephemer = (p_block->i_length == VLC_TICK_INVALID);
+    p_spu->b_ephemer = (p_block->i_length == 0);
     p_spu->b_absolute = false;
     p_spu->i_original_picture_width = p_sys->i_original_width;
     p_spu->i_original_picture_height = p_sys->i_original_height;
@@ -435,8 +437,8 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
             }
         }
 
-        /* Set default or user align/margin.
-         * Style overridden if no user value. */
+        /* Set default or user align/magin.
+         * Style overriden if no user value. */
         p_text_region->i_x = i_sys_align > 0 ? 20 : 0;
         p_text_region->i_y = 10;
         p_text_region->i_align = SUBPICTURE_ALIGN_BOTTOM |
@@ -506,18 +508,29 @@ static int ParseImageAttachments( decoder_t *p_dec )
 
                 if( p_block != NULL )
                 {
-                    es_format_t        es_in;
+                    video_format_t     fmt_in;
                     video_format_t     fmt_out;
 
                     memcpy( p_block->p_buffer, p_attach->p_data, p_attach->i_data );
 
-                    es_format_Init( &es_in, VIDEO_ES, type );
-                    es_in.video.i_chroma = type;
-                    video_format_Init( &fmt_out, VLC_CODEC_YUVA );
+                    memset( &fmt_in,  0, sizeof( video_format_t));
+                    memset( &fmt_out, 0, sizeof( video_format_t));
 
-                    p_pic = image_Read( p_image, p_block, &es_in, &fmt_out );
-                    es_format_Clean( &es_in );
-                    video_format_Clean( &fmt_out );
+                    fmt_in.i_chroma  = type;
+                    fmt_out.i_chroma = VLC_CODEC_YUVA;
+
+                    /* Find a suitable decoder module */
+                    if( module_exists( "sdl_image" ) )
+                    {
+                        /* ffmpeg thinks it can handle bmp properly but it can't (at least
+                         * not all of them), so use sdl_image if it is available */
+
+                        var_Create( p_dec, "codec", VLC_VAR_STRING | VLC_VAR_DOINHERIT );
+                        var_SetString( p_dec, "codec", "sdl_image" );
+                    }
+
+                    p_pic = image_Read( p_image, p_block, &fmt_in, &fmt_out );
+                    var_Destroy( p_dec, "codec" );
                 }
 
                 image_HandlerDelete( p_image );
@@ -535,7 +548,7 @@ static int ParseImageAttachments( decoder_t *p_dec )
                 }
             }
         }
-        vlc_input_attachment_Release( pp_attachments[ k ] );
+        vlc_input_attachment_Delete( pp_attachments[ k ] );
     }
     free( pp_attachments );
 
@@ -736,6 +749,17 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                         {
                             p_ssa_style->p_style->i_shadow_width = atoi( val );
                         }
+                        else if( !strcasecmp( "back-color", attr ) )
+                        {
+                            if( *val == '#' )
+                            {
+                                unsigned long col = strtol(val+1, NULL, 16);
+                                p_ssa_style->p_style->i_karaoke_background_color = (col & 0x00ffffff);
+                                p_ssa_style->p_style->i_karaoke_background_alpha = (col >> 24) & 0xff;
+                                p_ssa_style->p_style->i_features |= STYLE_HAS_K_BACKGROUND_COLOR
+                                                                  | STYLE_HAS_K_BACKGROUND_ALPHA;
+                            }
+                        }
                         else if( !strcasecmp( "spacing", attr ) )
                         {
                             p_ssa_style->p_style->i_spacing = atoi( val );
@@ -827,37 +851,21 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
                 {
                     subpicture_region_t  *p_text_region;
 
-                    char *psz_flat = NULL;
-                    char *psz_knodes = strndup( &psz_subtitle[9], psz_end - &psz_subtitle[9] );
-                    if( psz_knodes )
-                    {
-                        /* remove timing <k> tags */
-                        psz_flat = CreatePlainText( psz_knodes );
-                        free( psz_knodes );
-                        if( psz_flat )
-                        {
-                            p_text_region = CreateTextRegion( p_dec,
-                                                              psz_flat,
-                                                              p_sys->i_align );
-                            if( p_text_region )
-                            {
-                                free( p_text_region->p_text->psz_text );
-                                p_text_region->p_text->psz_text = psz_flat;
-                                if( !p_region_first )
-                                {
-                                    p_region_first = p_region_upto = p_text_region;
-                                }
-                                else if( p_text_region )
-                                {
-                                    p_region_upto->p_next = p_text_region;
-                                    p_region_upto = p_region_upto->p_next;
-                                }
-                            }
-                            else free( psz_flat );
-                        }
-                    }
-
                     psz_end += strcspn( psz_end, ">" ) + 1;
+
+                    p_text_region = CreateTextRegion( p_dec,
+                                                      psz_subtitle,
+                                                      p_sys->i_align );
+
+                    if( !p_region_first )
+                    {
+                        p_region_first = p_region_upto = p_text_region;
+                    }
+                    else if( p_text_region )
+                    {
+                        p_region_upto->p_next = p_text_region;
+                        p_region_upto = p_region_upto->p_next;
+                    }
                 }
             }
             else if(( !strncasecmp( psz_subtitle, "<image ", 7 )) ||
@@ -961,8 +969,8 @@ static void ParseUSFHeader( decoder_t *p_dec )
     xml_reader_t  *p_xml_reader = NULL;
 
     p_sub = vlc_stream_MemoryNew( VLC_OBJECT(p_dec),
-                              p_dec->fmt_in->p_extra,
-                              p_dec->fmt_in->i_extra,
+                              p_dec->fmt_in.p_extra,
+                              p_dec->fmt_in.i_extra,
                               true );
     if( !p_sub )
         return;

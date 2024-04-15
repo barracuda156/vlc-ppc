@@ -2,6 +2,7 @@
  * input_slider.cpp : VolumeSlider and SeekSlider
  ****************************************************************************
  * Copyright (C) 2006-2017 the VideoLAN team
+ * $Id: 82d89874e3cae58d199b7ef5f693ab57622cc4a0 $
  *
  * Authors: Pierre Lamot <pierre@videolabs.io>
  *
@@ -34,9 +35,13 @@
 
 QPixmap ImageHelper::loadSvgToPixmap( const QString &path, qint32 i_width, qint32 i_height )
 {
+#if HAS_QT56
     qreal ratio = QApplication::primaryScreen()->devicePixelRatio();
-    QPixmap pixmap( QSize( i_width, i_height ) * ratio );
 
+    QPixmap pixmap( QSize( i_width, i_height ) * ratio );
+#else
+    QPixmap pixmap( QSize( i_width, i_height ) );
+#endif
 
     pixmap.fill( Qt::transparent );
 
@@ -47,6 +52,9 @@ QPixmap ImageHelper::loadSvgToPixmap( const QString &path, qint32 i_width, qint3
     renderer.render( &painter );
     painter.end();
 
+#if HAS_QT56
     pixmap.setDevicePixelRatio( ratio );
+#endif
+
     return pixmap;
 }

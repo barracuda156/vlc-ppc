@@ -2,6 +2,7 @@
  * vout_window.hpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: ef971ae7d502fb7f406e38868f6c51b68fbf9548 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *
@@ -25,24 +26,20 @@
 
 #include "generic_window.hpp"
 #include "dialogs.hpp"
-#include "../commands/cmd_generic.hpp"
-#include <vlc_window.h>
-#include <memory>
-#include "../../../video_output/wasync_resize_compressor.h"
+#include <vlc_vout_window.h>
 
 class OSGraphics;
-class OSTimer;
 class CtrlVideo;
-struct vlc_window;
+
 
 /// Class to handle a video output window
 class VoutWindow: private GenericWindow
 {
 public:
 
-    VoutWindow( intf_thread_t *pIntf, struct vlc_window *pWnd,
+    VoutWindow( intf_thread_t *pIntf, vout_window_t* pWnd,
                 int width, int height, GenericWindow* pParent = NULL );
-    ~VoutWindow();
+    virtual ~VoutWindow();
 
     /// Make some functions public
     //@{
@@ -50,7 +47,7 @@ public:
     using GenericWindow::hide;
     using GenericWindow::move;
     using GenericWindow::resize;
-    using GenericWindow::updateWindowConfiguration;
+    using GenericWindow::getOSHandle;
     using GenericWindow::getMonitorInfo;
     //@}
 
@@ -59,7 +56,6 @@ public:
 
     /// hotkeys processing
     virtual void processEvent( EvtKey &rEvtKey );
-    virtual void processEvent( EvtScroll &rEvtScroll );
     virtual void processEvent( EvtMotion &rEvtMotion );
     virtual void processEvent( EvtMouse &rEvtMouse );
 
@@ -78,16 +74,12 @@ public:
     /// Resize the window
     virtual void resize( int width, int height );
 
-    // Hide/show cursor
-    void showMouse( );
-    void hideMouse( bool );
-
     virtual std::string getType() const { return "Vout"; }
 
 private:
 
     /// vout thread
-    struct vlc_window *m_pWnd;
+    vout_window_t* m_pWnd;
 
     /// original width and height
     int original_width;
@@ -98,13 +90,6 @@ private:
 
     /// Parent Window
     GenericWindow* m_pParentWindow;
-
-    // Cursor timer
-    std::unique_ptr<OSTimer> m_pTimer;
-    int mouse_hide_timeout;
-    DEFINE_CALLBACK( VoutWindow, HideMouse );
-
-    vlc_wasync_resize_compressor_t m_compressor;
 };
 
 typedef CountedPtr<VoutWindow> VoutWindowPtr;

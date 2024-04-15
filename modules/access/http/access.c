@@ -22,9 +22,6 @@
 # include "config.h"
 #endif
 
-#undef MODULE_STRING
-#define MODULE_STRING "http"
-
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
@@ -41,11 +38,11 @@
 #include "file.h"
 #include "live.h"
 
-typedef struct
+struct access_sys_t
 {
     struct vlc_http_mgr *manager;
     struct vlc_http_resource *resource;
-} access_sys_t;
+};
 
 static block_t *FileRead(stream_t *access, bool *restrict eof)
 {
@@ -96,8 +93,8 @@ static int FileControl(stream_t *access, int query, va_list args)
         }
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
-                var_InheritInteger(access, "network-caching") );
+            *va_arg(args, int64_t *) = INT64_C(1000) *
+                var_InheritInteger(access, "network-caching");
             break;
 
         case STREAM_GET_CONTENT_TYPE:
@@ -123,6 +120,13 @@ static block_t *LiveRead(stream_t *access, bool *restrict eof)
     return b;
 }
 
+static int NoSeek(stream_t *access, uint64_t pos)
+{
+    (void) access;
+    (void) pos;
+    return VLC_EGENERIC;
+}
+
 static int LiveControl(stream_t *access, int query, va_list args)
 {
     access_sys_t *sys = access->p_sys;
@@ -137,8 +141,8 @@ static int LiveControl(stream_t *access, int query, va_list args)
             break;
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg(args, vlc_tick_t *) = VLC_TICK_FROM_MS(
-                var_InheritInteger(access, "network-caching") );
+            *va_arg(args, int64_t *) = INT64_C(1000) *
+                var_InheritInteger(access, "network-caching");
             break;
 
         case STREAM_GET_CONTENT_TYPE:
@@ -190,12 +194,9 @@ static int Open(vlc_object_t *obj)
     if (sys->resource == NULL)
         goto error;
 
-    ret = vlc_credential_get(&crd, obj, NULL, NULL, NULL, NULL);
-    if (ret == 0)
+    if (vlc_credential_get(&crd, obj, NULL, NULL, NULL, NULL))
         vlc_http_res_set_login(sys->resource,
                                crd.psz_username, crd.psz_password);
-    else if (ret == -EINTR)
-        goto error;
 
     ret = VLC_EGENERIC;
 
@@ -210,9 +211,9 @@ static int Open(vlc_object_t *obj)
         if (psz_realm == NULL)
             break;
         crd.psz_realm = psz_realm;
-        if (vlc_credential_get(&crd, obj, NULL, NULL, _("HTTP authentication"),
-                               _("Please enter a valid login name and "
-                                 "a password for realm %s."), crd.psz_realm) != 0)
+        if (!vlc_credential_get(&crd, obj, NULL, NULL, _("HTTP authentication"),
+                                _("Please enter a valid login name and "
+                                  "a password for realm %s."), crd.psz_realm))
             break;
 
         vlc_http_res_set_login(sys->resource,
@@ -249,7 +250,7 @@ static int Open(vlc_object_t *obj)
     if (live)
     {
         access->pf_block = LiveRead;
-        access->pf_seek = NULL;
+        access->pf_seek = NoSeek;
         access->pf_control = LiveControl;
     }
     else
@@ -286,25 +287,27 @@ static void Close(vlc_object_t *obj)
 vlc_module_begin()
     set_description(N_("HTTPS input"))
     set_shortname(N_("HTTPS"))
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACCESS)
     set_capability("access", 2)
     add_shortcut("https", "http")
     set_callbacks(Open, Close)
 
     add_bool("http-continuous", false, N_("Continuous stream"),
-             N_("Keep reading a resource that keeps being updated."))
+             N_("Keep reading a resource that keeps being updated."), true)
         change_volatile()
     add_bool("http-forward-cookies", true, N_("Cookies forwarding"),
-             N_("Forward cookies across HTTP redirections."))
+             N_("Forward cookies across HTTP redirections."), true)
     add_string("http-referrer", NULL, N_("Referrer"),
-               N_("Provide the referral URL, i.e. HTTP \"Referer\" (sic)."))
+               N_("Provide the referral URL, i.e. HTTP \"Referer\" (sic)."),
+               true)
         change_safe()
         change_volatile()
     add_string("http-user-agent", NULL, N_("User agent"),
                N_("Override the name and version of the application as "
                   "provided to the HTTP server, i.e. the HTTP \"User-Agent\". "
                   "Name and version must be separated by a forward slash, "
-                  "e.g. \"FooBar/1.2.3\"."))
+                  "e.g. \"FooBar/1.2.3\"."), true)
         change_safe()
         change_private()
 vlc_module_end()

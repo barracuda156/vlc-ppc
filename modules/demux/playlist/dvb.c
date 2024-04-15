@@ -2,6 +2,7 @@
  * dvb.c: LinuxTV channels list
  *****************************************************************************
  * Copyright (C) 2005-2012 VLC authors and VideoLAN
+ * $Id: 12d987300955dc6eb2831f621aeb9d57817b6d3c $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -45,12 +46,13 @@ int Import_DVB(vlc_object_t *p_this)
 {
     stream_t *demux = (stream_t *)p_this;
 
+    CHECK_FILE(demux);
     if (!stream_HasExtension(demux, ".conf" ) && !demux->obj.force )
         return VLC_EGENERIC;
 
     /* Check if this really is a channels file */
     const uint8_t *peek;
-    int len = vlc_stream_Peek(demux->s, &peek, 1023);
+    int len = vlc_stream_Peek(demux->p_source, &peek, 1023);
     if (len <= 0)
         return VLC_EGENERIC;
 
@@ -69,7 +71,7 @@ int Import_DVB(vlc_object_t *p_this)
     input_item_Release(item);
 
     msg_Dbg(demux, "found valid channels.conf file");
-    demux->pf_control = PlaylistControl;
+    demux->pf_control = access_vaDirectoryControlHelper;
     demux->pf_readdir = ReadDir;
 
     return VLC_SUCCESS;
@@ -80,7 +82,7 @@ static int ReadDir(stream_t *s, input_item_node_t *subitems)
 {
     char *line;
 
-    while ((line = vlc_stream_ReadLine(s->s)) != NULL)
+    while ((line = vlc_stream_ReadLine(s->p_source)) != NULL)
     {
         input_item_t *item = ParseLine(line);
         free(line);

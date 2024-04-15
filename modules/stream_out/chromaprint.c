@@ -28,6 +28,7 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+#include <vlc_input.h>
 #include <vlc_block.h>
 #include <vlc_sout.h>
 
@@ -46,9 +47,9 @@
 static int      Open    ( vlc_object_t * );
 static void     Close   ( vlc_object_t * );
 
-static void *Add( sout_stream_t *, const es_format_t * );
-static void  Del( sout_stream_t *, void * );
-static int   Send( sout_stream_t *, void *, block_t * );
+static sout_stream_id_sys_t *Add( sout_stream_t *, const es_format_t * );
+static void              Del ( sout_stream_t *, sout_stream_id_sys_t * );
+static int               Send( sout_stream_t *, sout_stream_id_sys_t *, block_t* );
 
 /*****************************************************************************
  * Module descriptor
@@ -58,15 +59,15 @@ static int   Send( sout_stream_t *, void *, block_t * );
 
 vlc_module_begin ()
     set_description( N_("Chromaprint stream output") )
-    set_capability( "sout output", 0 )
+    set_capability( "sout stream", 0 )
     add_shortcut( "chromaprint" )
+    set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_STREAM )
-    add_integer( "duration", 90, DURATION_TEXT, DURATION_LONGTEXT )
+    add_integer( "duration", 90, DURATION_TEXT, DURATION_LONGTEXT, true )
     set_callbacks( Open, Close )
 vlc_module_end ()
 
-typedef struct sout_stream_id_sys_t sout_stream_id_sys_t;
-typedef struct
+struct sout_stream_sys_t
 {
     unsigned int i_duration;
     unsigned int i_total_samples;
@@ -76,7 +77,7 @@ typedef struct
     ChromaprintContext *p_chromaprint_ctx;
     sout_stream_id_sys_t *id;
     chromaprint_fingerprint_t *p_data;
-} sout_stream_sys_t;
+};
 
 struct sout_stream_id_sys_t
 {
@@ -86,10 +87,6 @@ struct sout_stream_id_sys_t
 };
 
 #define BYTESPERSAMPLE 2
-
-static const struct sout_stream_operations ops = {
-    Add, Del, Send, NULL, NULL, NULL,
-};
 
 /*****************************************************************************
  * Open:
@@ -111,7 +108,7 @@ static int Open( vlc_object_t *p_this )
     {
         msg_Err( p_stream, "Fingerprint data holder not set" );
         free( p_sys );
-        return VLC_EINVAL;
+        return VLC_ENOVAR;
     }
     msg_Dbg( p_stream, "chromaprint version %s", chromaprint_get_version() );
     p_sys->p_chromaprint_ctx = chromaprint_new( CHROMAPRINT_ALGORITHM_DEFAULT );
@@ -121,7 +118,9 @@ static int Open( vlc_object_t *p_this )
         free( p_sys );
         return VLC_EGENERIC;
     }
-    p_stream->ops = &ops;
+    p_stream->pf_add  = Add;
+    p_stream->pf_del  = Del;
+    p_stream->pf_send = Send;
     return VLC_SUCCESS;
 }
 
@@ -163,7 +162,7 @@ static void Close( vlc_object_t * p_this )
     free( p_sys );
 }
 
-static void *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static sout_stream_id_sys_t *Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     sout_stream_id_sys_t *id = NULL;
@@ -203,7 +202,7 @@ error:
     return NULL;
 }
 
-static void Del( sout_stream_t *p_stream, void *id )
+static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     Finish( p_stream );
@@ -212,10 +211,10 @@ static void Del( sout_stream_t *p_stream, void *id )
     free( id );
 }
 
-static int Send( sout_stream_t *p_stream, void *_id, block_t *p_buf )
+static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
+                 block_t *p_buf )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
-    sout_stream_id_sys_t *id = (sout_stream_id_sys_t *)_id;
 
     if ( p_sys->id != id )
     {
@@ -232,7 +231,7 @@ static int Send( sout_stream_t *p_stream, void *_id, block_t *p_buf )
         if ( !p_sys->b_finished && id->i_samples > 0 && p_buf->i_buffer )
         {
             if(! chromaprint_feed( p_sys->p_chromaprint_ctx,
-                                   (int16_t *)p_buf->p_buffer,
+                                   p_buf->p_buffer,
                                    p_buf->i_buffer / BYTESPERSAMPLE ) )
                 msg_Warn( p_stream, "feed error" );
             id->i_samples -= i_samples;

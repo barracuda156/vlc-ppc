@@ -2,6 +2,7 @@
  * dynamicoverlay.c : dynamic overlay plugin for vlc
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: 4628eae7e703c3afac4529bf771afead32e4aaec $
  *
  * Author: Søren Bøg <avacore@videolan.org>
  *
@@ -44,8 +45,8 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Create( filter_t * );
-static void Destroy( filter_t * );
+static int Create( vlc_object_t * );
+static void Destroy( vlc_object_t * );
 static subpicture_t *Filter( filter_t *, vlc_tick_t );
 
 static int AdjustCallback( vlc_object_t *p_this, char const *psz_var,
@@ -65,22 +66,22 @@ static int AdjustCallback( vlc_object_t *p_this, char const *psz_var,
 vlc_module_begin ()
     set_description( N_("Dynamic video overlay") )
     set_shortname( N_("Overlay" ))
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
+    set_capability( "sub source", 0 )
 
-    add_loadfile("overlay-input", NULL, INPUT_TEXT, INPUT_LONGTEXT)
+    add_loadfile( "overlay-input", NULL, INPUT_TEXT, INPUT_LONGTEXT,
+                  false )
     /* Note: add_loadfile as O_WRONLY w/o O_CREAT, i.e. FIFO must exist */
-    add_loadfile("overlay-output", NULL, OUTPUT_TEXT, OUTPUT_LONGTEXT)
+    add_loadfile( "overlay-output", NULL, OUTPUT_TEXT, OUTPUT_LONGTEXT,
+                  false )
 
     add_shortcut( "overlay" )
-    set_callback_sub_source( Create, 0 )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
     "input", "output", NULL
-};
-
-static const struct vlc_filter_operations filter_ops = {
-    .source_sub = Filter, .close = Destroy,
 };
 
 /*****************************************************************************
@@ -88,8 +89,9 @@ static const struct vlc_filter_operations filter_ops = {
  *****************************************************************************
  * This function allocates and initializes a adjust vout method.
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
 
     /* Allocate structure */
@@ -111,7 +113,7 @@ static int Create( filter_t *p_filter )
     p_sys->b_atomic = false;
     vlc_mutex_init( &p_sys->lock );
 
-    p_filter->ops = &filter_ops;
+    p_filter->pf_sub_source = Filter;
 
     config_ChainParse( p_filter, "overlay-", ppsz_filter_options,
                        p_filter->p_cfg );
@@ -133,8 +135,9 @@ static int Create( filter_t *p_filter )
  *****************************************************************************
  * Terminate an output method created by adjustCreateOutputMethod
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     BufferDestroy( &p_sys->input );
@@ -148,6 +151,7 @@ static void Destroy( filter_t *p_filter )
     var_DelCallback( p_filter, "overlay-input", AdjustCallback, p_sys );
     var_DelCallback( p_filter, "overlay-output", AdjustCallback, p_sys );
 
+    vlc_mutex_destroy( &p_sys->lock );
     free( p_sys->psz_inputfile );
     free( p_sys->psz_outputfile );
     free( p_sys );
@@ -383,7 +387,7 @@ static int AdjustCallback( vlc_object_t *p_this, char const *psz_var,
                            vlc_value_t oldval, vlc_value_t newval,
                            void *p_data )
 {
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *)p_data;
     VLC_UNUSED(p_this); VLC_UNUSED(oldval);
 
     vlc_mutex_lock( &p_sys->lock );

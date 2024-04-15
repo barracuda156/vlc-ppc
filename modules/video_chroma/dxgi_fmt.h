@@ -29,10 +29,6 @@
 #include <vlc_common.h>
 #include <vlc_fourcc.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif// __cplusplus
-
 #define GPU_MANUFACTURER_AMD           0x1002
 #define GPU_MANUFACTURER_NVIDIA        0x10DE
 #define GPU_MANUFACTURER_VIA           0x1106
@@ -40,8 +36,7 @@ extern "C" {
 #define GPU_MANUFACTURER_S3            0x5333
 #define GPU_MANUFACTURER_QUALCOMM  0x4D4F4351
 
-#define DXGI_MAX_SHADER_VIEW     4
-#define DXGI_MAX_RENDER_TARGET   2 // for NV12/P010 we render Y and UV separately
+#define D3D11_MAX_SHADER_VIEW  4
 
 typedef struct
 {
@@ -51,44 +46,14 @@ typedef struct
     uint8_t      bitsPerChannel;
     uint8_t      widthDenominator;
     uint8_t      heightDenominator;
-    DXGI_FORMAT  resourceFormat[DXGI_MAX_SHADER_VIEW];
+    DXGI_FORMAT  resourceFormat[D3D11_MAX_SHADER_VIEW];
 } d3d_format_t;
 
 const char *DxgiFormatToStr(DXGI_FORMAT format);
 vlc_fourcc_t DxgiFormatFourcc(DXGI_FORMAT format);
-const d3d_format_t *DxgiGetRenderFormatList(void);
+const d3d_format_t *GetRenderFormatList(void);
 void DxgiFormatMask(DXGI_FORMAT format, video_format_t *);
-DXGI_FORMAT DxgiFourccFormat(vlc_fourcc_t fcc);
-const char *DxgiVendorStr(unsigned int gpu_vendor);
+const char *DxgiVendorStr(int gpu_vendor);
 UINT DxgiResourceCount(const d3d_format_t *);
-
-bool DxgiIsRGBFormat(const d3d_format_t *);
-
-#define DXGI_RGB_FORMAT  1
-#define DXGI_YUV_FORMAT  2
-
-#define DXGI_CHROMA_CPU 1
-#define DXGI_CHROMA_GPU 2
-
-union DXGI_Color
-{
-    struct {
-        FLOAT r, g, b, a;
-    };
-    struct {
-        FLOAT y;
-    };
-    struct {
-        FLOAT u, v;
-    };
-    FLOAT array[4];
-};
-void DXGI_GetBlackColor( const d3d_format_t *,
-                         union DXGI_Color black[DXGI_MAX_RENDER_TARGET],
-                         size_t colors[DXGI_MAX_RENDER_TARGET] );
-
-#ifdef __cplusplus
-}
-#endif// __cplusplus
 
 #endif /* include-guard */

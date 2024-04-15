@@ -2,6 +2,7 @@
  * ntservice.c: Windows NT/2K/XP service interface
  *****************************************************************************
  * Copyright (C) 2004 the VideoLAN team
+ * $Id: c304e056bfde61b6bf353ab88f7e64a48bdfeb8d $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -66,17 +67,18 @@ static void Close   ( vlc_object_t * );
 vlc_module_begin ()
     set_shortname( N_("NT Service"))
     set_description( N_("Windows Service interface") )
+    set_category( CAT_INTERFACE )
     set_subcategory( SUBCAT_INTERFACE_CONTROL )
     add_bool( "ntservice-install", false,
-              INSTALL_TEXT, INSTALL_LONGTEXT )
+              INSTALL_TEXT, INSTALL_LONGTEXT, true )
     add_bool( "ntservice-uninstall", false,
-              UNINSTALL_TEXT, UNINSTALL_LONGTEXT )
+              UNINSTALL_TEXT, UNINSTALL_LONGTEXT, true )
     add_string ( "ntservice-name", VLCSERVICENAME,
-                 NAME_TEXT, NAME_LONGTEXT )
+                 NAME_TEXT, NAME_LONGTEXT, true )
     add_string ( "ntservice-options", NULL,
-                 OPTIONS_TEXT, OPTIONS_LONGTEXT )
+                 OPTIONS_TEXT, OPTIONS_LONGTEXT, true )
     add_string ( "ntservice-extraintf", NULL,
-                 EXTRAINTF_TEXT, EXTRAINTF_LONGTEXT )
+                 EXTRAINTF_TEXT, EXTRAINTF_LONGTEXT, true )
 
     set_capability( "interface", 0 )
     set_callbacks( Activate, Close )
@@ -114,7 +116,7 @@ static int Activate( vlc_object_t *p_this )
 
     p_intf->p_sys = p_sys;
 
-    if( vlc_clone( &p_sys->thread, Run, p_intf ) )
+    if( vlc_clone( &p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW ) )
         return VLC_ENOMEM;
 
     return VLC_SUCCESS;
@@ -144,8 +146,6 @@ static void *Run( void *data )
         { NULL, NULL }
     };
 
-    vlc_thread_set_name("vlc-ntservice");
-
     p_global_intf = p_intf;
     p_intf->p_sys->psz_service = var_InheritString( p_intf, "ntservice-name" );
     p_intf->p_sys->psz_service = p_intf->p_sys->psz_service ?
@@ -171,7 +171,7 @@ static void *Run( void *data )
     free( p_intf->p_sys->psz_service );
 
     /* Make sure we exit (In case other interfaces have been spawned) */
-    libvlc_Quit( vlc_object_instance(p_intf) );
+    libvlc_Quit( p_intf->obj.libvlc );
     return NULL;
 }
 
@@ -183,7 +183,7 @@ static int NTServiceInstall( intf_thread_t *p_intf )
     intf_sys_t *p_sys  = p_intf->p_sys;
     char *psz_extra;
     struct vlc_memstream path_stream;
-    WCHAR psz_pathtmp[MAX_PATH];
+    TCHAR psz_pathtmp[MAX_PATH];
 
     SC_HANDLE handle = OpenSCManager( NULL, NULL, SC_MANAGER_ALL_ACCESS );
     if( handle == NULL )
@@ -202,7 +202,14 @@ static int NTServiceInstall( intf_thread_t *p_intf )
     /* Find out the filename of ourselves so we can install it to the
      * service control manager */
     GetModuleFileName( NULL, psz_pathtmp, MAX_PATH );
-    vlc_memstream_printf( &path_stream, "\"%ls\" -I ntservice", psz_pathtmp );
+    psz_extra = FromT( psz_pathtmp );
+    if ( !psz_extra )
+    {
+        CloseServiceHandle( handle );
+        return VLC_ENOMEM;
+    }
+    vlc_memstream_printf( &path_stream, "\"%s\" -I ntservice", psz_extra );
+    free(psz_extra);
 
     psz_extra = var_InheritString( p_intf, "ntservice-extraintf" );
     if( psz_extra && *psz_extra )
@@ -334,7 +341,7 @@ static void WINAPI ServiceDispatch( DWORD numArgs, char **args )
         if( asprintf( &psz_temp, "%s,none", psz_module ) != -1 )
         {
             /* Try to create the interface */
-            if( intf_Create( vlc_object_instance(p_intf), psz_temp ) )
+            if( intf_Create( pl_Get(p_intf), psz_temp ) )
             {
                 msg_Err( p_intf, "interface \"%s\" initialization failed",
                          psz_temp );

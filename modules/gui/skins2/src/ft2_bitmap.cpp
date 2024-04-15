@@ -2,6 +2,7 @@
  * ft2_bitmap.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: 10a3e1106cc3dc7bbee4a26b4a03bdc7ec0a7b2d $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -27,15 +28,9 @@
 FT2Bitmap::FT2Bitmap( intf_thread_t *pIntf, int width, int height ):
     GenericBitmap( pIntf ), m_width( width ), m_height( height )
 {
-    unsigned size;
-
-    if (mul_overflow((unsigned)width, (unsigned)height, &size)
-     || mul_overflow(size, 4, &size))
-        throw std::bad_alloc();
-
     // Allocate memory for the buffer
-    m_pData = new uint8_t[size];
-    memset(m_pData, 0, size);
+    m_pData = new uint8_t[m_height * m_width * 4];
+    memset( m_pData, 0, m_height * m_width * 4 );
 }
 
 

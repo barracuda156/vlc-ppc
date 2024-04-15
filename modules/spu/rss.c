@@ -2,6 +2,7 @@
  * rss.c : rss/atom feed display video plugin for vlc
  *****************************************************************************
  * Copyright (C) 2003-2006 VLC authors and VideoLAN
+ * $Id: 1cef811174de68ce61c88c276b7196893150179e $
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *          Rémi Duraffort <ivoire -at- videolan -dot- org>
@@ -36,8 +37,6 @@
 
 #include <time.h>
 
-#include "common.h"
-
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
@@ -51,8 +50,8 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  CreateFilter ( filter_t * );
-static void DestroyFilter( filter_t * );
+static int  CreateFilter ( vlc_object_t * );
+static void DestroyFilter( vlc_object_t * );
 static subpicture_t *Filter( filter_t *, vlc_tick_t );
 
 static struct rss_feed_t *FetchRSS( filter_t * );
@@ -72,8 +71,6 @@ static const char *const ppsz_color_descriptions[] = {
                N_("Fuchsia"), N_("Yellow"), N_("Olive"), N_("Green"),
                N_("Teal"), N_("Lime"), N_("Purple"), N_("Navy"), N_("Blue"),
                N_("Aqua") };
-
-static const char s_init_title[] = "";
 
 /*****************************************************************************
  * filter_sys_t: rss filter descriptor
@@ -99,16 +96,15 @@ typedef struct rss_feed_t
     rss_item_t *p_items;
 } rss_feed_t;
 
-typedef struct
+struct filter_sys_t
 {
     vlc_mutex_t lock;
     vlc_timer_t timer;  /* Timer to refresh the rss feeds */
     bool b_fetched;
 
-    int i_xoff, i_yoff; /* positioning offsets */
-    int i_pos; /* positioning: absolute, or relative location (top, bottom, left, right, center) */
-
-    vlc_tick_t i_speed;
+    int i_xoff, i_yoff;  /* offsets for the display string in the video window */
+    int i_pos; /* permit relative positioning (top, bottom, left, right, center) */
+    int i_speed;
     int i_length;
 
     char *psz_marquee;    /* marquee string */
@@ -126,7 +122,7 @@ typedef struct
     int i_cur_feed;
     int i_cur_item;
     int i_cur_char;
-} filter_sys_t;
+};
 
 #define MSG_TEXT N_("Feed URLs")
 #define MSG_LONGTEXT N_("RSS/Atom feed '|' (pipe) separated URLs.")
@@ -141,6 +137,14 @@ typedef struct
 #define IMAGE_TEXT N_("Feed images")
 #define IMAGE_LONGTEXT N_("Display feed images if available.")
 
+#define POSX_TEXT N_("X offset")
+#define POSX_LONGTEXT N_("X offset, from the left screen edge." )
+#define POSY_TEXT N_("Y offset")
+#define POSY_LONGTEXT N_("Y offset, down from the top." )
+#define OPACITY_TEXT N_("Opacity")
+#define OPACITY_LONGTEXT N_("Opacity (inverse of transparency) of " \
+    "overlay text. 0 = transparent, 255 = totally opaque." )
+
 #define SIZE_TEXT N_("Font size, pixels")
 #define SIZE_LONGTEXT N_("Font size, in pixels. Default is 0 (use default " \
     "font size)." )
@@ -151,10 +155,21 @@ typedef struct
     "chars are for red, then green, then blue. #000000 = black, #FF0000 = red,"\
     " #00FF00 = green, #FFFF00 = yellow (red + green), #FFFFFF = white" )
 
+#define POS_TEXT N_("Text position")
+#define POS_LONGTEXT N_( \
+  "You can enforce the text position on the video " \
+  "(0=center, 1=left, 2=right, 4=top, 8=bottom; you can " \
+  "also use combinations of these values, eg 6 = top-right).")
+
 #define TITLE_TEXT N_("Title display mode")
 #define TITLE_LONGTEXT N_("Title display mode. Default is 0 (hidden) if the feed has an image and feed images are enabled, 1 otherwise.")
 
 #define RSS_HELP N_("Display a RSS or ATOM Feed on your video")
+
+static const int pi_pos_values[] = { 0, 1, 2, 4, 8, 5, 6, 9, 10 };
+static const char *const ppsz_pos_descriptions[] =
+     { N_("Center"), N_("Left"), N_("Right"), N_("Top"), N_("Bottom"),
+     N_("Top-Left"), N_("Top-Right"), N_("Bottom-Left"), N_("Bottom-Right") };
 
 enum title_modes {
     default_title=-1,
@@ -172,33 +187,39 @@ static const char *const ppsz_title_modes[] =
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
+    set_capability( "sub source", 1 )
     set_shortname( N_("RSS / Atom") )
     set_help(RSS_HELP)
-    set_callback_sub_source( CreateFilter, 1 )
+    set_callbacks( CreateFilter, DestroyFilter )
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_SUBPIC )
-    add_string( CFG_PREFIX "urls", NULL, MSG_TEXT, MSG_LONGTEXT )
+    add_string( CFG_PREFIX "urls", NULL, MSG_TEXT, MSG_LONGTEXT, false )
 
     set_section( N_("Position"), NULL )
-    add_integer( CFG_PREFIX "x", 0, POSX_TEXT, POSX_LONGTEXT )
-    add_integer( CFG_PREFIX "y", 0, POSY_TEXT, POSY_LONGTEXT )
-    add_integer( CFG_PREFIX "position", -1, POS_TEXT, POS_LONGTEXT )
+    add_integer( CFG_PREFIX "x", 0, POSX_TEXT, POSX_LONGTEXT, true )
+    add_integer( CFG_PREFIX "y", 0, POSY_TEXT, POSY_LONGTEXT, true )
+    add_integer( CFG_PREFIX "position", -1, POS_TEXT, POS_LONGTEXT, false )
         change_integer_list( pi_pos_values, ppsz_pos_descriptions )
 
     set_section( N_("Font"), NULL )
     /* 5 sets the default to top [1] left [4] */
     add_integer_with_range( CFG_PREFIX "opacity", 255, 0, 255,
-        OPACITY_TEXT, OPACITY_LONGTEXT )
-    add_rgb(CFG_PREFIX "color", 0xFFFFFF, COLOR_TEXT, COLOR_LONGTEXT)
+        OPACITY_TEXT, OPACITY_LONGTEXT, false )
+    add_rgb( CFG_PREFIX "color", 0xFFFFFF, COLOR_TEXT, COLOR_LONGTEXT,
+                  false )
         change_integer_list( pi_color_values, ppsz_color_descriptions )
-    add_integer( CFG_PREFIX "size", 0, SIZE_TEXT, SIZE_LONGTEXT )
+    add_integer( CFG_PREFIX "size", 0, SIZE_TEXT, SIZE_LONGTEXT, false )
         change_integer_range( 0, 4096)
 
     set_section( N_("Misc"), NULL )
-    add_integer( CFG_PREFIX "speed", 100000, SPEED_TEXT, SPEED_LONGTEXT )
-    add_integer( CFG_PREFIX "length", 60, LENGTH_TEXT, LENGTH_LONGTEXT )
-    add_integer( CFG_PREFIX "ttl", 1800, TTL_TEXT, TTL_LONGTEXT )
-    add_bool( CFG_PREFIX "images", true, IMAGE_TEXT, IMAGE_LONGTEXT )
-    add_integer( CFG_PREFIX "title", default_title, TITLE_TEXT, TITLE_LONGTEXT )
+    add_integer( CFG_PREFIX "speed", 100000, SPEED_TEXT, SPEED_LONGTEXT,
+                 false )
+    add_integer( CFG_PREFIX "length", 60, LENGTH_TEXT, LENGTH_LONGTEXT,
+                 false )
+    add_integer( CFG_PREFIX "ttl", 1800, TTL_TEXT, TTL_LONGTEXT, false )
+    add_bool( CFG_PREFIX "images", true, IMAGE_TEXT, IMAGE_LONGTEXT, false )
+    add_integer( CFG_PREFIX "title", default_title, TITLE_TEXT, TITLE_LONGTEXT,
+                 false )
         change_integer_list( pi_title_modes, ppsz_title_modes )
 
     set_description( N_("RSS and Atom feed display") )
@@ -210,24 +231,12 @@ static const char *const ppsz_filter_options[] = {
     "ttl", "images", "title", NULL
 };
 
-static void InitCurrentContext(filter_sys_t *p_sys)
-{
-    p_sys->i_cur_feed = 0;
-    p_sys->i_cur_item = p_sys->i_title == scroll_title ? -1 : 0;
-    /* Set current char to -1 such that it is increased to 0 in the first run
-     * for displaying text */
-    p_sys->i_cur_char = -1;
-}
-
-static const struct vlc_filter_operations filter_ops = {
-    .source_sub = Filter, .close = DestroyFilter,
-};
-
 /*****************************************************************************
  * CreateFilter: allocates RSS video filter
  *****************************************************************************/
-static int CreateFilter( filter_t *p_filter )
+static int CreateFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
     char *psz_urls;
     int i_ttl;
@@ -251,10 +260,12 @@ static int CreateFilter( filter_t *p_filter )
 
     /* Fill the p_sys structure with the configuration */
     p_sys->i_title = var_CreateGetInteger( p_filter, CFG_PREFIX "title" );
-    InitCurrentContext(p_sys);
+    p_sys->i_cur_feed = 0;
+    p_sys->i_cur_item = p_sys->i_title == scroll_title ? -1 : 0;
+    p_sys->i_cur_char = 0;
     p_sys->i_feeds = 0;
     p_sys->p_feeds = NULL;
-    p_sys->i_speed = VLC_TICK_FROM_US( var_CreateGetInteger( p_filter, CFG_PREFIX "speed" ) );
+    p_sys->i_speed = var_CreateGetInteger( p_filter, CFG_PREFIX "speed" );
     p_sys->i_length = var_CreateGetInteger( p_filter, CFG_PREFIX "length" );
     p_sys->b_images = var_CreateGetBool( p_filter, CFG_PREFIX "images" );
 
@@ -293,14 +304,18 @@ static int CreateFilter( filter_t *p_filter )
 
     /* Misc init */
     vlc_mutex_init( &p_sys->lock );
-    p_filter->ops = &filter_ops;
+    p_filter->pf_sub_source = Filter;
     p_sys->last_date = (vlc_tick_t)0;
     p_sys->b_fetched = false;
 
     /* Create and arm the timer */
     if( vlc_timer_create( &p_sys->timer, Fetch, p_filter ) )
+    {
+        vlc_mutex_destroy( &p_sys->lock );
         goto error;
-    vlc_timer_schedule_asap( p_sys->timer, vlc_tick_from_sec(i_ttl) );
+    }
+    vlc_timer_schedule( p_sys->timer, false, 1,
+                        (vlc_tick_t)(i_ttl)*1000000 );
 
     free( psz_urls );
     return VLC_SUCCESS;
@@ -316,21 +331,18 @@ error:
 /*****************************************************************************
  * DestroyFilter: destroy RSS video filter
  *****************************************************************************/
-static void DestroyFilter( filter_t *p_filter )
+static void DestroyFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     vlc_timer_destroy( p_sys->timer );
+    vlc_mutex_destroy( &p_sys->lock );
 
     text_style_Delete( p_sys->p_style );
     free( p_sys->psz_marquee );
     FreeRSS( p_sys->p_feeds, p_sys->i_feeds );
     free( p_sys );
-}
-
-static void switchToNextFeed(filter_sys_t *p_sys)
-{
-    p_sys->i_cur_feed = (p_sys->i_cur_feed + 1)%p_sys->i_feeds;
 }
 
 /****************************************************************************
@@ -345,29 +357,23 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
     video_format_t fmt;
     subpicture_region_t *p_region;
 
-    int i_item;
+    int i_feed, i_item;
     rss_feed_t *p_feed;
+
+    memset( &fmt, 0, sizeof(video_format_t) );
 
     vlc_mutex_lock( &p_sys->lock );
 
     /* Check if the feeds have been fetched and that we have some feeds */
+    /* TODO: check that we have items for each feeds */
     if( !p_sys->b_fetched && p_sys->i_feeds > 0 )
     {
         vlc_mutex_unlock( &p_sys->lock );
         return NULL;
     }
 
-    /* If the current feed has no item then switch to the next feed
-       and skip further processing */
-    if (p_sys->p_feeds[p_sys->i_cur_feed].i_items == 0)
-    {
-        switchToNextFeed(p_sys);
-        vlc_mutex_unlock( &p_sys->lock );
-        return NULL;
-    }
-
     if( p_sys->last_date
-       + ( p_sys->i_cur_char <= 0 &&
+       + ( p_sys->i_cur_char == 0 &&
            p_sys->i_cur_item == ( p_sys->i_title == scroll_title ? -1 : 0 ) ? 5 : 1 )
            /* ( ... ? 5 : 1 ) means "wait 5 times more for the 1st char" */
        * p_sys->i_speed > date )
@@ -391,7 +397,7 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
                 p_sys->i_cur_item = -1;
             else
                 p_sys->i_cur_item = 0;
-            switchToNextFeed(p_sys);
+            p_sys->i_cur_feed = (p_sys->i_cur_feed + 1)%p_sys->i_feeds;
         }
     }
 
@@ -402,7 +408,7 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
         return NULL;
     }
 
-    video_format_Init( &fmt, VLC_CODEC_TEXT );
+    fmt.i_chroma = VLC_CODEC_TEXT;
 
     p_spu->p_region = subpicture_region_New( &fmt );
     if( !p_spu->p_region )
@@ -415,47 +421,45 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
     /* Generate the string that will be displayed. This string is supposed to
        be p_sys->i_length characters long. */
     i_item = p_sys->i_cur_item;
-    p_feed = &p_sys->p_feeds[p_sys->i_cur_feed];
-    char *feed_title = p_feed->psz_title;
-    char *item_title = p_feed->p_items[i_item].psz_title;
+    i_feed = p_sys->i_cur_feed;
+    p_feed = &p_sys->p_feeds[i_feed];
 
     if( ( p_feed->p_pic && p_sys->i_title == default_title )
         || p_sys->i_title == hide_title )
     {
         /* Don't display the feed's title if we have an image */
         snprintf( p_sys->psz_marquee, p_sys->i_length, "%s",
-                  item_title + p_sys->i_cur_char );
+                  p_sys->p_feeds[i_feed].p_items[i_item].psz_title
+                  +p_sys->i_cur_char );
     }
     else if( ( !p_feed->p_pic && p_sys->i_title == default_title )
              || p_sys->i_title == prepend_title )
     {
         snprintf( p_sys->psz_marquee, p_sys->i_length, "%s : %s",
-                  feed_title,
-                  item_title + p_sys->i_cur_char );
+                  p_sys->p_feeds[i_feed].psz_title,
+                  p_sys->p_feeds[i_feed].p_items[i_item].psz_title
+                  +p_sys->i_cur_char );
     }
     else /* scrolling title */
     {
         if( i_item == -1 )
-        {
             snprintf( p_sys->psz_marquee, p_sys->i_length, "%s : %s",
-                      feed_title + p_sys->i_cur_char,
-                      p_feed->p_items[i_item+1].psz_title );
-            // Set i_item to 0 as the first item title was already printed.
-            i_item = 0;
-        }
+                      p_sys->p_feeds[i_feed].psz_title + p_sys->i_cur_char,
+                      p_sys->p_feeds[i_feed].p_items[i_item+1].psz_title );
         else
             snprintf( p_sys->psz_marquee, p_sys->i_length, "%s",
-                      item_title + p_sys->i_cur_char );
+                      p_sys->p_feeds[i_feed].p_items[i_item].psz_title
+                      +p_sys->i_cur_char );
     }
 
     while( strlen( p_sys->psz_marquee ) < (unsigned int)p_sys->i_length )
     {
         i_item++;
-        if( i_item == p_feed->i_items ) break;
+        if( i_item == p_sys->p_feeds[i_feed].i_items ) break;
         snprintf( strchr( p_sys->psz_marquee, 0 ),
                   p_sys->i_length - strlen( p_sys->psz_marquee ),
                   " - %s",
-                  p_feed->p_items[i_item].psz_title );
+                  p_sys->p_feeds[i_feed].p_items[i_item].psz_title );
     }
 
     /* Calls to snprintf might split multibyte UTF8 chars ...
@@ -503,8 +507,9 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
         picture_t *p_pic = p_feed->p_pic;
         video_format_t fmt_out;
 
-        video_format_Init( &fmt_out, VLC_CODEC_YUVA );
+        memset( &fmt_out, 0, sizeof(video_format_t) );
 
+        fmt_out.i_chroma = VLC_CODEC_YUVA;
         fmt_out.i_sar_num = fmt_out.i_sar_den = 1;
         fmt_out.i_width =
             fmt_out.i_visible_width = p_pic->p[Y_PLANE].i_visible_pitch;
@@ -548,14 +553,17 @@ static subpicture_t *Filter( filter_t *p_filter, vlc_tick_t date )
 static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
+    video_format_t fmt_in;
     video_format_t fmt_out;
     picture_t *p_orig;
     picture_t *p_pic = NULL;
     image_handler_t *p_handler = image_HandlerCreate( p_filter );
 
-    video_format_Init( &fmt_out, VLC_CODEC_YUVA );
+    memset( &fmt_in, 0, sizeof(video_format_t) );
+    memset( &fmt_out, 0, sizeof(video_format_t) );
 
-    p_orig = image_ReadUrl( p_handler, psz_url, &fmt_out );
+    fmt_out.i_chroma = VLC_CODEC_YUVA;
+    p_orig = image_ReadUrl( p_handler, psz_url, &fmt_in, &fmt_out );
 
     if( !p_orig )
     {
@@ -563,9 +571,8 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
     }
     else if( p_sys->p_style->i_font_size > 0 )
     {
-        video_format_t fmt_in;
-        video_format_Copy( &fmt_in, &fmt_out );
 
+        fmt_in.i_chroma = VLC_CODEC_YUVA;
         fmt_in.i_height = p_orig->p[Y_PLANE].i_visible_lines;
         fmt_in.i_width = p_orig->p[Y_PLANE].i_visible_pitch;
         fmt_out.i_width = p_orig->p[Y_PLANE].i_visible_pitch
@@ -574,7 +581,6 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
 
         p_pic = image_Convert( p_handler, p_orig, &fmt_in, &fmt_out );
         picture_Release( p_orig );
-        video_format_Clean( &fmt_in );
         if( !p_pic )
         {
             msg_Warn( p_filter, "Error while converting %s", psz_url );
@@ -585,7 +591,6 @@ static picture_t *LoadImage( filter_t *p_filter, const char *psz_url )
         p_pic = p_orig;
     }
 
-    video_format_Clean( &fmt_out );
     image_HandlerDelete( p_handler );
 
     return p_pic;
@@ -619,7 +624,7 @@ static char *removeWhiteChars( const char *psz_src )
 
 
 /****************************************************************************
- * Parse url list, psz_urls must be non empty (ensured by check in CreateFilter() )
+ * Parse url list, psz_urls must be non empty (TODO: check it !)
  ***************************************************************************/
 static int ParseUrls( filter_t *p_filter, char *psz_urls )
 {
@@ -658,7 +663,7 @@ static int ParseUrls( filter_t *p_filter, char *psz_urls )
 
         p_feed->i_items = 0;
         p_feed->p_items = NULL;
-        p_feed->psz_title = (char *)s_init_title;
+        p_feed->psz_title = NULL;
         p_feed->psz_link = NULL;
         p_feed->psz_description = NULL;
         p_feed->psz_image = NULL;
@@ -709,7 +714,7 @@ static bool ParseFeed( filter_t *p_filter, xml_reader_t *p_xml_reader,
                 p_feed->i_items++;
                 p_feed->p_items = xrealloc( p_feed->p_items,
                                      p_feed->i_items * sizeof( rss_item_t ) );
-                p_feed->p_items[p_feed->i_items-1].psz_title = (char *)s_init_title;
+                p_feed->p_items[p_feed->i_items-1].psz_title = NULL;
                 p_feed->p_items[p_feed->i_items-1].psz_description = NULL;
                 p_feed->p_items[p_feed->i_items-1].psz_link = NULL;
             }
@@ -801,7 +806,7 @@ static bool ParseFeed( filter_t *p_filter, xml_reader_t *p_xml_reader,
             {
                 rss_item_t *p_item = p_feed->p_items+i_item;
                 /* rss/atom */
-                if( !strcmp( psz_eltname, "title" ) && p_item->psz_title == s_init_title )
+                if( !strcmp( psz_eltname, "title" ) && !p_item->psz_title )
                 {
                     p_item->psz_title = psz_eltvalue;
                 }
@@ -833,7 +838,7 @@ static bool ParseFeed( filter_t *p_filter, xml_reader_t *p_xml_reader,
             else
             {
                 /* rss/atom */
-                if( !strcmp( psz_eltname, "title" ) && p_feed->psz_title == s_init_title )
+                if( !strcmp( psz_eltname, "title" ) && !p_feed->psz_title )
                 {
                     p_feed->psz_title = psz_eltvalue;
                 }
@@ -902,7 +907,7 @@ static rss_feed_t* FetchRSS( filter_t *p_filter )
         rss_feed_t *p_old_feed = p_sys->p_feeds + i_feed;
 
         /* Initialize the structure */
-        p_feed->psz_title = (char *)s_init_title;
+        p_feed->psz_title = NULL;
         p_feed->psz_description = NULL;
         p_feed->psz_link = NULL;
         p_feed->psz_image = NULL;
@@ -968,14 +973,12 @@ static void FreeRSS( rss_feed_t *p_feeds, int i_feeds )
         for( int i_item = 0; i_item < p_feed->i_items; i_item++ )
         {
             rss_item_t *p_item = p_feed->p_items+i_item;
-            if( p_item->psz_title != s_init_title )
-                free( p_item->psz_title );
+            free( p_item->psz_title );
             free( p_item->psz_link );
             free( p_item->psz_description );
         }
         free( p_feed->p_items );
-        if( p_feed->psz_title != s_init_title )
-            free( p_feed->psz_title );
+        free( p_feed->psz_title);
         free( p_feed->psz_link );
         free( p_feed->psz_description );
         free( p_feed->psz_image );
@@ -1006,7 +1009,9 @@ static void Fetch( void *p_data )
     p_sys->p_feeds = p_feeds;
     p_sys->b_fetched = true;
     /* Set all current info to the original values */
-    InitCurrentContext(p_sys);
+    p_sys->i_cur_feed = 0;
+    p_sys->i_cur_item = p_sys->i_title == scroll_title ? -1 : 0;
+    p_sys->i_cur_char = 0;
     vlc_mutex_unlock( &p_sys->lock );
 
     if( p_old_feeds )

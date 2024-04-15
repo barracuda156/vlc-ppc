@@ -2,6 +2,7 @@
  * rand.c : non-predictible random bytes generator
  *****************************************************************************
  * Copyright © 2007 Rémi Denis-Courmont
+ * $Id: 338f4675daf824313abcb32de5e9015466b0d81f $
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -35,7 +36,7 @@
 #include <pthread.h>
 #include <vlc_fs.h>
 
-#include <vlc_hash.h>
+#include <vlc_md5.h>
 
 /*
  * Pseudo-random number generator using a HMAC-MD5 in counter mode.
@@ -83,33 +84,33 @@ void vlc_rand_bytes (void *buf, size_t len)
     while (len > 0)
     {
         uint64_t val;
-        vlc_hash_md5_t mdi, mdo;
-        uint8_t mdi_buf[VLC_HASH_MD5_DIGEST_SIZE];
-        uint8_t mdo_buf[VLC_HASH_MD5_DIGEST_SIZE];
+        struct md5_s mdi, mdo;
 
-        vlc_hash_md5_Init (&mdi);
-        vlc_hash_md5_Init (&mdo);
+        InitMD5 (&mdi);
+        InitMD5 (&mdo);
 
         pthread_mutex_lock (&lock);
         if (counter == 0)
             vlc_rand_init ();
         val = counter++;
 
-        vlc_hash_md5_Update (&mdi, ikey, sizeof (ikey));
-        vlc_hash_md5_Update (&mdo, okey, sizeof (okey));
+        AddMD5 (&mdi, ikey, sizeof (ikey));
+        AddMD5 (&mdo, okey, sizeof (okey));
         pthread_mutex_unlock (&lock);
 
-        vlc_hash_md5_Update (&mdi, &stamp, sizeof (stamp));
-        vlc_hash_md5_Update (&mdi, &val, sizeof (val));
-        vlc_hash_md5_Finish (&mdi, mdi_buf, sizeof(mdi_buf));
-        vlc_hash_md5_Update (&mdo, mdi_buf, sizeof(mdi_buf));
-        vlc_hash_md5_Finish (&mdo, mdo_buf, sizeof(mdo_buf));
+        AddMD5 (&mdi, &stamp, sizeof (stamp));
+        AddMD5 (&mdi, &val, sizeof (val));
+        EndMD5 (&mdi);
+        AddMD5 (&mdo, mdi.buf, 16);
+        EndMD5 (&mdo);
 
-        memcpy (buf, mdo_buf, (len < sizeof(mdo_buf)) ? len : sizeof(mdo_buf));
-
-        if (len < sizeof(mdo_buf))
+        if (len < 16)
+        {
+            memcpy (buf, mdo.buf, len);
             break;
+        }
 
+        memcpy (buf, mdo.buf, 16);
         len -= 16;
         buf = ((uint8_t *)buf) + 16;
     }

@@ -2,6 +2,7 @@
  * playlist.c :  Playlist import module
  *****************************************************************************
  * Copyright (C) 2004 VLC authors and VideoLAN
+ * $Id: 449d5fd5b72f653e7335d66d6dc3ccc584e3dc0a $
  *
  * Authors: Clément Stenac <zorglub@videolan.org>
  *
@@ -31,7 +32,6 @@
 #include <vlc_plugin.h>
 #include <vlc_demux.h>
 #include <vlc_url.h>
-#include <vlc_access.h>
 
 #if defined( _WIN32 ) || defined( __OS2__ )
 # include <ctype.h>                          /* isalpha */
@@ -53,81 +53,82 @@
 
 vlc_module_begin ()
     add_shortcut( "playlist" )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_DEMUX )
 
+    add_obsolete_integer( "parent-item" ) /* removed since 1.1.0 */
+
     add_bool( "playlist-skip-ads", true,
-              SKIP_ADS_TEXT, SKIP_ADS_LONGTEXT )
+              SKIP_ADS_TEXT, SKIP_ADS_LONGTEXT, false )
 
     set_shortname( N_("Playlist") )
     set_description( N_("Playlist") )
     add_submodule ()
         set_description( N_("M3U playlist import") )
         add_shortcut( "m3u", "m3u8" )
-        set_capability( "demux", 10 )
-        set_callback( Import_M3U )
-        add_file_extension("m3u")
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_M3U, NULL )
     add_submodule ()
         set_description( N_("RAM playlist import") )
-        set_capability( "demux", 10 )
-        set_callback( Import_RAM )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_RAM, NULL )
     add_submodule ()
         set_description( N_("PLS playlist import") )
-        set_capability( "demux", 10 )
-        set_callback( Import_PLS )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_PLS, NULL )
     add_submodule ()
         set_description( N_("B4S playlist import") )
         add_shortcut( "shout-b4s" )
-        set_capability( "demux", 10 )
-        set_callback( Import_B4S )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_B4S, NULL )
     add_submodule ()
         set_description( N_("DVB playlist import") )
         add_shortcut( "dvb" )
-        set_capability( "demux", 10 )
-        set_callback( Import_DVB )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_DVB, NULL )
     add_submodule ()
         set_description( N_("Podcast parser") )
         add_shortcut( "podcast" )
-        set_capability( "demux", 10 )
-        set_callback( Import_podcast )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_podcast, NULL )
     add_submodule ()
         set_description( N_("XSPF playlist import") )
-        set_capability( "demux", 10 )
+        set_capability( "stream_filter", 10 )
         set_callbacks( Import_xspf, Close_xspf )
     add_submodule ()
+        set_description( N_("New winamp 5.2 shoutcast import") )
+        add_shortcut( "shout-winamp" )
+        set_capability( "stream_filter", 0 )
+        set_callbacks( Import_Shoutcast, NULL )
+        add_bool( "shoutcast-show-adult", false,
+                   SHOW_ADULT_TEXT, SHOW_ADULT_LONGTEXT, false )
+    add_submodule ()
         set_description( N_("ASX playlist import") )
-        set_capability( "demux", 10 )
-        set_callback( Import_ASX )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_ASX, NULL )
     add_submodule ()
         set_description( N_("Kasenna MediaBase parser") )
         add_shortcut( "sgimb" )
-        set_capability( "demux", 10 )
+        set_capability( "stream_filter", 10 )
         set_callbacks( Import_SGIMB, Close_SGIMB )
     add_submodule ()
         set_description( N_("QuickTime Media Link importer") )
         add_shortcut( "qtl" )
-        set_capability( "demux", 10 )
-        set_callback( Import_QTL )
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_QTL, NULL )
     add_submodule ()
         set_description( N_("Dummy IFO demux") )
-        set_capability( "demux", 12 )
-        set_callback( Import_IFO )
-    add_submodule ()
-        set_description( N_("Dummy BDMV demux") )
-        set_capability( "demux", 12 )
-        set_callback( Import_BDMV )
+        set_capability( "stream_filter", 12 )
+        set_callbacks( Import_IFO, NULL )
     add_submodule ()
         set_description( N_("iTunes Music Library importer") )
         add_shortcut( "itml" )
-        set_capability( "demux", 10 )
-        set_callback( Import_iTML )
-    add_submodule()
-        set_description(N_("Windows Media Server metafile import") )
-        set_capability("demux", 10)
-        set_callback(Import_WMS)
+        set_capability( "stream_filter", 10 )
+        set_callbacks( Import_iTML, NULL )
     add_submodule ()
         set_description( N_("WPL playlist import") )
         add_shortcut( "wpl" )
-        set_capability( "demux", 10 )
+        set_capability( "stream_filter", 10 )
         set_callbacks( Import_WPL, Close_WPL )
 vlc_module_end ()
 
@@ -198,18 +199,4 @@ char *ProcessMRL(const char *str, const char *base)
     }
 
     return abs;
-}
-
-int PlaylistControl( stream_t *p_access, int i_query, va_list args )
-{
-    switch ( i_query )
-    {
-        case STREAM_GET_TYPE:
-        {
-            *va_arg( args, int* ) = ITEM_TYPE_PLAYLIST;
-            return VLC_SUCCESS;
-        }
-        default:
-            return access_vaDirectoryControlHelper( p_access, i_query, args );
-    }
 }

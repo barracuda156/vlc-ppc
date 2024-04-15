@@ -2,6 +2,7 @@
  * dispatcher.hpp : matroska demuxer
  *****************************************************************************
  * Copyright (C) 2016 VLC authors, VideoLAN, Videolabs SAS
+ * $Id: 561c62160f4291d8424b58ce2d311cf303759e3d $
  *
  * Authors: Filip Roseen <filip@videolabs.io>
  *
@@ -21,8 +22,6 @@
  *****************************************************************************/
 #ifndef VLC_MKV_DISPATCHER_HPP_
 #define VLC_MKV_DISPATCHER_HPP_
-
-#include <vlc_cxx_helpers.hpp>
 
 // ----------------------------------------------------------------------------
 // This header contains helpers to simulate lambdas in C++03.
@@ -61,14 +60,14 @@ namespace {
   template<class T, class DispatcherType>
   class DispatchContainer {
     public:    static DispatcherType dispatcher;
-    protected: static vlc::threads::mutex _dispatcher_lock;
+    protected: static vlc_mutex_t   _dispatcher_lock;
   };
 
   template<class T, class DT>
   DT DispatchContainer<T, DT>::dispatcher;
 
   template<class T, class DT>
-  vlc::threads::mutex DispatchContainer<T, DT>::_dispatcher_lock;
+  vlc_mutex_t DispatchContainer<T, DT>::_dispatcher_lock = VLC_STATIC_MUTEX;
 }
 
 // ----------------------------------------------------------------------------
@@ -107,13 +106,13 @@ namespace {
 #define MKV_SWITCH_INIT()                     \
   static dispatch_t& Dispatcher () {          \
       static handler_t * p_handler = NULL;    \
-      _dispatcher_lock.lock();                \
+      vlc_mutex_lock( &_dispatcher_lock );    \
       if (unlikely( p_handler == NULL) ) {    \
           static handler_t handler;           \
           p_handler = &handler;               \
           p_handler->dispatcher.on_create (); \
       }                                       \
-       _dispatcher_lock.unlock();             \
+      vlc_mutex_unlock( &_dispatcher_lock );  \
       return p_handler->dispatcher;           \
   } struct PleaseAddSemicolon {}
 

@@ -2,6 +2,7 @@
  * simple.c : simple channel mixer plug-in
  *****************************************************************************
  * Copyright (C) 2002, 2004, 2006-2009 VLC authors and VideoLAN
+ * $Id: fb37a528f88e41c42432b87b022c27de7de91449 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *
@@ -40,9 +41,10 @@ static int  OpenFilter( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("Audio filter for simple channel mixing") )
-    set_subcategory( SUBCAT_AUDIO_AFILTER )
+    set_category( CAT_AUDIO )
+    set_subcategory( SUBCAT_AUDIO_MISC )
     set_capability( "audio converter", 10 )
-    set_callback( OpenFilter );
+    set_callbacks( OpenFilter, NULL );
 vlc_module_end ()
 
 static block_t *Filter( filter_t *, block_t * );
@@ -344,11 +346,8 @@ static int OpenFilter( vlc_object_t *p_this )
     if( do_work == NULL )
         return VLC_EGENERIC;
 
-    static const struct vlc_filter_operations filter_ops =
-        { .filter_audio = Filter };
-
-    p_filter->ops = &filter_ops;
-    p_filter->p_sys = do_work;
+    p_filter->pf_audio_filter = Filter;
+    p_filter->p_sys = (void *)do_work;
     return VLC_SUCCESS;
 }
 
@@ -357,7 +356,7 @@ static int OpenFilter( vlc_object_t *p_this )
  *****************************************************************************/
 static block_t *Filter( filter_t *p_filter, block_t *p_block )
 {
-    void (*work)(filter_t *, block_t *, block_t *) = p_filter->p_sys;
+    void (*work)(filter_t *, block_t *, block_t *) = (void *)p_filter->p_sys;
 
     if( !p_block || !p_block->i_nb_samples )
     {
@@ -394,3 +393,4 @@ static block_t *Filter( filter_t *p_filter, block_t *p_block )
 
     return p_out;
 }
+

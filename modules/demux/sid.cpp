@@ -34,7 +34,6 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_charset.h>
 #include <vlc_input.h>
 #include <vlc_demux.h>
 #include <vlc_plugin.h>
@@ -52,12 +51,11 @@ static void Close (vlc_object_t *);
 vlc_module_begin ()
     set_shortname ("sid")
     set_description ( N_("C64 sid demuxer") )
+    set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_DEMUX)
     set_capability ("demux", 100)
     set_callbacks (Open, Close)
 vlc_module_end ()
-
-namespace {
 
 struct demux_sys_t
 {
@@ -71,12 +69,8 @@ struct demux_sys_t
     int block_size;
     es_out_id_t *es;
     date_t pts;
-
-    int last_title;
-    bool title_changed;
 };
 
-} // namespace
 
 static int Demux (demux_t *);
 static int Control (demux_t *, int, va_list);
@@ -127,7 +121,7 @@ static int Open (vlc_object_t *obj)
     if (unlikely(player==NULL))
         goto error;
 
-    sys = reinterpret_cast<demux_sys_t *>(calloc(1, sizeof(demux_sys_t)));
+    sys = (demux_sys_t*) calloc (1, sizeof(demux_sys_t));
     if (unlikely(sys==NULL))
         goto error;
 
@@ -169,7 +163,7 @@ static int Open (vlc_object_t *obj)
     sys->es = es_out_Add (demux->out, &fmt);
 
     date_Init (&sys->pts, fmt.audio.i_rate, 1);
-    date_Set(&sys->pts, VLC_TICK_0);
+    date_Set (&sys->pts, 0);
 
     sys->tune->selectSong (0);
     result = (sys->player->load (sys->tune) >=0 );
@@ -197,7 +191,7 @@ error:
 static void Close (vlc_object_t *obj)
 {
     demux_t *demux = (demux_t *)obj;
-    demux_sys_t *sys = reinterpret_cast<demux_sys_t *>(demux->p_sys);
+    demux_sys_t *sys = demux->p_sys;
 
     delete sys->player;
     delete sys->config.sidEmulation;
@@ -207,24 +201,24 @@ static void Close (vlc_object_t *obj)
 
 static int Demux (demux_t *demux)
 {
-    demux_sys_t *sys = reinterpret_cast<demux_sys_t *>(demux->p_sys);
+    demux_sys_t *sys = demux->p_sys;
 
     block_t *block = block_Alloc( sys->block_size);
     if (unlikely(block==NULL))
-        return VLC_DEMUXER_EOF;
+        return 0;
 
     if (!sys->tune->getStatus()) {
         block_Release (block);
-        return VLC_DEMUXER_EOF;
+        return 0;
     }
 
     int i_read = sys->player->play ((void*)block->p_buffer, block->i_buffer);
     if (i_read <= 0) {
         block_Release (block);
-        return VLC_DEMUXER_EOF;
+        return 0;
     }
     block->i_buffer = i_read;
-    block->i_pts = block->i_dts = date_Get (&sys->pts);
+    block->i_pts = block->i_dts = VLC_TICK_0 + date_Get (&sys->pts);
 
     es_out_SetPCR (demux->out, block->i_pts);
 
@@ -232,20 +226,19 @@ static int Demux (demux_t *demux)
 
     date_Increment (&sys->pts, i_read / sys->bytes_per_frame);
 
-    return VLC_DEMUXER_SUCCESS;
+    return 1;
 }
 
 
 static int Control (demux_t *demux, int query, va_list args)
 {
-    demux_sys_t *sys = reinterpret_cast<demux_sys_t *>(demux->p_sys);
+    demux_sys_t *sys = demux->p_sys;
 
     switch (query)
     {
         case DEMUX_GET_TIME : {
-            /* FIXME resolution in 100ns? */
-            *va_arg (args, vlc_tick_t*) =
-                sys->player->time() * sys->player->timebase() * VLC_TICK_FROM_MS(10);
+            int64_t *v = va_arg (args, int64_t*);
+            *v = sys->player->time() * sys->player->timebase() * (CLOCK_FREQ / 100);
             return VLC_SUCCESS;
         }
 
@@ -253,17 +246,9 @@ static int Control (demux_t *demux, int query, va_list args)
             vlc_meta_t *p_meta = va_arg (args, vlc_meta_t *);
 
             /* These are specified in the sid tune class as 0 = Title, 1 = Artist, 2 = Copyright/Publisher */
-            char *psz_title = FromCharset( "CP1252", sys->tuneInfo.infoString[0], strlen(sys->tuneInfo.infoString[0]) );
-            char *psz_artist = FromCharset( "CP1252", sys->tuneInfo.infoString[1], strlen(sys->tuneInfo.infoString[1]) );
-            char *psz_copyright = FromCharset( "CP1252", sys->tuneInfo.infoString[2], strlen(sys->tuneInfo.infoString[2]) );
-
-            vlc_meta_SetTitle( p_meta, psz_title );
-            vlc_meta_SetArtist( p_meta, psz_artist );
-            vlc_meta_SetCopyright( p_meta, psz_copyright );
-
-            free( psz_title );
-            free( psz_artist );
-            free( psz_copyright );
+            vlc_meta_SetTitle( p_meta, sys->tuneInfo.infoString[0] );
+            vlc_meta_SetArtist( p_meta, sys->tuneInfo.infoString[1] );
+            vlc_meta_SetCopyright( p_meta, sys->tuneInfo.infoString[2] );
 
             return VLC_SUCCESS;
         }
@@ -291,34 +276,12 @@ static int Control (demux_t *demux, int query, va_list args)
             if (!result)
                 return  VLC_EGENERIC;
 
-            sys->last_title = i_idx;
-            sys->title_changed = true;
+            demux->info.i_title = i_idx;
+            demux->info.i_update = INPUT_UPDATE_TITLE;
             msg_Dbg( demux, "set song %i", i_idx);
 
             return VLC_SUCCESS;
         }
-
-        case DEMUX_TEST_AND_CLEAR_FLAGS: {
-            unsigned *restrict flags = va_arg(args, unsigned *);
-
-            if ((*flags & INPUT_UPDATE_TITLE) && sys->title_changed) {
-                *flags = INPUT_UPDATE_TITLE;
-                sys->title_changed = false;
-            } else
-                *flags = 0;
-            return VLC_SUCCESS;
-        }
-
-        case DEMUX_GET_TITLE:
-            *va_arg(args, int *) = sys->last_title;
-            return VLC_SUCCESS;
-
-        case DEMUX_CAN_PAUSE:
-        case DEMUX_SET_PAUSE_STATE:
-        case DEMUX_CAN_CONTROL_PACE:
-        case DEMUX_GET_PTS_DELAY:
-            return demux_vaControlHelper( demux->s, 0, -1, 0,
-                                          sys->bytes_per_frame, query, args );
     }
 
     return VLC_EGENERIC;

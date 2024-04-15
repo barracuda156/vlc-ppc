@@ -2,6 +2,7 @@
  * postproc.c: video postprocessing using libpostproc
  *****************************************************************************
  * Copyright (C) 1999-2009 VLC authors and VideoLAN
+ * $Id: 65968bfdba9fdce32f53608c9d64b22c94e79782 $
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Gildas Bazin <gbazin@netcourrier.com>
@@ -40,22 +41,25 @@
 #include <vlc_picture.h>
 #include <vlc_cpu.h>
 
+#include "filter_picture.h"
+
 #ifdef HAVE_POSTPROC_POSTPROCESS_H
 #   include <postproc/postprocess.h>
 #else
 #   include <libpostproc/postprocess.h>
 #endif
 
-#ifndef PP_CPU_CAPS_AUTO
-#   define PP_CPU_CAPS_AUTO 0
+#ifndef PP_CPU_CAPS_ALTIVEC
+#   define PP_CPU_CAPS_ALTIVEC 0
 #endif
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int OpenPostproc( filter_t * );
+static int OpenPostproc( vlc_object_t * );
+static void ClosePostproc( vlc_object_t * );
 
-VIDEO_FILTER_WRAPPER_CLOSE(PostprocPict, ClosePostproc)
+static picture_t *PostprocPict( filter_t *, picture_t * );
 
 static int PPQCallback( vlc_object_t *, char const *,
                         vlc_value_t, vlc_value_t, void * );
@@ -70,6 +74,7 @@ static int PPNameCallback( vlc_object_t *, char const *,
     "1: hb, 2-4: hb+vb, 5-6: hb+vb+dr" )
 
 #define NAME_TEXT N_("FFmpeg post processing filter chains")
+#define NAME_LONGTEXT NAME_TEXT
 
 #define FILTER_PREFIX "postproc-"
 
@@ -80,15 +85,18 @@ vlc_module_begin ()
     set_description( N_("Video post processing filter") )
     set_shortname( N_("Postproc" ) )
     add_shortcut( "postprocess", "pp" ) /* name is "postproc" */
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
-    set_callback_video_filter( OpenPostproc )
+    set_capability( "video filter", 0 )
+
+    set_callbacks( OpenPostproc, ClosePostproc )
 
     add_integer_with_range( FILTER_PREFIX "q", PP_QUALITY_MAX, 0,
-                            PP_QUALITY_MAX, Q_TEXT, Q_LONGTEXT )
+                            PP_QUALITY_MAX, Q_TEXT, Q_LONGTEXT, false )
         change_safe()
     add_string( FILTER_PREFIX "name", "default", NAME_TEXT,
-                NULL )
+                NAME_LONGTEXT, true )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -98,7 +106,7 @@ static const char *const ppsz_filter_options[] = {
 /*****************************************************************************
  * filter_sys_t : libpostproc video postprocessing descriptor
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     /* Never changes after init */
     pp_context *pp_context;
@@ -108,18 +116,18 @@ typedef struct
 
     /* Lock when using or changing pp_mode */
     vlc_mutex_t lock;
-} filter_sys_t;
+};
 
 
 /*****************************************************************************
  * OpenPostproc: probe and open the postproc
  *****************************************************************************/
-static int OpenPostproc( filter_t *p_filter )
+static int OpenPostproc( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
-    vlc_value_t val, val_orig;
-    const char *desc;
-    int i_flags = PP_CPU_CAPS_AUTO;
+    vlc_value_t val, val_orig, text;
+    int i_flags = 0;
 
     if( p_filter->fmt_in.video.i_chroma != p_filter->fmt_out.video.i_chroma ||
         p_filter->fmt_in.video.i_height != p_filter->fmt_out.video.i_height ||
@@ -128,6 +136,19 @@ static int OpenPostproc( filter_t *p_filter )
         msg_Err( p_filter, "Filter input and output formats must be identical" );
         return VLC_EGENERIC;
     }
+
+    /* Set CPU capabilities */
+#if defined(__i386__) || defined(__x86_64__)
+    if( vlc_CPU_MMX() )
+        i_flags |= PP_CPU_CAPS_MMX;
+    if( vlc_CPU_MMXEXT() )
+        i_flags |= PP_CPU_CAPS_MMX2;
+    if( vlc_CPU_3dNOW() )
+        i_flags |= PP_CPU_CAPS_3DNOW;
+#elif defined(__ppc__) || defined(__ppc64__) || defined(__powerpc__)
+    if( vlc_CPU_ALTIVEC() )
+        i_flags |= PP_CPU_CAPS_ALTIVEC;
+#endif
 
     switch( p_filter->fmt_in.video.i_chroma )
     {
@@ -176,11 +197,12 @@ static int OpenPostproc( filter_t *p_filter )
 
     var_Create( p_filter, FILTER_PREFIX "q", VLC_VAR_INTEGER |
                 VLC_VAR_DOINHERIT | VLC_VAR_ISCOMMAND );
-    var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_SETTEXT,
-                _("Post processing") );
+
+    text.psz_string = _("Post processing");
+    var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_SETTEXT, &text, NULL );
 
     var_Get( p_filter, FILTER_PREFIX "q", &val_orig );
-    var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_DELCHOICE, val_orig );
+    var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_DELCHOICE, &val_orig, NULL );
 
     val.psz_string = var_GetNonEmptyString( p_filter, FILTER_PREFIX "name" );
     if( val_orig.i_int )
@@ -210,19 +232,20 @@ static int OpenPostproc( filter_t *p_filter )
         switch( val.i_int )
         {
             case 0:
-                desc = _("Disable");
+                text.psz_string = _("Disable");
                 break;
             case 1:
-                desc = _("Lowest");
+                text.psz_string = _("Lowest");
                 break;
             case PP_QUALITY_MAX:
-                desc = _("Highest");
+                text.psz_string = _("Highest");
                 break;
             default:
-                desc = NULL;
+                text.psz_string = NULL;
                 break;
         }
-        var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_ADDCHOICE, val, desc );
+        var_Change( p_filter, FILTER_PREFIX "q", VLC_VAR_ADDCHOICE,
+                    &val, text.psz_string?&text:NULL );
     }
 
     vlc_mutex_init( &p_sys->lock );
@@ -231,7 +254,7 @@ static int OpenPostproc( filter_t *p_filter )
     var_AddCallback( p_filter, FILTER_PREFIX "q", PPQCallback, NULL );
     var_AddCallback( p_filter, FILTER_PREFIX "name", PPNameCallback, NULL );
 
-    p_filter->ops = &PostprocPict_ops;
+    p_filter->pf_video_filter = PostprocPict;
 
     msg_Warn( p_filter, "Quantification table was not set by video decoder. "
                         "Postprocessing won't look good." );
@@ -241,8 +264,9 @@ static int OpenPostproc( filter_t *p_filter )
 /*****************************************************************************
  * ClosePostproc
  *****************************************************************************/
-static void ClosePostproc( filter_t *p_filter )
+static void ClosePostproc( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     /* delete the callback before destroying the mutex */
@@ -250,6 +274,7 @@ static void ClosePostproc( filter_t *p_filter )
     var_DelCallback( p_filter, FILTER_PREFIX "name", PPNameCallback, NULL );
 
     /* Destroy the resources */
+    vlc_mutex_destroy( &p_sys->lock );
     pp_free_context( p_sys->pp_context );
     pp_free_mode( p_sys->pp_mode );
     free( p_sys );
@@ -258,9 +283,16 @@ static void ClosePostproc( filter_t *p_filter )
 /*****************************************************************************
  * PostprocPict
  *****************************************************************************/
-static void PostprocPict( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *PostprocPict( filter_t *p_filter, picture_t *p_pic )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
+
+    picture_t *p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     /* Lock to prevent issues if pp_mode is changed */
     vlc_mutex_lock( &p_sys->lock );
@@ -289,6 +321,8 @@ static void PostprocPict( filter_t *p_filter, picture_t *p_pic, picture_t *p_out
     else
         picture_CopyPixels( p_outpic, p_pic );
     vlc_mutex_unlock( &p_sys->lock );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 /*****************************************************************************

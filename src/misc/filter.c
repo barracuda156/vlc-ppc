@@ -2,6 +2,7 @@
  * filter.c : filter_t helpers.
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
+ * $Id: 505b0eddc7905cf713bc52ba86a412d8c1bae482 $
  *
  * Author: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -55,7 +56,7 @@ void filter_AddProxyCallbacks( vlc_object_t *obj, filter_t *filter,
     {
         char *name = *pname;
         int var_type = var_Type(filter, name);
-        if (var_Type(obj, name) || config_GetType(name) == 0)
+        if (var_Type(obj, name))
         {
             free(name);
             continue;
@@ -101,10 +102,10 @@ void filter_DelProxyCallbacks( vlc_object_t *obj, filter_t *filter,
 
 /* */
 
-vlc_blender_t *filter_NewBlend( vlc_object_t *p_this,
+filter_t *filter_NewBlend( vlc_object_t *p_this,
                            const video_format_t *p_dst_chroma )
 {
-    vlc_blender_t *p_blend = vlc_custom_create( p_this, sizeof(*p_blend), "blend" );
+    filter_t *p_blend = vlc_custom_create( p_this, sizeof(*p_blend), "blend" );
     if( !p_blend )
         return NULL;
 
@@ -117,6 +118,12 @@ vlc_blender_t *filter_NewBlend( vlc_object_t *p_this,
     p_blend->fmt_out.video.i_rmask  = p_dst_chroma->i_rmask;
     p_blend->fmt_out.video.i_gmask  = p_dst_chroma->i_gmask;
     p_blend->fmt_out.video.i_bmask  = p_dst_chroma->i_bmask;
+    p_blend->fmt_out.video.i_rrshift= p_dst_chroma->i_rrshift;
+    p_blend->fmt_out.video.i_rgshift= p_dst_chroma->i_rgshift;
+    p_blend->fmt_out.video.i_rbshift= p_dst_chroma->i_rbshift;
+    p_blend->fmt_out.video.i_lrshift= p_dst_chroma->i_lrshift;
+    p_blend->fmt_out.video.i_lgshift= p_dst_chroma->i_lgshift;
+    p_blend->fmt_out.video.i_lbshift= p_dst_chroma->i_lbshift;
 
     /* The blend module will be loaded when needed with the real
     * input format */
@@ -125,7 +132,7 @@ vlc_blender_t *filter_NewBlend( vlc_object_t *p_this,
     return p_blend;
 }
 
-int filter_ConfigureBlend( vlc_blender_t *p_blend,
+int filter_ConfigureBlend( filter_t *p_blend,
                            int i_dst_width, int i_dst_height,
                            const video_format_t *p_src )
 {
@@ -134,7 +141,6 @@ int filter_ConfigureBlend( vlc_blender_t *p_blend,
         p_blend->fmt_in.video.i_chroma != p_src->i_chroma )
     {
         /* The chroma is not the same, we need to reload the blend module */
-        filter_Close( p_blend );
         module_unneed( p_blend, p_blend->p_module );
         p_blend->p_module = NULL;
     }
@@ -155,30 +161,26 @@ int filter_ConfigureBlend( vlc_blender_t *p_blend,
         p_blend->p_module = module_need( p_blend, "video blending", NULL, false );
     if( !p_blend->p_module )
         return VLC_EGENERIC;
-    assert( p_blend->ops != NULL );
     return VLC_SUCCESS;
 }
 
-int filter_Blend( vlc_blender_t *p_blend,
+int filter_Blend( filter_t *p_blend,
                   picture_t *p_dst, int i_dst_x, int i_dst_y,
                   const picture_t *p_src, int i_alpha )
 {
     if( !p_blend->p_module )
         return VLC_EGENERIC;
 
-    p_blend->ops->blend_video( p_blend, p_dst, p_src, i_dst_x, i_dst_y, i_alpha );
+    p_blend->pf_video_blend( p_blend, p_dst, p_src, i_dst_x, i_dst_y, i_alpha );
     return VLC_SUCCESS;
 }
 
-void filter_DeleteBlend( vlc_blender_t *p_blend )
+void filter_DeleteBlend( filter_t *p_blend )
 {
     if( p_blend->p_module )
-    {
-        filter_Close( p_blend );
         module_unneed( p_blend, p_blend->p_module );
-    }
 
-    vlc_object_delete(p_blend);
+    vlc_object_release( p_blend );
 }
 
 /* */
@@ -212,5 +214,7 @@ void video_splitter_Delete( video_splitter_t *p_splitter )
         module_unneed( p_splitter, p_splitter->p_module );
 
     video_format_Clean( &p_splitter->fmt );
-    vlc_object_delete(p_splitter);
+
+    vlc_object_release( p_splitter );
 }
+

@@ -1,7 +1,7 @@
 # Tiger
 
 TIGER_VERSION := 0.3.4
-TIGER_URL := $(GOOGLE_CODE)/libtiger/libtiger-$(TIGER_VERSION).tar.gz
+TIGER_URL := http://libtiger.googlecode.com/files/libtiger-$(TIGER_VERSION).tar.gz
 
 ifeq ($(call need_pkg,"pangocairo >= 0.16"),)
 # only available if the system has pangocairo
@@ -24,12 +24,8 @@ libtiger: libtiger-$(TIGER_VERSION).tar.gz .sum-tiger
 
 DEPS_tiger = kate $(DEPS_kate)
 
-TIGER_CONF := --disable-doc
-
 .tiger: libtiger
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(TIGER_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --disable-doc
+	cd $< && $(MAKE) install
 	touch $@

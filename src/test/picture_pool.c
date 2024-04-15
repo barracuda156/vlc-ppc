@@ -32,8 +32,6 @@
 
 #define PICTURES 10
 
-const char vlc_module_name[] = "test_picture_pool";
-
 static video_format_t fmt;
 static picture_pool_t *pool, *reserve;
 
@@ -114,6 +112,7 @@ int main(void)
 
     pool = picture_pool_NewFromFormat(&fmt, PICTURES);
     assert(pool != NULL);
+    assert(picture_pool_GetSize(pool) == PICTURES);
 
     reserve = picture_pool_Reserve(pool, PICTURES / 2);
     assert(reserve != NULL);

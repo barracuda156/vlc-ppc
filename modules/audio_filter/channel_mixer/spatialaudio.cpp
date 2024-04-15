@@ -43,43 +43,51 @@
 #include <spatialaudio/Ambisonics.h>
 #include <spatialaudio/SpeakersBinauralizer.h>
 
+#define CFG_PREFIX "spatialaudio-"
+
 #define DEFAULT_HRTF_PATH "hrtfs" DIR_SEP "dodeca_and_7channel_3DSL_HRTF.sofa"
 
 #define HRTF_FILE_TEXT N_("HRTF file for the binauralization")
 #define HRTF_FILE_LONGTEXT N_("Custom HRTF (Head-related transfer function) file " \
                               "in the SOFA format.")
 
+#define HEADPHONES_TEXT N_("Headphones mode (binaural)")
+#define HEADPHONES_LONGTEXT N_("If the output is stereo, render ambisonics " \
+                               "with the binaural decoder.")
+
 static int OpenBinauralizer(vlc_object_t *p_this);
 static int Open( vlc_object_t * );
-static void Close( filter_t * );
+static void Close( vlc_object_t * );
 static void Flush( filter_t * );
 
 vlc_module_begin()
     set_shortname("Spatialaudio")
     set_description(N_("Ambisonics renderer and binauralizer"))
     set_capability("audio renderer", 1)
+    set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_AFILTER)
-    set_callback(Open)
-    add_obsolete_bool("spatialaudio-headphones")
-    add_loadfile("hrtf-file", NULL, HRTF_FILE_TEXT, HRTF_FILE_LONGTEXT)
+    set_callbacks(Open, Close)
+    add_bool(CFG_PREFIX "headphones", false,
+             HEADPHONES_TEXT, HEADPHONES_LONGTEXT, true)
+    add_loadfile("hrtf-file", NULL,
+                 HRTF_FILE_TEXT, HRTF_FILE_LONGTEXT, true)
     add_shortcut("ambisonics")
 
     add_submodule()
     set_shortname(N_("Binauralizer"))
-    set_capability("audio converter", 30)
-    set_callback(OpenBinauralizer)
+    set_capability("audio filter", 0)
+    set_callbacks(OpenBinauralizer, Close)
     add_shortcut("binauralizer")
 vlc_module_end()
 
 #define AMB_BLOCK_TIME_LEN 1024
-
-#define AMB_MAX_ORDER 3
 
 struct filter_spatialaudio
 {
     filter_spatialaudio()
         : speakers(NULL)
         , i_inputPTS(0)
+        , i_last_input_pts(0)
         , inBuf(NULL)
         , outBuf(NULL)
     {}
@@ -114,9 +122,8 @@ struct filter_spatialaudio
 
     std::vector<float> inputSamples;
     vlc_tick_t i_inputPTS;
+    vlc_tick_t i_last_input_pts;
     unsigned i_order;
-    unsigned i_nondiegetic;
-    unsigned i_lr_channels; // number of physical left/right channel pairs
 
     float** inBuf;
     float** outBuf;
@@ -143,10 +150,12 @@ static std::string getHRTFPath(filter_t *p_filter)
     }
     else
     {
-        char *dataDir = config_GetSysPath(VLC_PKG_DATA_DIR, DEFAULT_HRTF_PATH);
+        char *dataDir = config_GetDataDir();
         if (dataDir != NULL)
         {
-            HRTFPath = std::string(dataDir);
+            std::stringstream ss;
+            ss << std::string(dataDir) << DIR_SEP << DEFAULT_HRTF_PATH;
+            HRTFPath = ss.str();
             free(dataDir);
         }
     }
@@ -157,6 +166,13 @@ static std::string getHRTFPath(filter_t *p_filter)
 static block_t *Mix( filter_t *p_filter, block_t *p_buf )
 {
     filter_spatialaudio *p_sys = reinterpret_cast<filter_spatialaudio *>(p_filter->p_sys);
+
+    /* Detect discontinuity due to a pause */
+    static const vlc_tick_t rounding_error = 10;
+    if( p_sys->i_inputPTS != 0
+     && p_buf->i_pts - p_sys->i_last_input_pts > rounding_error )
+        Flush( p_filter );
+    p_sys->i_last_input_pts = p_buf->i_pts + p_buf->i_length;
 
     const size_t i_prevSize = p_sys->inputSamples.size();
     p_sys->inputSamples.resize(i_prevSize + p_buf->i_nb_samples * p_sys->i_inputNb);
@@ -179,7 +195,7 @@ static block_t *Mix( filter_t *p_filter, block_t *p_buf )
     else
         p_out_buf->i_pts = p_sys->i_inputPTS;
     p_out_buf->i_dts = p_out_buf->i_pts;
-    p_out_buf->i_length = vlc_tick_from_samples(p_out_buf->i_nb_samples, p_filter->fmt_in.audio.i_rate);
+    p_out_buf->i_length = p_out_buf->i_nb_samples * CLOCK_FREQ / p_filter->fmt_in.audio.i_rate;
 
     float *p_dest = (float *)p_out_buf->p_buffer;
     const float *p_src = (float *)p_sys->inputSamples.data();
@@ -207,7 +223,7 @@ static block_t *Mix( filter_t *p_filter, block_t *p_buf )
                 CBFormat inData;
                 inData.Configure(p_sys->i_order, true, AMB_BLOCK_TIME_LEN);
 
-                for (unsigned i = 0; i < p_sys->i_inputNb - p_sys->i_nondiegetic; ++i)
+                for (unsigned i = 0; i < p_sys->i_inputNb; ++i)
                     inData.InsertStream(p_sys->inBuf[i], i, AMB_BLOCK_TIME_LEN);
 
                 Orientation ori(p_sys->f_teta, p_sys->f_phi, p_sys->f_roll);
@@ -233,20 +249,6 @@ static block_t *Mix( filter_t *p_filter, block_t *p_buf )
         for (unsigned i = 0; i < p_sys->i_outputNb; ++i)
             for (unsigned j = 0; j < AMB_BLOCK_TIME_LEN; ++j)
                 p_dest[(b * AMB_BLOCK_TIME_LEN + j) * p_sys->i_outputNb + i] = p_sys->outBuf[i][j];
-
-        if (p_sys->i_nondiegetic == 2)
-        {
-            for (unsigned i = 0; i < p_sys->i_lr_channels * 2; i += 2)
-                for (unsigned j = 0; j < AMB_BLOCK_TIME_LEN; ++j)
-                {
-                    p_dest[(b * AMB_BLOCK_TIME_LEN + j) * p_sys->i_outputNb + i] =
-                            p_dest[(b * AMB_BLOCK_TIME_LEN + j) * p_sys->i_outputNb + i]  / 2.f
-                            + p_sys->inBuf[p_sys->i_inputNb - 2][j] / 2.f; //left
-                    p_dest[(b * AMB_BLOCK_TIME_LEN + j) * p_sys->i_outputNb + i + 1] =
-                            p_dest[(b * AMB_BLOCK_TIME_LEN + j) * p_sys->i_outputNb + i + 1]  / 2.f
-                            + p_sys->inBuf[p_sys->i_inputNb - 1][j] / 2.f; //right
-                }
-        }
     }
 
     p_sys->inputSamples.erase(p_sys->inputSamples.begin(),
@@ -264,7 +266,7 @@ static void Flush( filter_t *p_filter )
 {
     filter_spatialaudio *p_sys = reinterpret_cast<filter_spatialaudio *>(p_filter->p_sys);
     p_sys->inputSamples.clear();
-    p_sys->i_inputPTS = 0;
+    p_sys->i_last_input_pts = p_sys->i_inputPTS = 0;
 }
 
 static void ChangeViewpoint( filter_t *p_filter, const vlc_viewpoint_t *p_vp)
@@ -310,32 +312,11 @@ static int allocateBuffers(filter_spatialaudio *p_sys)
     return VLC_SUCCESS;
 }
 
-static const struct FilterOperationInitializer {
-    struct vlc_filter_operations ops {};
-    FilterOperationInitializer()
-    {
-        ops.filter_audio = Mix;
-        ops.flush = Flush;
-        ops.change_viewpoint = ChangeViewpoint;
-        ops.close = Close;
-    };
-} filter_ops;
-
 static int OpenBinauralizer(vlc_object_t *p_this)
 {
     filter_t *p_filter = (filter_t *)p_this;
-    const audio_format_t *infmt = &p_filter->fmt_in.audio;
-    const audio_format_t *outfmt = &p_filter->fmt_out.audio;
-
-    if (infmt->i_format != VLC_CODEC_FL32 || outfmt->i_format != VLC_CODEC_FL32)
-        return VLC_EGENERIC;
-
-    if (infmt->i_rate != outfmt->i_rate)
-        return VLC_EGENERIC;
-
-    if (infmt->i_channels <= 2 || outfmt->i_channels != 2
-     || outfmt->i_chan_mode != AOUT_CHANMODE_BINAURAL)
-        return VLC_EGENERIC;
+    audio_format_t *infmt = &p_filter->fmt_in.audio;
+    audio_format_t *outfmt = &p_filter->fmt_out.audio;
 
     filter_spatialaudio *p_sys = new(std::nothrow)filter_spatialaudio();
     if (p_sys == NULL)
@@ -344,7 +325,6 @@ static int OpenBinauralizer(vlc_object_t *p_this)
     p_sys->mode = filter_spatialaudio::BINAURALIZER;
     p_sys->i_inputNb = p_filter->fmt_in.audio.i_channels;
     p_sys->i_outputNb = 2;
-    p_sys->i_lr_channels = 1;
 
     if (allocateBuffers(p_sys) != VLC_SUCCESS)
     {
@@ -397,8 +377,16 @@ static int OpenBinauralizer(vlc_object_t *p_this)
     }
     p_sys->binauralizer.Reset();
 
-    p_filter->p_sys = p_sys;
-    p_filter->ops = &filter_ops.ops;
+    outfmt->i_format = infmt->i_format = VLC_CODEC_FL32;
+    outfmt->i_rate = infmt->i_rate;
+    outfmt->i_physical_channels = AOUT_CHANS_STEREO;
+    aout_FormatPrepare(infmt);
+    aout_FormatPrepare(outfmt);
+
+    p_filter->p_sys = reinterpret_cast<filter_sys_t*>(p_sys);
+    p_filter->pf_audio_filter = Mix;
+    p_filter->pf_flush = Flush;
+    p_filter->pf_change_viewpoint = ChangeViewpoint;
 
     return VLC_SUCCESS;
 }
@@ -417,13 +405,6 @@ static int Open(vlc_object_t *p_this)
     if (infmt->i_format != VLC_CODEC_FL32 || outfmt->i_format != VLC_CODEC_FL32)
         return VLC_EGENERIC;
 
-    //support order 1 to 3
-    if ( infmt->i_channels < 4 || infmt->i_channels > ( (AMB_MAX_ORDER + 1) * (AMB_MAX_ORDER + 1) + 2 ) )
-    {
-        msg_Err(p_filter, "Unsupported number of Ambisonics channels");
-        return VLC_EGENERIC;
-    }
-
     filter_spatialaudio *p_sys = new(std::nothrow)filter_spatialaudio();
     if (p_sys == NULL)
         return VLC_ENOMEM;
@@ -441,27 +422,23 @@ static int Open(vlc_object_t *p_this)
         return VLC_ENOMEM;
     }
 
-    int i_sqrt_channels = 1;
-    while( ( i_sqrt_channels < ( AMB_MAX_ORDER + 2 ) )
-           && ( i_sqrt_channels * i_sqrt_channels <= infmt->i_channels ) )
-        i_sqrt_channels++;
-    i_sqrt_channels--;
+    p_sys->i_order = sqrt(infmt->i_channels) - 1;
 
-    p_sys->i_order = i_sqrt_channels - 1;
-    p_sys->i_nondiegetic = infmt->i_channels - i_sqrt_channels * i_sqrt_channels;
-
-    if ( p_sys->i_nondiegetic != 0 && p_sys->i_nondiegetic != 2 )
+    if (p_sys->i_order < 1)
     {
-        msg_Err(p_filter, "Invalid number of non-diegetic Ambisonics channels %i", p_sys->i_nondiegetic);
+        msg_Err(p_filter, "Invalid number of Ambisonics channels");
         delete p_sys;
         return VLC_EGENERIC;
     }
 
-    msg_Dbg(p_filter, "Order: %d %d %d", p_sys->i_order, p_sys->i_nondiegetic, infmt->i_channels);
+    msg_Dbg(p_filter, "Order: %d %d", p_sys->i_order, infmt->i_channels);
+
+    static const char *const options[] = { "headphones", NULL };
+    config_ChainParse(p_filter, CFG_PREFIX, options, p_filter->p_cfg);
 
     unsigned i_tailLength = 0;
     if (p_filter->fmt_out.audio.i_channels == 2
-     && p_filter->fmt_out.audio.i_chan_mode == AOUT_CHANMODE_BINAURAL)
+     && var_InheritBool(p_filter, CFG_PREFIX "headphones"))
     {
         p_sys->mode = filter_spatialaudio::AMBISONICS_BINAURAL_DECODER;
 
@@ -500,20 +477,17 @@ static int Open(vlc_object_t *p_this)
 
         p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(30), 0.f, 1.f});
         p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(-30), 0.f, 1.f});
-        p_sys->i_lr_channels = 1;
 
         if ((outfmt->i_physical_channels & AOUT_CHANS_MIDDLE) == AOUT_CHANS_MIDDLE)
         {
             p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(110), 0.f, 1.f});
             p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(-110), 0.f, 1.f});
-            p_sys->i_lr_channels++;
         }
 
         if ((outfmt->i_physical_channels & AOUT_CHANS_REAR) == AOUT_CHANS_REAR)
         {
             p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(145), 0.f, 1.f});
             p_sys->speakerDecoder.SetPosition(s++, {DegreesToRadians(-145), 0.f, 1.f});
-            p_sys->i_lr_channels++;
         }
 
         if ((outfmt->i_physical_channels & AOUT_CHAN_CENTER) == AOUT_CHAN_CENTER)
@@ -542,14 +516,18 @@ static int Open(vlc_object_t *p_this)
         return VLC_EGENERIC;
     }
 
-    p_filter->p_sys = p_sys;
-    p_filter->ops = &filter_ops.ops;
+    p_filter->p_sys = reinterpret_cast<filter_sys_t*>(p_sys);
+    p_filter->pf_audio_filter = Mix;
+    p_filter->pf_flush = Flush;
+    p_filter->pf_change_viewpoint = ChangeViewpoint;
 
     return VLC_SUCCESS;
 }
 
-static void Close(filter_t *p_filter)
+static void Close(vlc_object_t *p_this)
 {
+    filter_t *p_filter = (filter_t *)p_this;
+
     filter_spatialaudio *p_sys = reinterpret_cast<filter_spatialaudio *>(p_filter->p_sys);
     delete p_sys;
 }

@@ -2,6 +2,7 @@
  * cmd_add_item.cpp
  *****************************************************************************
  * Copyright (C) 2003 the VideoLAN team
+ * $Id: e1eba6f9e7de76ae1806c90ecf135fe265241997 $
  *
  * Authors: Cyril Deguet     <asmax@via.ecp.fr>
  *          Olivier Teulière <ipkiss@via.ecp.fr>
@@ -26,13 +27,14 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_input_item.h>
 #include <vlc_playlist.h>
 #include <vlc_url.h>
 #include "cmd_add_item.hpp"
 
 void CmdAddItem::execute()
 {
+    playlist_t *pPlaylist = getPL();
+
     if( strstr( m_name.c_str(), "://" ) == NULL )
     {
         char *psz_uri = vlc_path2uri( m_name.c_str(), NULL );
@@ -41,17 +43,5 @@ void CmdAddItem::execute()
         m_name = psz_uri;
         free( psz_uri );
     }
-    input_item_t *media = input_item_New( m_name.c_str(), NULL );
-    if( media )
-    {
-        vlc_playlist_Lock( getPL() );
-        if( !vlc_playlist_AppendOne( getPL(), media ) && m_playNow )
-        {
-            ssize_t index = vlc_playlist_IndexOfMedia( getPL(), media );
-            if( index != -1 )
-                vlc_playlist_PlayAt( getPL(), index );
-        }
-        vlc_playlist_Unlock( getPL() );
-        input_item_Release( media );
-    }
+    playlist_Add( pPlaylist, m_name.c_str(), m_playNow );
 }

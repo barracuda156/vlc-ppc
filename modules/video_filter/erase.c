@@ -2,6 +2,7 @@
  * erase.c : logo erase video filter
  *****************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: 2bce92bce3aeceab7904688fa2c0741038e702f7 $
  *
  * Authors: Antoine Cellerier <dionoea -at- videolan -dot- org>
  *
@@ -35,16 +36,18 @@
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 #include <vlc_url.h>
+#include "filter_picture.h"
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int  Create    ( filter_t * );
+static int  Create    ( vlc_object_t * );
+static void Destroy   ( vlc_object_t * );
 
+static picture_t *Filter( filter_t *, picture_t * );
 static void FilterErase( filter_t *, picture_t *, picture_t * );
 static int EraseCallback( vlc_object_t *, char const *,
                           vlc_value_t, vlc_value_t, void * );
-VIDEO_FILTER_WRAPPER_CLOSE( Filter, Destroy )
 
 /*****************************************************************************
  * Module descriptor
@@ -64,15 +67,18 @@ VIDEO_FILTER_WRAPPER_CLOSE( Filter, Destroy )
 vlc_module_begin ()
     set_description( N_("Erase video filter") )
     set_shortname( N_( "Erase" ))
+    set_capability( "video filter", 0 )
     set_help(ERASE_HELP)
+    set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
-    add_loadfile(CFG_PREFIX "mask", NULL, MASK_TEXT, MASK_LONGTEXT)
-    add_integer( CFG_PREFIX "x", 0, POSX_TEXT, POSX_LONGTEXT )
-    add_integer( CFG_PREFIX "y", 0, POSY_TEXT, POSY_LONGTEXT )
+    add_loadfile( CFG_PREFIX "mask", NULL,
+                  MASK_TEXT, MASK_LONGTEXT, false )
+    add_integer( CFG_PREFIX "x", 0, POSX_TEXT, POSX_LONGTEXT, false )
+    add_integer( CFG_PREFIX "y", 0, POSY_TEXT, POSY_LONGTEXT, false )
 
     add_shortcut( "erase" )
-    set_callback_video_filter( Create )
+    set_callbacks( Create, Destroy )
 vlc_module_end ()
 
 static const char *const ppsz_filter_options[] = {
@@ -82,34 +88,36 @@ static const char *const ppsz_filter_options[] = {
 /*****************************************************************************
  * filter_sys_t
  *****************************************************************************/
-typedef struct
+struct filter_sys_t
 {
     int i_x;
     int i_y;
     picture_t *p_mask;
     vlc_mutex_t lock;
-} filter_sys_t;
+};
 
 static void LoadMask( filter_t *p_filter, const char *psz_filename )
 {
-    filter_sys_t *p_sys = p_filter->p_sys;
     image_handler_t *p_image;
-    video_format_t fmt_out;
-    picture_t *p_old_mask = p_sys->p_mask;
+    video_format_t fmt_in, fmt_out;
+    picture_t *p_old_mask = p_filter->p_sys->p_mask;
+    video_format_Init( &fmt_in, 0 );
     video_format_Init( &fmt_out, VLC_CODEC_YUVA );
     p_image = image_HandlerCreate( p_filter );
     char *psz_url = vlc_path2uri( psz_filename, NULL );
-    p_sys->p_mask = image_ReadUrl( p_image, psz_url, &fmt_out );
+    p_filter->p_sys->p_mask =
+        image_ReadUrl( p_image, psz_url, &fmt_in, &fmt_out );
     free( psz_url );
+    video_format_Clean( &fmt_in );
     video_format_Clean( &fmt_out );
-    if( p_sys->p_mask )
+    if( p_filter->p_sys->p_mask )
     {
         if( p_old_mask )
             picture_Release( p_old_mask );
     }
     else if( p_old_mask )
     {
-        p_sys->p_mask = p_old_mask;
+        p_filter->p_sys->p_mask = p_old_mask;
         msg_Err( p_filter, "Error while loading new mask. Keeping old mask." );
     }
     else
@@ -121,8 +129,9 @@ static void LoadMask( filter_t *p_filter, const char *psz_filename )
 /*****************************************************************************
  * Create
  *****************************************************************************/
-static int Create( filter_t *p_filter )
+static int Create( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys;
     char *psz_filename;
 
@@ -148,7 +157,7 @@ static int Create( filter_t *p_filter )
         return VLC_ENOMEM;
     p_sys = p_filter->p_sys;
 
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     config_ChainParse( p_filter, CFG_PREFIX, ppsz_filter_options,
                        p_filter->p_cfg );
@@ -181,8 +190,9 @@ static int Create( filter_t *p_filter )
 /*****************************************************************************
  * Destroy
  *****************************************************************************/
-static void Destroy( filter_t *p_filter )
+static void Destroy( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t *)p_this;
     filter_sys_t *p_sys = p_filter->p_sys;
     if( p_sys->p_mask )
         picture_Release( p_sys->p_mask );
@@ -190,6 +200,7 @@ static void Destroy( filter_t *p_filter )
     var_DelCallback( p_filter, CFG_PREFIX "x", EraseCallback, p_sys );
     var_DelCallback( p_filter, CFG_PREFIX "y", EraseCallback, p_sys );
     var_DelCallback( p_filter, CFG_PREFIX "mask", EraseCallback, p_sys );
+    vlc_mutex_destroy( &p_sys->lock );
 
     free( p_filter->p_sys );
 }
@@ -197,9 +208,19 @@ static void Destroy( filter_t *p_filter )
 /*****************************************************************************
  * Filter
  *****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_outpic;
     filter_sys_t *p_sys = p_filter->p_sys;
+
+    if( !p_pic ) return NULL;
+
+    p_outpic = filter_NewPicture( p_filter );
+    if( !p_outpic )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
 
     /* If the mask is empty: just copy the image */
     vlc_mutex_lock( &p_sys->lock );
@@ -208,6 +229,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_outpic )
     else
         picture_CopyPixels( p_outpic, p_pic );
     vlc_mutex_unlock( &p_sys->lock );
+
+    return CopyInfoAndRelease( p_outpic, p_pic );
 }
 
 /*****************************************************************************
@@ -388,7 +411,7 @@ static int EraseCallback( vlc_object_t *p_this, char const *psz_var,
                           vlc_value_t oldval, vlc_value_t newval, void *p_data )
 {
     VLC_UNUSED(oldval);
-    filter_sys_t *p_sys = p_data;
+    filter_sys_t *p_sys = (filter_sys_t *)p_data;
 
     if( !strcmp( psz_var, CFG_PREFIX "x" ) )
     {

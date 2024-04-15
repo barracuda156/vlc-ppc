@@ -2,6 +2,7 @@
  * itml.h : iTunes Music Library import functions
  *******************************************************************************
  * Copyright (C) 2007 VLC authors and VideoLAN
+ * $Id: 38ef1d3d56eaa97ae8f2bf802064f72024fbb788 $
  *
  * Authors: Yoann Peronneau <yoann@videolan.org>
  *
@@ -31,7 +32,8 @@
 
 #define SIMPLE_INTERFACE  (track_elem_t    *p_track,\
                            const char      *psz_name,\
-                           char            *psz_value)
+                           char            *psz_value,\
+                           void            *opaque)
 #define COMPLEX_INTERFACE (stream_t        *p_demux,\
                            input_item_node_t    *p_input_node,\
                            track_elem_t    *p_track,\

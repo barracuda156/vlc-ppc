@@ -26,12 +26,8 @@ endif
 	$(call pkg_static,"libmodplug.pc.in")
 	$(MOVE)
 
-MODPLUG_CONF := CXXFLAGS="$(MODPLUG_CXXFLAGS)"
-
 .modplug: libmodplug
 	$(RECONF)
-	$(MAKEBUILDDIR)
-	$(MAKECONFIGURE) $(MODPLUG_CONF)
-	+$(MAKEBUILD)
-	+$(MAKEBUILD) install
+	cd $< && $(HOSTVARS) CXXFLAGS="$(MODPLUG_CXXFLAGS)" ./configure $(HOSTCONF)
+	cd $< && $(MAKE) install
 	touch $@

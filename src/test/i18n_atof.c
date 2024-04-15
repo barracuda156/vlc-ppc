@@ -1,7 +1,8 @@
 /*****************************************************************************
- * i18n_atof.c: Test for vlc_atof_c()
+ * i18n_atof.c: Test for us_atof
  *****************************************************************************
  * Copyright (C) 2006 Rémi Denis-Courmont
+ * $Id: f6c6e39797cf643b7adcbc6fc2df12d174d09720 $
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -35,19 +36,22 @@ int main (void)
     const char sharp9[] = "999999#999999";
     char *end;
 
-    assert(vlc_atof_c("0") == 0.);
-    assert(vlc_atof_c("1") == 1.);
-    assert(vlc_atof_c("1.") == 1.);
-    assert(vlc_atof_c("1,") == 1.);
-    assert(vlc_atof_c("1#") == 1.);
-    assert(vlc_atof_c(dot9) == 999999.999999);
-    assert(vlc_atof_c(comma9) == 999999.);
-    assert(vlc_atof_c(sharp9) == 999999.);
-    assert(vlc_atof_c("invalid") == 0.);
+    assert (us_atof("0") == 0.);
+    assert (us_atof("1") == 1.);
+    assert (us_atof("1.") == 1.);
+    assert (us_atof("1,") == 1.);
+    assert (us_atof("1#") == 1.);
+    assert (us_atof(dot9) == 999999.999999);
+    assert (us_atof(comma9) == 999999.);
+    assert (us_atof(sharp9) == 999999.);
+    assert (us_atof("invalid") == 0.);
 
-    assert((vlc_strtod_c(dot9, &end ) == 999999.999999) && (*end == '\0'));
-    assert((vlc_strtod_c(comma9, &end ) == 999999.) && (*end == ','));
-    assert((vlc_strtod_c(sharp9, &end ) == 999999.) && (*end == '#'));
+    assert ((us_strtod(dot9, &end ) == 999999.999999)
+            && (*end == '\0'));
+    assert ((us_strtod(comma9, &end ) == 999999.)
+            && (*end == ','));
+    assert ((us_strtod(sharp9, &end ) == 999999.)
+            && (*end == '#'));
 
     return 0;
 }

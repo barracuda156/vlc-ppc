@@ -21,21 +21,19 @@
 #include "../../libvlc/test.h"
 #include "../lib/libvlc_internal.h"
 
-#include <vlc_strings.h>
-#include <vlc_hash.h>
+#include <vlc_md5.h>
 #include <vlc_stream.h>
+#include <vlc_rand.h>
 #include <vlc_fs.h>
 
-#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
-#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #ifndef TEST_NET
-#define RAND_FILE_SIZE (1024 * 1024)
+#define RAND_FILE_SIZE (25 * 1024 * 1024)
 #else
 #define HTTP_URL "http://streams.videolan.org/streams/ogm/MJPEG.ogm"
 #define HTTP_MD5 "4eaf9e8837759b670694398a33f02bc0"
@@ -201,7 +199,7 @@ stream_open( const char *psz_url )
     p_reader = calloc( 1, sizeof(struct reader) );
     assert( p_reader );
 
-    p_vlc = libvlc_new( ARRAY_SIZE(argv), argv );
+    p_vlc = libvlc_new( sizeof(argv) / sizeof(argv[0]), argv );
     assert( p_vlc != NULL );
 
     p_reader->u.s = vlc_stream_NewURL( p_vlc->p_libvlc_int, psz_url );
@@ -236,8 +234,8 @@ read_at( struct reader **pp_readers, unsigned int i_readers,
         const uint8_t *p_peek = NULL;
         struct reader *p_reader = pp_readers[i];
 
-        test_log( "%s: %s %zu @ %"PRIu64" (size: %" PRIu64 ")\n", p_reader->psz_name,
-                  p_buf ? "read" : "peek", i_read, i_offset, i_size );
+        log( "%s: %s %zu @ %"PRIu64" (size: %" PRIu64 ")\n", p_reader->psz_name,
+              p_buf ? "read" : "peek", i_read, i_offset, i_size );
         assert( p_reader->pf_seek( p_reader, i_offset ) != -1 );
 
         i_last_pos = p_reader->pf_tell( p_reader );
@@ -296,30 +294,33 @@ test( struct reader **pp_readers, unsigned int i_readers, const char *psz_md5 )
     ssize_t i_ret = 0;
     uint64_t i_offset = 0;
     uint64_t i_size;
-    char psz_read_md5[VLC_HASH_MD5_DIGEST_HEX_SIZE];
-    vlc_hash_md5_t md5;
+    char *psz_read_md5;
+    struct md5_s md5;
 
     /* Compare size between each readers */
     i_size = pp_readers[0]->pf_getsize( pp_readers[0] );
     assert( i_size > 0 );
 
-    test_log( "stream size: %"PRIu64"\n", i_size );
+    log( "stream size: %"PRIu64"\n", i_size );
     for( unsigned int i = 1; i < i_readers; ++i )
         assert( pp_readers[i]->pf_getsize( pp_readers[i] ) == i_size );
 
     /* Read the whole file and compare between each readers */
     if( psz_md5 != NULL )
-        vlc_hash_md5_Init( &md5 );
+        InitMD5( &md5 );
     while( ( i_ret = READ_AT( i_offset, 4096 ) ) > 0 )
     {
         i_offset += i_ret;
         if( psz_md5 != NULL )
-            vlc_hash_md5_Update( &md5, p_buf, i_ret );
+            AddMD5( &md5, p_buf, i_ret );
     }
     if( psz_md5 != NULL )
     {
-        vlc_hash_FinishHex( &md5, psz_read_md5 );
+        EndMD5( &md5 );
+        psz_read_md5 = psz_md5_hash( &md5 );
+        assert( psz_read_md5 );
         assert( strcmp( psz_read_md5, psz_md5 ) == 0 );
+        free( psz_read_md5 );
     }
 
     /* Test cache skip */
@@ -346,25 +347,18 @@ test( struct reader **pp_readers, unsigned int i_readers, const char *psz_md5 )
 static void
 fill_rand( int i_fd, size_t i_size )
 {
-    unsigned int seed = 12345;
-
-    while( i_size > 0 )
+    uint8_t p_buf[4096];
+    size_t i_written = 0;
+    while( i_written < i_size )
     {
-        uint8_t p_buf[4096];
-        size_t i_tocopy = __MIN( i_size, sizeof (p_buf) );
+        size_t i_tocopy = __MIN( i_size - i_written, 4096 );
 
-        for (size_t i = 0; i < i_tocopy; i++)
-            p_buf[i] = rand_r(&seed);
-
+        vlc_rand_bytes(p_buf, i_tocopy);
         ssize_t i_ret = write( i_fd, p_buf, i_tocopy );
-        if( i_ret < (ssize_t)i_tocopy ) {
-            if( i_ret >= 0 )
-                errno = ENOSPC;
-            perror("write error");
-            abort();
-        }
-        i_size -= i_ret;
+        assert( i_ret > 0 );
+        i_written += i_ret;
     }
+    assert( i_written == i_size );
 }
 #endif
 
@@ -380,10 +374,9 @@ main( void )
     char *psz_url;
     int i_tmp_fd;
 
-    test_log( "Generating random file...\n" );
+    log( "Test random file with libc, and stream\n" );
     i_tmp_fd = vlc_mkstemp( psz_tmp_path );
     fill_rand( i_tmp_fd, RAND_FILE_SIZE );
-    test_log( "Testing random file with libc, and stream...\n" );
     assert( i_tmp_fd != -1 );
     assert( asprintf( &psz_url, "file://%s", psz_tmp_path ) != -1 );
 
@@ -398,11 +391,11 @@ main( void )
     close( i_tmp_fd );
 #else
 
-    test_log( "Testing http url with stream...\n" );
+    log( "Test http url with stream\n" );
     alarm( 0 );
     if( !( pp_readers[0] = stream_open( HTTP_URL ) ) )
     {
-        test_log( "WARNING: can't test http url" );
+        log( "WARNING: can't test http url" );
         return 0;
     }
 

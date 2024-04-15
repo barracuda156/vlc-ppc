@@ -24,14 +24,20 @@
 # define XCB_CURSOR_NONE ((xcb_cursor_t) 0U)
 #endif
 
-struct vlc_logger;
+#include <vlc_vout_display.h>
+
+/* keys.c */
+typedef struct key_handler_t key_handler_t;
+key_handler_t *XCB_keyHandler_Create (vlc_object_t *, xcb_connection_t *);
+void XCB_keyHandler_Destroy (key_handler_t *);
+int XCB_keyHandler_Process (key_handler_t *, xcb_generic_event_t *);
 
 /* events.c */
 
 /**
  * Checks for an XCB error.
  */
-int vlc_xcb_error_Check(struct vlc_logger *, xcb_connection_t *conn,
+int vlc_xcb_error_Check(vout_display_t *, xcb_connection_t *conn,
                         const char *str, xcb_void_cookie_t);
 
 /**
@@ -40,10 +46,10 @@ int vlc_xcb_error_Check(struct vlc_logger *, xcb_connection_t *conn,
  * Creates a VLC video X window object, connects to the corresponding X server,
  * finds the corresponding X server screen.
  */
-int vlc_xcb_parent_Create(struct vlc_logger *, const vlc_window_t *wnd,
-                          xcb_connection_t **connp,
-                          const xcb_screen_t **screenp);
+struct vout_window_t *vlc_xcb_parent_Create(vout_display_t *obj,
+                                            xcb_connection_t **connp,
+                                            const xcb_screen_t **screenp);
 /**
  * Processes XCB events.
  */
-int vlc_xcb_Manage(struct vlc_logger *, xcb_connection_t *conn);
+int vlc_xcb_Manage(vout_display_t *vd, xcb_connection_t *conn, bool *visible);

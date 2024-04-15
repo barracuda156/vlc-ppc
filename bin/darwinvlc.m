@@ -2,6 +2,7 @@
  * darwinvlc.m: OS X specific main executable for VLC media player
  *****************************************************************************
  * Copyright (C) 2013-2015 VLC authors and VideoLAN
+ * $Id: 2972d36d4405830fc6449146d2968807bbf2e093 $
  *
  * Authors: Felix Paul Kühne <fkuehne at videolan dot org>
  *          David Fuhrmann <dfuhrmann at videolan dot org>
@@ -139,7 +140,6 @@ int main(int i_argc, const char *ppsz_argv[])
 #ifdef TOP_BUILDDIR
     setenv("VLC_PLUGIN_PATH", TOP_BUILDDIR"/modules", 1);
     setenv("VLC_DATA_PATH", TOP_SRCDIR"/share", 1);
-    setenv("VLC_LIB_PATH", TOP_BUILDDIR"/modules", 1);
 #endif
 
 #ifndef ALLOW_RUN_AS_ROOT
@@ -233,21 +233,36 @@ int main(int i_argc, const char *ppsz_argv[])
     argv[argc++] = "--no-ignore-config";
     argv[argc++] = "--media-library";
 
-    /* Overwrite system language */
-    CFPropertyListRef lang_pref = CFPreferencesCopyAppValue(CFSTR("language"),
-        kCFPreferencesCurrentApplication);
+    /* overwrite system language on Mac */
+    char *lang = NULL;
 
-    if (lang_pref) {
-        if (CFGetTypeID(lang_pref) == CFStringGetTypeID()) {
-            char *lang = FromCFString(lang_pref, kCFStringEncodingUTF8);
-            if (strncmp(lang, "auto", 4)) {
+    for (int i = 0; i < i_argc; i++) {
+        if (!strncmp(ppsz_argv[i], "--language", 10)) {
+            lang = strstr(ppsz_argv[i], "=");
+            ppsz_argv++, i_argc--;
+            continue;
+        }
+    }
+    if (lang && strncmp( lang, "auto", 4 )) {
+        char tmp[11];
+        snprintf(tmp, 11, "LANG%s", lang);
+        putenv(tmp);
+    }
+
+    if (!lang) {
+        CFStringRef language;
+        language = (CFStringRef)CFPreferencesCopyAppValue(CFSTR("language"),
+                                                          kCFPreferencesCurrentApplication);
+        if (language) {
+            lang = FromCFString(language, kCFStringEncodingUTF8);
+            if (strncmp( lang, "auto", 4 )) {
                 char tmp[11];
                 snprintf(tmp, 11, "LANG=%s", lang);
                 putenv(tmp);
             }
             free(lang);
+            CFRelease(language);
         }
-        CFRelease(lang_pref);
     }
 
     ppsz_argv++; i_argc--; /* skip executable path */
@@ -273,11 +288,11 @@ int main(int i_argc, const char *ppsz_argv[])
     libvlc_set_app_id(vlc, "org.VideoLAN.VLC", PACKAGE_VERSION, PACKAGE_NAME);
     libvlc_set_user_agent(vlc, "VLC media player", "VLC/"PACKAGE_VERSION);
 
-    if (libvlc_add_intf(vlc, NULL)) {
-        fprintf(stderr, "VLC cannot start any interface. Exiting.\n");
+    libvlc_add_intf(vlc, "hotkeys,none");
+
+    if (libvlc_add_intf(vlc, NULL))
         goto out;
-    }
-    libvlc_playlist_play(vlc);
+    libvlc_playlist_play(vlc, -1, 0, NULL);
 
     /*
      * Run the main loop. If the mac interface is not initialized, only the CoreFoundation

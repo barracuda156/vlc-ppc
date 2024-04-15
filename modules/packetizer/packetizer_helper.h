@@ -2,6 +2,7 @@
  * packetizer_helper.h: Packetizer helpers
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
+ * $Id: 42b881bcd068fc092c86da01f8feb850cd689b35 $
  *
  * Authors: Laurent Aimar <fenrir _AT_ videolan _DOT_ org>
  *
@@ -36,7 +37,7 @@ enum
     STATE_CUSTOM_FIRST,
 };
 
-typedef void (*packetizer_reset_t)( void *p_private, bool b_flush );
+typedef void (*packetizer_reset_t)( void *p_private, bool b_broken );
 typedef block_t *(*packetizer_parse_t)( void *p_private, bool *pb_ts_used, block_t * );
 typedef block_t *(*packetizer_drain_t)( void *p_private );
 typedef int (*packetizer_validate_t)( void *p_private, block_t * );
@@ -119,10 +120,16 @@ static block_t *packetizer_PacketizeBlock( packetizer_t *p_pack, block_t **pp_bl
         if( p_drained )
             return p_drained;
 
+        const bool b_broken = !!( p_block->i_flags&BLOCK_FLAG_CORRUPTED );
         p_pack->i_state = STATE_NOSYNC;
         block_BytestreamEmpty( &p_pack->bytestream );
         p_pack->i_offset = 0;
-        p_pack->pf_reset( p_pack->p_private, false );
+        p_pack->pf_reset( p_pack->p_private, b_broken );
+        if( b_broken )
+        {
+            block_Release( p_block );
+            return NULL;
+        }
     }
 
     if( p_block )
@@ -170,8 +177,7 @@ static block_t *packetizer_PacketizeBlock( packetizer_t *p_pack, block_t **pp_bl
                 if( p_pack->i_offset == 0 )
                     return NULL;
 
-                if( p_pack->i_offset <= (size_t)p_pack->i_startcode &&
-                    (p_pack->bytestream.p_block->i_flags & BLOCK_FLAG_AU_END) == 0 )
+                if( p_pack->i_offset <= (size_t)p_pack->i_startcode )
                     return NULL;
             }
 
@@ -183,13 +189,6 @@ static block_t *packetizer_PacketizeBlock( packetizer_t *p_pack, block_t **pp_bl
             p_pic = block_Alloc( p_pack->i_offset + p_pack->i_au_prepend );
             p_pic->i_pts = p_block_bytestream->i_pts;
             p_pic->i_dts = p_block_bytestream->i_dts;
-
-            /* Do not wait for next sync code if notified block ends AU */
-            if( (p_block_bytestream->i_flags & BLOCK_FLAG_AU_END) &&
-                 p_block_bytestream->i_buffer == p_pack->i_offset )
-            {
-                p_pic->i_flags |= BLOCK_FLAG_AU_END;
-            }
 
             block_GetBytes( &p_pack->bytestream, &p_pic->p_buffer[p_pack->i_au_prepend],
                             p_pic->i_buffer - p_pack->i_au_prepend );

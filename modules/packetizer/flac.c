@@ -44,6 +44,7 @@ static int  Open (vlc_object_t *);
 static void Close(vlc_object_t *);
 
 vlc_module_begin()
+    set_category(CAT_SOUT)
     set_subcategory(SUBCAT_SOUT_PACKETIZER)
     set_description(N_("Flac audio packetizer"))
     set_capability("packetizer", 50)
@@ -53,7 +54,7 @@ vlc_module_end()
 /*****************************************************************************
  * decoder_sys_t : FLAC decoder descriptor
  *****************************************************************************/
-typedef struct
+struct decoder_sys_t
 {
     /*
      * Input properties
@@ -82,7 +83,7 @@ typedef struct
     uint8_t *p_buf;
 
     int i_next_block_flags;
-} decoder_sys_t;
+};
 
 static const int pi_channels_maps[9] =
 {
@@ -112,15 +113,15 @@ static void ProcessHeader(decoder_t *p_dec)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    int i_extra = p_dec->fmt_in->i_extra;
-    char *p_extra = p_dec->fmt_in->p_extra;
+    int i_extra = p_dec->fmt_in.i_extra;
+    char *p_extra = p_dec->fmt_in.p_extra;
 
     if (i_extra > 8 && !memcmp(p_extra, "fLaC", 4)) {
         i_extra -= 8;
         p_extra += 8;
     }
 
-    if (p_dec->fmt_in->i_extra < FLAC_STREAMINFO_SIZE)
+    if (p_dec->fmt_in.i_extra < FLAC_STREAMINFO_SIZE)
         return;
 
     FLAC_ParseStreamInfo( (uint8_t *) p_extra, &p_sys->stream_info );
@@ -541,18 +542,19 @@ static block_t *Packetize(decoder_t *p_dec, block_t **pp_block)
             p_sys->bytestream.p_block->i_pts = VLC_TICK_INVALID;
         }
 
-
         out = block_heap_Alloc( p_sys->p_buf, p_sys->i_buf );
         if( out )
         {
             out->i_dts = out->i_pts = date_Get( &p_sys->pts );
             out->i_flags = p_sys->i_next_block_flags;
             p_sys->i_next_block_flags = 0;
+            if( out->i_pts != VLC_TICK_INVALID )
+                date_Increment( &p_sys->pts, p_sys->headerinfo.i_frame_length );
         }
         else
             p_sys->p_buf = NULL;
 
-        date_Increment( &p_sys->pts, p_sys->headerinfo.i_frame_length );
+
         if( out )
             out->i_length = date_Get( &p_sys->pts ) - out->i_pts;
         else
@@ -579,7 +581,7 @@ static int Open(vlc_object_t *p_this)
     decoder_t *p_dec = (decoder_t*)p_this;
     decoder_sys_t *p_sys;
 
-    if (p_dec->fmt_in->i_codec != VLC_CODEC_FLAC)
+    if (p_dec->fmt_in.i_codec != VLC_CODEC_FLAC)
         return VLC_EGENERIC;
 
 
@@ -599,16 +601,17 @@ static int Open(vlc_object_t *p_this)
     p_sys->i_next_block_flags = 0;
     block_BytestreamInit(&p_sys->bytestream);
     date_Init( &p_sys->pts, 1, 1 );
+    date_Set( &p_sys->pts, VLC_TICK_INVALID );
 
     /* */
-    es_format_Copy(&p_dec->fmt_out, p_dec->fmt_in);
+    es_format_Copy(&p_dec->fmt_out, &p_dec->fmt_in);
     p_dec->fmt_out.i_codec = VLC_CODEC_FLAC;
     p_dec->fmt_out.b_packetized = true;
 
     /* */
+    p_dec->pf_decode    = NULL;
     p_dec->pf_packetize = Packetize;
     p_dec->pf_flush     = Flush;
-    p_dec->pf_get_cc    = NULL;
 
     return VLC_SUCCESS;
 }

@@ -2,6 +2,7 @@
  * rv32.c: conversion plugin to RV32 format.
  *****************************************************************************
  * Copyright (C) 2005 VLC authors and VideoLAN
+ * $Id: cd8eaa47ddde1fa50d461516339ce4d7f1a51c26 $
  *
  * Author: Cyril Deguet <asmax@videolan.org>
  *
@@ -35,7 +36,7 @@
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
-static int  OpenFilter ( filter_t * );
+static int  OpenFilter ( vlc_object_t * );
 static picture_t *Filter( filter_t *, picture_t * );
 
 /*****************************************************************************
@@ -43,18 +44,17 @@ static picture_t *Filter( filter_t *, picture_t * );
  *****************************************************************************/
 vlc_module_begin ()
     set_description( N_("RV32 conversion filter") )
-    set_callback_video_converter( OpenFilter, 1 )
+    set_capability( "video converter", 1 )
+    set_callbacks( OpenFilter, NULL )
 vlc_module_end ()
-
-static const struct vlc_filter_operations filter_ops = {
-    .filter_video = Filter,
-};
 
 /*****************************************************************************
  * OpenFilter: probe the filter and return score
  *****************************************************************************/
-static int OpenFilter( filter_t *p_filter )
+static int OpenFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t*)p_this;
+
     /* XXX Only support RV24 -> RV32 conversion */
     if( p_filter->fmt_in.video.i_chroma != VLC_CODEC_RGB24 ||
         (p_filter->fmt_out.video.i_chroma != VLC_CODEC_RGB32 &&
@@ -68,7 +68,7 @@ static int OpenFilter( filter_t *p_filter )
      || p_filter->fmt_in.video.orientation != p_filter->fmt_out.video.orientation)
         return -1;
 
-    p_filter->ops = &filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     return VLC_SUCCESS;
 }

@@ -8,7 +8,7 @@ ifndef HAVE_DARWIN_OS
 PKGS += gnutls
 endif
 endif
-ifeq ($(call need_pkg,"gnutls >= 3.5.0"),)
+ifeq ($(call need_pkg,"gnutls >= 3.3.6"),)
 PKGS_FOUND += gnutls
 endif
 
@@ -31,17 +31,19 @@ gnutls: gnutls-$(GNUTLS_VERSION).tar.xz .sum-gnutls
 	# forbidden RtlSecureZeroMemory call in winstore builds
 	$(APPLY) $(SRC)/gnutls/0001-explicit_bzero-Do-not-call-SecureZeroMemory-on-UWP-b.patch
 
+	# Don't use functions available starting with windows vista
+	$(APPLY) $(SRC)/gnutls/0001-stat-fstat-Fix-when-compiling-for-versions-older-tha.patch
+
 	# disable the dllimport in static linking (pkg-config --static doesn't handle Cflags.private)
-	sed -i.orig -e s/"_SYM_EXPORT __declspec(dllimport)"/"_SYM_EXPORT"/g $(UNPACK_DIR)/lib/includes/gnutls/gnutls.h.in
+	cd $(UNPACK_DIR) && sed -i.orig -e s/"_SYM_EXPORT __declspec(dllimport)"/"_SYM_EXPORT"/g lib/includes/gnutls/gnutls.h.in
 
 	# fix i686 UWP builds as they were using CertEnumCRLsInStore via invalid LoadLibrary
 	$(APPLY) $(SRC)/gnutls/0001-fix-mingw64-detection.patch
 
+	$(call pkg_static,"lib/gnutls.pc.in")
+
 	# fix AArch64 builds for Apple OS by removing unsupported compiler flag (gnutls#1347, gnutls#1317)
 ifdef HAVE_DARWIN_OS
-	$(APPLY) $(SRC)/gnutls/gnutls-fix-aarch64-compilation-appleos.patch
-endif
-ifdef HAVE_ANDROID
 	$(APPLY) $(SRC)/gnutls/gnutls-fix-aarch64-compilation-appleos.patch
 endif
 
@@ -64,12 +66,15 @@ GNUTLS_CONF := \
 	--disable-tools \
 	--disable-tests \
 	--with-included-libtasn1 \
-	--with-included-unistring
+	--with-included-unistring \
+	$(HOSTCONF)
+
+GNUTLS_ENV := $(HOSTVARS)
 
 DEPS_gnutls = nettle $(DEPS_nettle)
 
 ifdef HAVE_ANDROID
-GNUTLS_ENV := gl_cv_header_working_stdint_h=yes
+GNUTLS_ENV += gl_cv_header_working_stdint_h=yes
 endif
 ifdef HAVE_WINSTORE
 ifeq ($(ARCH),x86_64)
@@ -85,15 +90,7 @@ endif
 endif
 
 .gnutls: gnutls
-	$(MAKEBUILDDIR)
-	$(GNUTLS_ENV) $(MAKECONFIGURE) $(GNUTLS_CONF)
-ifdef HAVE_DARWIN_OS
-	# Add missing frameworks to Libs.private for Darwin
-	cd $< && sed -i.orig -e s/"Libs.private:"/"Libs.private: -framework Security -framework CoreFoundation"/g $(BUILD_DIRUNPACK)/lib/gnutls.pc
-endif
-	$(call pkg_static,"$(BUILD_DIRUNPACK)/lib/gnutls.pc")
-	+$(MAKEBUILD) -C gl
-	+$(MAKEBUILD) -C lib
-	+$(MAKEBUILD) -C gl install
-	+$(MAKEBUILD) -C lib install
+	cd $< && $(GNUTLS_ENV) ./configure $(GNUTLS_CONF)
+	cd $< && $(MAKE) -C gl install
+	cd $< && $(MAKE) -C lib install
 	touch $@

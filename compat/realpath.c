@@ -51,7 +51,7 @@ char *realpath(const char * restrict relpath, char * restrict resolved_path)
     free(wrelpath);
     if (wfullpath != NULL)
     {
-        len = WideCharToMultiByte( CP_UTF8, 0, wfullpath, -1, NULL, 0, NULL, NULL );
+        size_t len = WideCharToMultiByte( CP_UTF8, 0, wfullpath, -1, NULL, 0, NULL, NULL );
         if (len != 0)
         {
             if (resolved_path != NULL)

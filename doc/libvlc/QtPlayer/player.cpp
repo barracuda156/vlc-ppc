@@ -17,7 +17,6 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
-#include <QUrl>
 
 Mwindow::Mwindow() {
     vlcPlayer = NULL;
@@ -126,19 +125,19 @@ void Mwindow::initUI() {
 void Mwindow::openFile() {
 
     /* The basic file-select box */
-    QUrl url = QFileDialog::getOpenFileUrl(this, tr("Load a file"));
+    QString fileOpen = QFileDialog::getOpenFileName(this, tr("Load a file"), "~");
 
     /* Stop if something is playing */
     if (vlcPlayer && libvlc_media_player_is_playing(vlcPlayer))
         stop();
 
     /* Create a new Media */
-    libvlc_media_t *vlcMedia = libvlc_media_new_location(qtu(url.toString(QUrl::FullyEncoded)));
+    libvlc_media_t *vlcMedia = libvlc_media_new_path(vlcInstance, qtu(fileOpen));
     if (!vlcMedia)
         return;
 
     /* Create a new libvlc player */
-    vlcPlayer = libvlc_media_player_new_from_media (vlcInstance, vlcMedia);
+    vlcPlayer = libvlc_media_player_new_from_media (vlcMedia);
 
     /* Release the media */
     libvlc_media_release(vlcMedia);
@@ -188,7 +187,7 @@ int Mwindow::changeVolume(int vol) { /* Called on volume slider change */
 void Mwindow::changePosition(int pos) { /* Called on position slider change */
 
     if (vlcPlayer)
-        libvlc_media_player_set_position(vlcPlayer, (float)pos/1000.0, true);
+        libvlc_media_player_set_position(vlcPlayer, (float)pos/1000.0);
 }
 
 void Mwindow::updateInterface() { //Update interface and check if song is finished
@@ -201,14 +200,14 @@ void Mwindow::updateInterface() { //Update interface and check if song is finish
     slider->setValue((int)(pos*1000.0));
 
     /* Stop the media */
-    if (libvlc_media_player_get_state(vlcPlayer) == libvlc_Stopped)
+    if (libvlc_media_player_get_state(vlcPlayer) == libvlc_Ended)
         this->stop();
 }
 
 void Mwindow::stop() {
     if(vlcPlayer) {
         /* stop the media player */
-        libvlc_media_player_stop_async(vlcPlayer);
+        libvlc_media_player_stop(vlcPlayer);
 
         /* release the media player */
         libvlc_media_player_release(vlcPlayer);

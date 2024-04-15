@@ -37,10 +37,10 @@ namespace adaptive
     {
         public:
             /* static callbacks for demuxer */
-            static es_out_id_t *es_out_Add( es_out_t *, input_source_t *, const es_format_t * );
+            static es_out_id_t *es_out_Add( es_out_t *, const es_format_t * );
             static int es_out_Send( es_out_t *, es_out_id_t *, block_t * );
             static void es_out_Del( es_out_t *, es_out_id_t * );
-            static int es_out_Control( es_out_t *, input_source_t *in, int, va_list );
+            static int es_out_Control( es_out_t *, int, va_list );
             static void es_out_Destroy( es_out_t * );
             static const struct es_out_callbacks cbs;
             struct Private
@@ -51,17 +51,7 @@ namespace adaptive
     };
 }
 
-const struct es_out_callbacks EsOutCallbacks::cbs =
-{
-    EsOutCallbacks::es_out_Add,
-    EsOutCallbacks::es_out_Send,
-    EsOutCallbacks::es_out_Del,
-    EsOutCallbacks::es_out_Control,
-    EsOutCallbacks::es_out_Destroy,
-    nullptr,
-};
-
-es_out_id_t * EsOutCallbacks::es_out_Add(es_out_t *fakees, input_source_t *, const es_format_t *p_fmt)
+es_out_id_t * EsOutCallbacks::es_out_Add(es_out_t *fakees, const es_format_t *p_fmt)
 {
     AbstractFakeEsOut *me = container_of(fakees, Private, es_out)->fake;
     return me->esOutAdd(p_fmt);
@@ -79,7 +69,7 @@ void EsOutCallbacks::es_out_Del(es_out_t *fakees, es_out_id_t *p_es)
     me->esOutDel(p_es);
 }
 
-int EsOutCallbacks::es_out_Control(es_out_t *fakees, input_source_t *, int i_query, va_list args)
+int EsOutCallbacks::es_out_Control(es_out_t *fakees, int i_query, va_list args)
 {
     AbstractFakeEsOut *me = container_of(fakees, Private, es_out)->fake;
     return me->esOutControl(i_query, args);
@@ -95,7 +85,11 @@ AbstractFakeEsOut::AbstractFakeEsOut()
 {
     EsOutCallbacks::Private *priv = new EsOutCallbacks::Private;
     priv->fake = this;
-    priv->es_out.cbs = &EsOutCallbacks::cbs;
+    priv->es_out.pf_add = EsOutCallbacks::es_out_Add;
+    priv->es_out.pf_send = EsOutCallbacks::es_out_Send,
+    priv->es_out.pf_del = EsOutCallbacks::es_out_Del,
+    priv->es_out.pf_control =  EsOutCallbacks::es_out_Control,
+    priv->es_out.pf_destroy = EsOutCallbacks::es_out_Destroy,
     esoutpriv = priv;
 }
 
@@ -172,6 +166,7 @@ FakeESOut::~FakeESOut()
 
     delete commandsqueue;
     delete commandsfactory;
+    vlc_mutex_destroy(&lock);
 }
 
 void FakeESOut::resetTimestamps()
@@ -260,7 +255,6 @@ void FakeESOut::createOrRecycleRealEsID( AbstractFakeESOutID *es_id_ )
     recycle_candidates.insert(recycle_candidates.begin(), declared.begin(), declared.end());
     declared.clear();
 
-    bool b_replace_es = true;
     bool b_preexisting = false;
     bool b_select = false;
     for( it=recycle_candidates.begin(); it!=recycle_candidates.end(); ++it )
@@ -276,24 +270,12 @@ void FakeESOut::createOrRecycleRealEsID( AbstractFakeESOutID *es_id_ )
         }
         else if( cand->getFmt()->i_cat == es_id->getFmt()->i_cat && cand->realESID() )
         {
-            if( b_replace_es )
-            {
-                b_preexisting = true;
-                /* We need to enforce same selection when not reused
-                   Otherwise the es will select any other compatible track
-                   and will end this in a activate/select loop when reactivating a track */
-                if( !b_select )
-                    es_out_Control( real_es_out, ES_OUT_GET_ES_STATE, cand->realESID(), &b_select );
-            }
-            else /* replace format instead of new ES */
-            {
-                realid = cand->realESID();
-                cand->setRealESID( nullptr );
-                es_out_Control( real_es_out, ES_OUT_SET_ES_FMT, realid, es_id->getFmt() );
-                delete *it;
-                recycle_candidates.erase( it );
-                break;
-            }
+            b_preexisting = true;
+            /* We need to enforce same selection when not reused
+               Otherwise the es will select any other compatible track
+               and will end this in a activate/select loop when reactivating a track */
+            es_out_Control( real_es_out, ES_OUT_GET_ES_STATE, cand->realESID(), &b_select );
+            break;
         }
     }
 
@@ -508,7 +490,7 @@ vlc_tick_t FakeESOut::fixTimestamp(vlc_tick_t ts)
              * In that case we need to enforce playlist time */
             if(!expected.b_offset_calculated)
             {
-                if(ts < VLC_TICK_FROM_SEC(1)) /* Starting 0 */
+                if(ts < CLOCK_FREQ) /* Starting 0 */
                     timestamps_offset = expected.timestamp - ts;
                 else
                     timestamps_offset = 0;
@@ -543,7 +525,7 @@ vlc_tick_t FakeESOut::applyTimestampContinuity(vlc_tick_t ts)
        synchronizationReference.second.continuous != VLC_TICK_INVALID)
     {
         vlc_tick_t continuityoffset = synchronizationReference.second.continuous -
-                                      synchronizationReference.second.segment.demux;
+                                   synchronizationReference.second.segment.demux;
 
         /* avoid triggering false roll when reference is 13 hours away */
         if(ts - synchronizationReference.second.segment.demux > halfroll / 2)

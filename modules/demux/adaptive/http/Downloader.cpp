@@ -24,13 +24,15 @@
 #include "Downloader.hpp"
 
 #include <vlc_threads.h>
-
-#include <atomic>
+#include <vlc_atomic.h>
 
 using namespace adaptive::http;
 
 Downloader::Downloader()
 {
+    vlc_mutex_init(&lock);
+    vlc_cond_init(&waitcond);
+    vlc_cond_init(&updatedcond);
     killed = false;
     thread_handle_valid = false;
     current = nullptr;
@@ -40,7 +42,8 @@ Downloader::Downloader()
 bool Downloader::start()
 {
     if(!thread_handle_valid &&
-       vlc_clone(&thread_handle, downloaderThread, static_cast<void *>(this)))
+       vlc_clone(&thread_handle, downloaderThread,
+                 static_cast<void *>(this), VLC_THREAD_PRIORITY_INPUT))
     {
         return false;
     }
@@ -50,34 +53,32 @@ bool Downloader::start()
 
 Downloader::~Downloader()
 {
-    kill();
+    vlc_mutex_lock( &lock );
+    killed = true;
+    vlc_cond_signal(&waitcond);
+    vlc_mutex_unlock( &lock );
 
     if(thread_handle_valid)
         vlc_join(thread_handle, nullptr);
+    vlc_mutex_destroy(&lock);
+    vlc_cond_destroy(&waitcond);
 }
-
-void Downloader::kill()
-{
-    vlc::threads::mutex_locker locker {lock};
-    killed = true;
-    wait_cond.signal();
-}
-
 void Downloader::schedule(HTTPChunkBufferedSource *source)
 {
-    vlc::threads::mutex_locker locker {lock};
+    vlc_mutex_lock(&lock);
     source->hold();
     chunks.push_back(source);
-    wait_cond.signal();
+    vlc_cond_signal(&waitcond);
+    vlc_mutex_unlock(&lock);
 }
 
 void Downloader::cancel(HTTPChunkBufferedSource *source)
 {
-    vlc::threads::mutex_locker locker {lock};
+    vlc_mutex_lock(&lock);
     while (current == source)
     {
         cancel_current = true;
-        updated_cond.wait(lock);
+        vlc_cond_wait(&updatedcond, &lock);
     }
 
     if(!source->isDone())
@@ -85,11 +86,11 @@ void Downloader::cancel(HTTPChunkBufferedSource *source)
         chunks.remove(source);
         source->release();
     }
+    vlc_mutex_unlock(&lock);
 }
 
 void * Downloader::downloaderThread(void *opaque)
 {
-    vlc_thread_set_name("vlc-adapt-dl");
     Downloader *instance = static_cast<Downloader *>(opaque);
     instance->Run();
     return nullptr;
@@ -97,23 +98,19 @@ void * Downloader::downloaderThread(void *opaque)
 
 void Downloader::Run()
 {
+    vlc_mutex_lock(&lock);
     while(1)
     {
-        lock.lock();
-
         while(chunks.empty() && !killed)
-            wait_cond.wait(lock);
+            vlc_cond_wait(&waitcond, &lock);
 
         if(killed)
-        {
-            lock.unlock();
             break;
-        }
 
         current = chunks.front();
-        lock.unlock();
+        vlc_mutex_unlock(&lock);
         current->bufferize(HTTPChunkSource::CHUNK_SIZE);
-        lock.lock();
+        vlc_mutex_lock(&lock);
         if(current->isDone() || cancel_current)
         {
             chunks.pop_front();
@@ -121,7 +118,7 @@ void Downloader::Run()
         }
         cancel_current = false;
         current = nullptr;
-        updated_cond.signal();
-        lock.unlock();
+        vlc_cond_signal(&updatedcond);
     }
+    vlc_mutex_unlock(&lock);
 }

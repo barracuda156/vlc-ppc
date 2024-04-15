@@ -3,6 +3,7 @@
  *  Uses the low quality "nearest neighbour" algorithm.
  *****************************************************************************
  * Copyright (C) 2003-2007 VLC authors and VideoLAN
+ * $Id: 003369effe64f373ea17623d3f4f3934bf993794 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Antoine Cellerier <dionoea @t videolan dot org>
@@ -37,31 +38,32 @@
 /****************************************************************************
  * Local prototypes
  ****************************************************************************/
-static int  OpenFilter ( filter_t * );
-VIDEO_FILTER_WRAPPER(Filter)
+static int  OpenFilter ( vlc_object_t * );
+static picture_t *Filter( filter_t *, picture_t * );
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
 vlc_module_begin ()
     set_description( N_("Video scaling filter") )
-    set_callback_video_converter( OpenFilter, 10 )
+    set_capability( "video converter", 10 )
+    set_callbacks( OpenFilter, NULL )
 vlc_module_end ()
 
 /*****************************************************************************
  * OpenFilter: probe the filter and return score
  *****************************************************************************/
-static int OpenFilter( filter_t *p_filter )
+static int OpenFilter( vlc_object_t *p_this )
 {
+    filter_t *p_filter = (filter_t*)p_this;
+
     if( ( p_filter->fmt_in.video.i_chroma != VLC_CODEC_YUVP &&
           p_filter->fmt_in.video.i_chroma != VLC_CODEC_YUVA &&
           p_filter->fmt_in.video.i_chroma != VLC_CODEC_I420 &&
           p_filter->fmt_in.video.i_chroma != VLC_CODEC_YV12 &&
           p_filter->fmt_in.video.i_chroma != VLC_CODEC_RGB32 &&
           p_filter->fmt_in.video.i_chroma != VLC_CODEC_RGBA &&
-          p_filter->fmt_in.video.i_chroma != VLC_CODEC_ARGB &&
-          p_filter->fmt_in.video.i_chroma != VLC_CODEC_BGRA &&
-          p_filter->fmt_in.video.i_chroma != VLC_CODEC_ABGR ) ||
+          p_filter->fmt_in.video.i_chroma != VLC_CODEC_ARGB ) ||
         p_filter->fmt_in.video.i_chroma != p_filter->fmt_out.video.i_chroma )
     {
         return VLC_EGENERIC;
@@ -72,8 +74,7 @@ static int OpenFilter( filter_t *p_filter )
 
 #warning Converter cannot (really) change output format.
     video_format_ScaleCropAr( &p_filter->fmt_out.video, &p_filter->fmt_in.video );
-
-    p_filter->ops = &Filter_ops;
+    p_filter->pf_video_filter = Filter;
 
     msg_Dbg( p_filter, "%ix%i -> %ix%i", p_filter->fmt_in.video.i_width,
              p_filter->fmt_in.video.i_height, p_filter->fmt_out.video.i_width,
@@ -85,15 +86,25 @@ static int OpenFilter( filter_t *p_filter )
 /****************************************************************************
  * Filter: the whole thing
  ****************************************************************************/
-static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_pic_dst )
+static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
+    picture_t *p_pic_dst;
+
+    if( !p_pic ) return NULL;
+
 #warning Converter cannot (really) change output format.
     video_format_ScaleCropAr( &p_filter->fmt_out.video, &p_filter->fmt_in.video );
 
+    /* Request output picture */
+    p_pic_dst = filter_NewPicture( p_filter );
+    if( !p_pic_dst )
+    {
+        picture_Release( p_pic );
+        return NULL;
+    }
+
     if( p_filter->fmt_in.video.i_chroma != VLC_CODEC_RGBA &&
         p_filter->fmt_in.video.i_chroma != VLC_CODEC_ARGB &&
-        p_filter->fmt_in.video.i_chroma != VLC_CODEC_BGRA &&
-        p_filter->fmt_in.video.i_chroma != VLC_CODEC_ABGR &&
         p_filter->fmt_in.video.i_chroma != VLC_CODEC_RGB32 )
     {
         for( int i_plane = 0; i_plane < p_pic_dst->i_planes; i_plane++ )
@@ -184,4 +195,8 @@ static void Filter( filter_t *p_filter, picture_t *p_pic, picture_t *p_pic_dst )
             }
         }
     }
+
+    picture_CopyProperties( p_pic_dst, p_pic );
+    picture_Release( p_pic );
+    return p_pic_dst;
 }

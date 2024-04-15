@@ -9,7 +9,6 @@ libfile_keystore_plugin_la_SOURCES = keystore/file.c \
 	keystore/list_util.c keystore/list_util.h
 if HAVE_ANDROID
 libfile_keystore_plugin_la_SOURCES += keystore/file_crypt_android.c
-libfile_keystore_plugin_la_LIBADD = libandroid_env.la
 endif
 if HAVE_WIN32
 libfile_keystore_plugin_la_SOURCES += keystore/file_crypt_win32.c
@@ -29,9 +28,9 @@ libkwallet_plugin_la_LIBADD = $(DBUS_LIBS) $(LIBM)
 
 libkeychain_plugin_la_SOURCES = keystore/keychain.m keystore/list_util.c keystore/list_util.h
 libkeychain_plugin_la_OBJCFLAGS = $(AM_OBJCFLAGS) -fobjc-arc
-libkeychain_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(keystoredir)' -Wl,-framework,Foundation -Wl,-framework,Security
+libkeychain_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(keystoredir)' -Wl,-framework,Foundation -Wl,-framework,Security -Wl,-framework,Cocoa
 
-if HAVE_DARWIN
+if HAVE_OSX
 keystore_LTLIBRARIES += libkeychain_plugin.la
 endif
 

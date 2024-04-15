@@ -29,26 +29,28 @@
 #include <vlc_opengl.h>
 
 #include "../opengl/vout_helper.h"
-#include <GL/glew.h>
 #include <GL/wglew.h>
+
+#include "common.h"
 
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
-static int Open(vlc_gl_t *, unsigned width, unsigned height,
-                const struct vlc_gl_cfg *gl_cfg);
-static void Close(vlc_gl_t *);
+static int Open(vlc_object_t *);
+static void Close(vlc_object_t *);
 
 #define HW_GPU_AFFINITY_TEXT N_("GPU affinity")
 
 vlc_module_begin()
     set_shortname("WGL")
     set_description(N_("WGL extension for OpenGL"))
+    set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VOUT)
 
-    add_integer("gpu-affinity", -1, HW_GPU_AFFINITY_TEXT, NULL)
+    add_integer("gpu-affinity", -1, HW_GPU_AFFINITY_TEXT, HW_GPU_AFFINITY_TEXT, true)
 
-    set_callback_opengl(Open, 50)
+    set_capability("opengl", 50)
+    set_callbacks(Open, Close)
     add_shortcut("wgl")
 vlc_module_end()
 
@@ -56,20 +58,27 @@ vlc_module_end()
  * Local prototypes.
  *****************************************************************************/
 
-typedef struct vout_display_sys_t
+struct vout_display_sys_t
 {
-    HWND                  hvideownd;
+    vout_display_sys_win32_t sys;
+
     HDC                   hGLDC;
     HGLRC                 hGLRC;
-    HMODULE               hOpengl;
     vlc_gl_t              *gl;
     HDC                   affinityHDC; // DC for the selected GPU
-} vout_display_sys_t;
+
+    struct
+    {
+        PFNWGLGETEXTENSIONSSTRINGEXTPROC GetExtensionsStringEXT;
+        PFNWGLGETEXTENSIONSSTRINGARBPROC GetExtensionsStringARB;
+    } exts;
+};
 
 static void          Swap(vlc_gl_t *);
 static void          *OurGetProcAddress(vlc_gl_t *, const char *);
 static int           MakeCurrent(vlc_gl_t *gl);
 static void          ReleaseCurrent(vlc_gl_t *gl);
+static const char *  GetExtensionsString(vlc_gl_t *gl);
 
 #define VLC_PFD_INITIALIZER { \
     .nSize = sizeof(PIXELFORMATDESCRIPTOR), \
@@ -88,7 +97,7 @@ static void CreateGPUAffinityDC(vlc_gl_t *gl, UINT nVidiaAffinity) {
     PIXELFORMATDESCRIPTOR pfd = VLC_PFD_INITIALIZER;
 
     /* create a temporary GL context */
-    HDC winDC = GetDC(sys->hvideownd);
+    HDC winDC = GetDC(sys->sys.hvideownd);
     SetPixelFormat(winDC, ChoosePixelFormat(winDC, &pfd), &pfd);
     HGLRC hGLRC = wglCreateContext(winDC);
     wglMakeCurrent(winDC, hGLRC);
@@ -98,7 +107,6 @@ static void CreateGPUAffinityDC(vlc_gl_t *gl, UINT nVidiaAffinity) {
     PFNWGLCREATEAFFINITYDCNVPROC fncCreateAffinityDCNV = (PFNWGLCREATEAFFINITYDCNVPROC)wglGetProcAddress("wglCreateAffinityDCNV");
 
     /* delete the temporary GL context */
-    wglMakeCurrent(NULL, NULL);
     wglDeleteContext(hGLRC);
 
     /* see if we have the extensions */
@@ -130,7 +138,7 @@ static void DestroyGPUAffinityDC(vlc_gl_t *gl) {
     PIXELFORMATDESCRIPTOR pfd = VLC_PFD_INITIALIZER;
 
     /* create a temporary GL context */
-    HDC winDC = GetDC(sys->hvideownd);
+    HDC winDC = GetDC(sys->sys.hvideownd);
     SetPixelFormat(winDC, ChoosePixelFormat(winDC, &pfd), &pfd);
     HGLRC hGLRC = wglCreateContext(winDC);
     wglMakeCurrent(winDC, hGLRC);
@@ -139,7 +147,6 @@ static void DestroyGPUAffinityDC(vlc_gl_t *gl) {
     PFNWGLDELETEDCNVPROC fncDeleteDCNV = (PFNWGLDELETEDCNVPROC)wglGetProcAddress("wglDeleteDCNV");
 
     /* delete the temporary GL context */
-    wglMakeCurrent(NULL, NULL);
     wglDeleteContext(hGLRC);
 
     /* see if we have the extensions */
@@ -149,16 +156,10 @@ static void DestroyGPUAffinityDC(vlc_gl_t *gl) {
     fncDeleteDCNV(sys->affinityHDC);
 }
 
-static int Open(vlc_gl_t *gl, unsigned width, unsigned height,
-                const struct vlc_gl_cfg *gl_cfg)
+static int Open(vlc_object_t *object)
 {
+    vlc_gl_t *gl = (vlc_gl_t *)object;
     vout_display_sys_t *sys;
-
-    if (gl_cfg->need_alpha)
-    {
-        msg_Err(gl, "Cannot support alpha yet");
-        return VLC_ENOTSUP;
-    }
 
     /* Allocate structure */
     gl->sys = sys = calloc(1, sizeof(*sys));
@@ -169,13 +170,12 @@ static int Open(vlc_gl_t *gl, unsigned width, unsigned height,
     int nVidiaAffinity = var_InheritInteger(gl, "gpu-affinity");
     if (nVidiaAffinity >= 0) CreateGPUAffinityDC(gl, nVidiaAffinity);
 
-    vlc_window_t *wnd = gl->surface;
-    if (wnd->type != VLC_WINDOW_TYPE_HWND || wnd->handle.hwnd == 0)
+    vout_window_t *wnd = gl->surface;
+    sys->sys.hvideownd = wnd->handle.hwnd;
+    if (wnd->type != VOUT_WINDOW_TYPE_HWND)
         goto error;
 
-    sys->hvideownd = wnd->handle.hwnd;
-    sys->hGLDC = GetDC(sys->hvideownd);
-    sys->hOpengl = LoadLibraryA("opengl32.dll");
+    sys->hGLDC = GetDC(wnd->handle.hwnd);
     if (sys->hGLDC == NULL)
     {
         msg_Err(gl, "Could not get the device context");
@@ -195,65 +195,51 @@ static int Open(vlc_gl_t *gl, unsigned width, unsigned height,
     }
 
     wglMakeCurrent(sys->hGLDC, sys->hGLRC);
-#if 0 /* TODO pick higher display depth if possible and the source requires it */
-    int attribsDesired[] = {
-        WGL_DRAW_TO_WINDOW_ARB, 1,
-        WGL_ACCELERATION_ARB, WGL_FULL_ACCELERATION_ARB,
-        WGL_RED_BITS_ARB, 10,
-        WGL_GREEN_BITS_ARB, 10,
-        WGL_BLUE_BITS_ARB, 10,
-        WGL_ALPHA_BITS_ARB, 2,
-        WGL_DOUBLE_BUFFER_ARB, 1,
-        0,0
-    };
-
-    UINT nMatchingFormats;
-    int index = 0;
-    PFNWGLCHOOSEPIXELFORMATARBPROC wglChoosePixelFormatARB__ = (PFNWGLCHOOSEPIXELFORMATARBPROC)wglGetProcAddress( "wglChoosePixelFormatARB" );
-    if (wglChoosePixelFormatARB__!= NULL)
-        wglChoosePixelFormatARB__(sys->hGLDC, attribsDesired, NULL, 1, &index,  &nMatchingFormats);
-#endif
 #ifdef WGL_EXT_swap_control
     /* Create an GPU Affinity DC */
     const char *extensions = (const char*)glGetString(GL_EXTENSIONS);
-    if (vlc_gl_StrHasToken(extensions, "WGL_EXT_swap_control")) {
+    if (HasExtension(extensions, "WGL_EXT_swap_control")) {
         PFNWGLSWAPINTERVALEXTPROC SwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
         if (SwapIntervalEXT)
             SwapIntervalEXT(1);
     }
 #endif
 
+#define LOAD_EXT(name, type) \
+    sys->exts.name = (type) wglGetProcAddress("wgl" #name )
+
+    LOAD_EXT(GetExtensionsStringEXT, PFNWGLGETEXTENSIONSSTRINGEXTPROC);
+    if (!sys->exts.GetExtensionsStringEXT)
+        LOAD_EXT(GetExtensionsStringARB, PFNWGLGETEXTENSIONSSTRINGARBPROC);
+
     wglMakeCurrent(sys->hGLDC, NULL);
 
-    static const struct vlc_gl_operations gl_ops =
-    {
-        .make_current = MakeCurrent,
-        .release_current = ReleaseCurrent,
-        .resize = NULL,
-        .swap = Swap,
-        .get_proc_address = OurGetProcAddress,
-        .close = Close,
-    };
-    gl->ops = &gl_ops;
+    gl->ext = VLC_GL_EXT_WGL;
+    gl->makeCurrent = MakeCurrent;
+    gl->releaseCurrent = ReleaseCurrent;
+    gl->resize = NULL;
+    gl->swap = Swap;
+    gl->getProcAddress = OurGetProcAddress;
 
-    (void) width; (void) height;
+    if (sys->exts.GetExtensionsStringEXT || sys->exts.GetExtensionsStringARB)
+        gl->wgl.getExtensionsString = GetExtensionsString;
+
     return VLC_SUCCESS;
 
 error:
-    Close(gl);
+    Close(object);
     return VLC_EGENERIC;
 }
 
-static void Close(vlc_gl_t *gl)
+static void Close(vlc_object_t *object)
 {
+    vlc_gl_t *gl = (vlc_gl_t *)object;
     vout_display_sys_t *sys = gl->sys;
 
     if (sys->hGLRC)
         wglDeleteContext(sys->hGLRC);
     if (sys->hGLDC)
-        ReleaseDC(sys->hvideownd, sys->hGLDC);
-    if (sys->hOpengl)
-        FreeLibrary(sys->hOpengl);
+        ReleaseDC(sys->sys.hvideownd, sys->hGLDC);
 
     DestroyGPUAffinityDC(gl);
 
@@ -268,46 +254,27 @@ static void Swap(vlc_gl_t *gl)
 
 static void *OurGetProcAddress(vlc_gl_t *gl, const char *name)
 {
-    vout_display_sys_t *sys = gl->sys;
-
-    /* See https://www.khronos.org/opengl/wiki/Load_OpenGL_Functions */
-    void *f= (void *)wglGetProcAddress(name);
-    if(f == 0 || (f == (void*)0x1) || (f == (void*)0x2) ||
-      (f == (void*)0x3) || (f == (void*)-1) )
-    {
-        f = (void *)GetProcAddress(sys->hOpengl, name);
-    }
-    return f;
+    VLC_UNUSED(gl);
+    return wglGetProcAddress(name);
 }
 
 static int MakeCurrent(vlc_gl_t *gl)
 {
     vout_display_sys_t *sys = gl->sys;
-
-    /* After painting with a common DC, the ReleaseDC function must be called
-     * to release the DC. Class and private DCs do not have to be released.
-     * ReleaseDC must be called from the same thread that called GetDC. The
-     * number of DCs is limited only by available memory. */
-
-    HDC winDC = GetDC(sys->hvideownd);
-    assert(winDC != NULL);
-
-    bool success = wglMakeCurrent(winDC, sys->hGLRC);
-    ReleaseDC(sys->hvideownd, winDC);
-
-    if (likely(success))
-        return VLC_SUCCESS;
-
-    /* vlc_gl_MakeCurrent should never fail. */
-
-    DWORD dw = GetLastError();
-    msg_Err(gl, "Cannot make wgl current, error %lx", dw);
-
-    return VLC_EGENERIC;
+    bool success = wglMakeCurrent(sys->hGLDC, sys->hGLRC);
+    return success ? VLC_SUCCESS : VLC_EGENERIC;
 }
 
 static void ReleaseCurrent(vlc_gl_t *gl)
 {
-    VLC_UNUSED(gl);
-    wglMakeCurrent(NULL, NULL);
+    vout_display_sys_t *sys = gl->sys;
+    wglMakeCurrent (sys->hGLDC, NULL);
+}
+
+static const char *GetExtensionsString(vlc_gl_t *gl)
+{
+    vout_display_sys_t *sys = gl->sys;
+    return sys->exts.GetExtensionsStringEXT ?
+            sys->exts.GetExtensionsStringEXT() :
+            sys->exts.GetExtensionsStringARB(sys->hGLDC);
 }

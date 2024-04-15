@@ -31,10 +31,11 @@
 static int OpenDecoder(vlc_object_t *);
 
 vlc_module_begin()
+    set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_ACODEC)
     set_description(N_("S/PDIF pass-through decoder"))
     set_capability("audio decoder", 120)
-    set_callback(OpenDecoder)
+    set_callbacks(OpenDecoder, NULL)
 vlc_module_end()
 
 static int
@@ -50,7 +51,7 @@ OpenDecoder(vlc_object_t *p_this)
 {
     decoder_t *p_dec = (decoder_t*)p_this;
 
-    switch (p_dec->fmt_in->i_codec)
+    switch (p_dec->fmt_in.i_codec)
     {
     case VLC_CODEC_MPGA:
     case VLC_CODEC_MP3:
@@ -72,9 +73,9 @@ OpenDecoder(vlc_object_t *p_this)
     }
 
     /* Set output properties */
-    p_dec->fmt_out.i_codec = p_dec->fmt_in->i_codec;
-    p_dec->fmt_out.audio = p_dec->fmt_in->audio;
-    p_dec->fmt_out.i_profile = p_dec->fmt_in->i_profile;
+    p_dec->fmt_out.i_codec = p_dec->fmt_in.i_codec;
+    p_dec->fmt_out.audio = p_dec->fmt_in.audio;
+    p_dec->fmt_out.i_profile = p_dec->fmt_in.i_profile;
     p_dec->fmt_out.audio.i_format = p_dec->fmt_out.i_codec;
 
     if (decoder_UpdateAudioFormat(p_dec))

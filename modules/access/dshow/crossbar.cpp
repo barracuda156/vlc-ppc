@@ -2,6 +2,7 @@
  * crossbar.cpp : DirectShow access module for vlc
  *****************************************************************************
  * Copyright (C) 2002, 2004, 2009 VLC authors and VideoLAN
+ * $Id: 75e93182b342ceae5153c83a08abea4139f0796e $
  *
  * Author: Damien Fouilleul <damien dot fouilleul at laposte dot net>
  *
@@ -30,12 +31,13 @@
 
 #include <vlc_common.h>
 
-#include <assert.h>
+#ifndef _MSC_VER
+    /* Work-around a bug in w32api-2.5 */
+#   define QACONTAINERFLAGS QACONTAINERFLAGS_ANOTHERSOMETHINGELSE
+#endif
 
 #include "access.h"
 #include "vlc_dshow.h"
-
-namespace dshow {
 
 // Helper function to associate a crossbar pin name with the type.
 static const char * GetPhysicalPinName(long lType)
@@ -86,8 +88,8 @@ void DeleteCrossbarRoutes( access_sys_t *p_sys )
 /*****************************************************************************
  * RouteCrossbars (Does not AddRef the returned *Pin)
  *****************************************************************************/
-static HRESULT GetCrossbarIPinAtIndex( ComPtr<IAMCrossbar> & pXbar, LONG PinIndex,
-                                       BOOL IsInputPin, ComPtr<IPin> & pin )
+static HRESULT GetCrossbarIPinAtIndex( IAMCrossbar *pXbar, LONG PinIndex,
+                                       BOOL IsInputPin, ComPtr<IPin>* ppPin )
 {
     LONG         cntInPins, cntOutPins;
     ComPtr<IPin> pP;
@@ -95,35 +97,37 @@ static HRESULT GetCrossbarIPinAtIndex( ComPtr<IAMCrossbar> & pXbar, LONG PinInde
     ComPtr<IEnumPins> pins;
     ULONG        n;
 
+    if( !pXbar || !ppPin ) return E_POINTER;
+
     if( S_OK != pXbar->get_PinCounts(&cntOutPins, &cntInPins) ) return E_FAIL;
 
     LONG TrueIndex = IsInputPin ? PinIndex : PinIndex + cntInPins;
 
-    if( pXbar.As(&pFilter) == S_OK )
+    if( pXbar->QueryInterface(IID_IBaseFilter, (void **)pFilter.GetAddressOf()) == S_OK )
     {
-        if( SUCCEEDED(pFilter->EnumPins(&pins)) )
+        if( SUCCEEDED(pFilter->EnumPins(pins.GetAddressOf())) )
         {
             LONG i = 0;
-            while( pins->Next(1, &pP, &n) == S_OK )
+            while( pins->Next(1, pP.ReleaseAndGetAddressOf(), &n) == S_OK )
             {
                 if( i == TrueIndex )
                 {
-                    pin = pP;
-                    return S_OK;
+                    *ppPin = pP;
+                    break;
                 }
                 i++;
             }
         }
     }
 
-    return E_FAIL;
+    return *ppPin ? S_OK : E_FAIL;
 }
 
 /*****************************************************************************
  * GetCrossbarIndexFromIPin: Find corresponding index of an IPin on a crossbar
  *****************************************************************************/
-static HRESULT GetCrossbarIndexFromIPin( ComPtr<IAMCrossbar> & pXbar, LONG * PinIndex,
-                                         BOOL IsInputPin, ComPtr<IPin> & pPin )
+static HRESULT GetCrossbarIndexFromIPin( IAMCrossbar * pXbar, LONG * PinIndex,
+                                         BOOL IsInputPin, IPin * pPin )
 {
     LONG         cntInPins, cntOutPins;
     ComPtr<IPin> pP;
@@ -132,20 +136,21 @@ static HRESULT GetCrossbarIndexFromIPin( ComPtr<IAMCrossbar> & pXbar, LONG * Pin
     ULONG        n;
     BOOL         fOK = FALSE;
 
-    assert(!PinIndex);
+    if(!pXbar || !PinIndex || !pPin )
+        return E_POINTER;
 
     if( S_OK != pXbar->get_PinCounts(&cntOutPins, &cntInPins) )
         return E_FAIL;
 
-    if( pXbar.As(&pFilter) == S_OK )
+    if( pXbar->QueryInterface(IID_IBaseFilter, (void **)pFilter.GetAddressOf()) == S_OK )
     {
         if( SUCCEEDED(pFilter->EnumPins(&pins)) )
         {
             LONG i=0;
 
-            while( pins->Next(1, &pP, &n) == S_OK )
+            while( pins->Next(1, pP.ReleaseAndGetAddressOf(), &n) == S_OK )
             {
-                if( pPin.Get() == pP.Get() )
+                if( pPin == pP.Get() )
                 {
                     *PinIndex = IsInputPin ? i : i - cntInPins;
                     fOK = TRUE;
@@ -163,12 +168,12 @@ static HRESULT GetCrossbarIndexFromIPin( ComPtr<IAMCrossbar> & pXbar, LONG * Pin
  * FindCrossbarRoutes
  *****************************************************************************/
 HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
-                            ComPtr<IPin> & p_input_pin, LONG physicalType, int depth )
+                            IPin *p_input_pin, LONG physicalType, int depth )
 {
     HRESULT result = S_FALSE;
 
     ComPtr<IPin> p_output_pin;
-    if( FAILED(p_input_pin->ConnectedTo(&p_output_pin)) ) return S_FALSE;
+    if( FAILED(p_input_pin->ConnectedTo(p_output_pin.GetAddressOf())) ) return S_FALSE;
 
     // It is connected, so now find out if the filter supports IAMCrossbar
     PIN_INFO pinInfo;
@@ -179,7 +184,8 @@ HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
     }
 
     ComPtr<IAMCrossbar> pXbar;
-    if( FAILED(pinInfo.pFilter->QueryInterface(IID_PPV_ARGS(&pXbar))) )
+    if( FAILED(pinInfo.pFilter->QueryInterface(IID_IAMCrossbar,
+                                               (void **)pXbar.GetAddressOf())) )
     {
         pinInfo.pFilter->Release();
         return S_FALSE;
@@ -195,8 +201,8 @@ HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
     LONG inputPinIndexRelated, outputPinIndexRelated;
     LONG inputPinPhysicalType = 0, outputPinPhysicalType;
     LONG inputPinIndex = 0, outputPinIndex;
-    if( FAILED(GetCrossbarIndexFromIPin( pXbar, &outputPinIndex,
-                                         FALSE, p_output_pin )) ||
+    if( FAILED(GetCrossbarIndexFromIPin( pXbar.Get(), &outputPinIndex,
+                                         FALSE, p_output_pin.Get() )) ||
         FAILED(pXbar->get_CrossbarPinInfo( FALSE, outputPinIndex,
                                            &outputPinIndexRelated,
                                            &outputPinPhysicalType )) )
@@ -252,10 +258,10 @@ HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
 
 
         ComPtr<IPin> pPin;
-        if( FAILED(GetCrossbarIPinAtIndex( pXbar, inputPinIndex,
-                                           TRUE, pPin ) ) ) continue;
+        if( FAILED(GetCrossbarIPinAtIndex( pXbar.Get(), inputPinIndex,
+                                           TRUE, &pPin ) ) ) continue;
 
-        result = FindCrossbarRoutes( p_this, p_sys, pPin,
+        result = FindCrossbarRoutes( p_this, p_sys, pPin.Get(),
                                      physicalType, depth+1 );
 
         if( S_OK == result || (S_FALSE == result &&
@@ -281,5 +287,3 @@ HRESULT FindCrossbarRoutes( vlc_object_t *p_this, access_sys_t *p_sys,
 
     return result;
 }
-
-} // namespace

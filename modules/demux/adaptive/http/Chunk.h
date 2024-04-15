@@ -25,15 +25,14 @@
 #ifndef CHUNK_H_
 #define CHUNK_H_
 
-#include <cstdint>
-#include <string>
-
 #include "BytesRange.hpp"
 #include "ConnectionParams.hpp"
 #include "../ID.hpp"
-#include <vlc_cxx_helpers.hpp>
+#include <vector>
+#include <string>
+#include <stdint.h>
 
-typedef struct vlc_frame_t block_t;
+typedef struct block_t block_t;
 
 namespace adaptive
 {
@@ -55,7 +54,7 @@ namespace adaptive
         class ChunkInterface
         {
             public:
-                virtual ~ChunkInterface() {}
+                virtual ~ChunkInterface() = default;
                 virtual std::string getContentType  () const = 0;
                 virtual RequestStatus getRequestStatus() const = 0;
 
@@ -140,7 +139,7 @@ namespace adaptive
                 void                setIdentifier(const std::string &, const BytesRange &);
                 AbstractConnection    *connection;
                 AbstractConnectionManager *connManager;
-                mutable vlc::threads::mutex lock;
+                mutable vlc_mutex_t lock;
                 size_t              consumed; /* read pointer */
                 bool                prepared;
                 bool                eof;
@@ -183,7 +182,7 @@ namespace adaptive
                 size_t              buffered; /* read cache size */
                 bool                done;
                 bool                eof;
-                vlc::threads::condition_variable avail;
+                vlc_cond_t          avail;
                 bool                held;
         };
 

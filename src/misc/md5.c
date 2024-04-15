@@ -40,10 +40,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #include <vlc_common.h>
-#include <vlc_hash.h>
+#include <vlc_md5.h>
 
 typedef uint32_t u32;
 typedef uint8_t byte;
@@ -334,20 +333,17 @@ md5_read( void *context )
 }
 #endif
 
-/* Public API */
-void vlc_hash_md5_Init(vlc_hash_md5_t *ctx)
+void InitMD5( struct md5_s *h )
 {
-    md5_init(&ctx->priv);
+    md5_init( h );
 }
 
-void vlc_hash_md5_Update(vlc_hash_md5_t *ctx, const void *data, size_t length)
+void AddMD5( struct md5_s *restrict h, const void *data, size_t len )
 {
-    md5_write(&ctx->priv, data, length);
+    md5_write( h, data, len );
 }
 
-void vlc_hash_md5_Finish(vlc_hash_md5_t *ctx, void *output, size_t size)
+void EndMD5( struct md5_s *h )
 {
-    assert(size >= VLC_HASH_MD5_DIGEST_SIZE);
-    md5_final(&ctx->priv);
-    memcpy(output, ctx->priv.buf, VLC_HASH_MD5_DIGEST_SIZE);
+    md5_final( h );
 }

@@ -43,7 +43,6 @@
 static const int soxr_resampler_quality_vlclist[] = { 0, 1, 2, 3, 4 };
 static const char *const soxr_resampler_quality_vlctext[] =
 {
-     /* Note: Skip translation - too technical */
      "Quick cubic interpolation",
      "Low 16-bit with larger roll-off",
      "Medium 16-bit with medium roll-off",
@@ -62,25 +61,26 @@ static const soxr_datatype_t soxr_resampler_quality_list[] =
 
 static int OpenConverter( vlc_object_t * );
 static int OpenResampler( vlc_object_t * );
-static void Close( filter_t * );
+static void Close( vlc_object_t * );
 
 vlc_module_begin ()
     set_shortname( N_("SoX Resampler") )
+    set_category( CAT_AUDIO )
     set_subcategory( SUBCAT_AUDIO_RESAMPLER )
     add_integer( "soxr-resampler-quality", 2,
-                SOXR_QUALITY_TEXT, NULL )
+                SOXR_QUALITY_TEXT, NULL, true )
         change_integer_list( soxr_resampler_quality_vlclist,
                              soxr_resampler_quality_vlctext )
-    set_capability ( "audio converter", 51 )
-    set_callback( OpenConverter )
+    set_capability ( "audio converter", 0 )
+    set_callbacks( OpenConverter, Close )
 
     add_submodule()
-    set_capability( "audio resampler", 51 )
-    set_callback( OpenResampler )
+    set_capability( "audio resampler", 0 )
+    set_callbacks( OpenResampler, Close )
     add_shortcut( "soxr" )
 vlc_module_end ()
 
-typedef struct
+struct filter_sys_t
 {
     soxr_t  soxr;
     soxr_t  vr_soxr;
@@ -88,7 +88,7 @@ typedef struct
     double  f_fixed_ratio;
     size_t  i_last_olen;
     vlc_tick_t i_last_pts;
-} filter_sys_t;
+};
 
 static block_t *Resample( filter_t *, block_t * );
 static block_t *Drain( filter_t * );
@@ -131,7 +131,7 @@ Open( vlc_object_t *p_obj, bool b_change_ratio )
      || !SoXR_GetFormat( p_filter->fmt_out.audio.i_format, &i_otype ) )
         return VLC_EGENERIC;
 
-    filter_sys_t *p_sys = calloc( 1, sizeof( filter_sys_t ) );
+    filter_sys_t *p_sys = calloc( 1, sizeof( struct filter_sys_t ) );
     if( unlikely( p_sys == NULL ) )
         return VLC_ENOMEM;
 
@@ -188,15 +188,10 @@ Open( vlc_object_t *p_obj, bool b_change_ratio )
              (const char *)&p_filter->fmt_out.audio.i_format,
              p_filter->fmt_out.audio.i_rate );
 
-    static const struct vlc_filter_operations filter_ops =
-    {
-        .filter_audio = Resample,
-        .drain_audio = Drain,
-        .flush = Flush,
-        .close = Close,
-    };
-    p_filter->ops = &filter_ops;
     p_filter->p_sys = p_sys;
+    p_filter->pf_audio_filter = Resample;
+    p_filter->pf_flush = Flush;
+    p_filter->pf_audio_drain = Drain;
     return VLC_SUCCESS;
 }
 
@@ -224,8 +219,9 @@ OpenConverter( vlc_object_t *p_obj )
 }
 
 static void
-Close( filter_t *p_filter )
+Close( vlc_object_t *p_obj )
 {
+    filter_t *p_filter = (filter_t *)p_obj;
     filter_sys_t *p_sys = p_filter->p_sys;
 
     soxr_delete( p_sys->soxr );
@@ -271,7 +267,7 @@ SoXR_Resample( filter_t *p_filter, soxr_t soxr, block_t *p_in, size_t i_olen )
 
     p_out->i_buffer = i_odone * i_oframesize;
     p_out->i_nb_samples = i_odone;
-    p_out->i_length = vlc_tick_from_samples(i_odone, p_filter->fmt_out.audio.i_rate);
+    p_out->i_length = i_odone * CLOCK_FREQ / p_filter->fmt_out.audio.i_rate;
 
     if( p_in )
     {

@@ -4,6 +4,7 @@
  *   (http://liba52.sf.net/).
  *****************************************************************************
  * Copyright (C) 2001-2009 VLC authors and VideoLAN
+ * $Id: 4e221286d744b3bdf3d68ad373fa7a1c2630ab52 $
  *
  * Authors: Gildas Bazin <gbazin@videolan.org>
  *          Christophe Massiot <massiot@via.ecp.fr>
@@ -54,7 +55,7 @@
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
-typedef struct
+struct decoder_sys_t
 {
     a52_state_t     *p_liba52; /* liba52 internal structure */
     bool            b_dynrng; /* see below */
@@ -64,7 +65,7 @@ typedef struct
 
     uint8_t         pi_chan_table[AOUT_CHAN_MAX]; /* channel reordering */
     bool            b_synced;
-} decoder_sys_t;
+};
 
 #define DYNRNG_TEXT N_("A/52 dynamic range compression")
 #define DYNRNG_LONGTEXT N_( \
@@ -77,8 +78,9 @@ typedef struct
 vlc_module_begin ()
     set_shortname( "A/52" )
     set_description( N_("ATSC A/52 (AC-3) audio decoder") )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACODEC )
-    add_bool( "a52-dynrng", true, DYNRNG_TEXT, DYNRNG_LONGTEXT )
+    add_bool( "a52-dynrng", true, DYNRNG_TEXT, DYNRNG_LONGTEXT, false )
     set_capability( "audio decoder", 60 )
     set_callbacks( Open, Close )
 vlc_module_end ()
@@ -274,11 +276,11 @@ static int Open( vlc_object_t *p_this )
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys;
 
-    if( p_dec->fmt_in->i_codec != VLC_CODEC_A52
-     || p_dec->fmt_in->audio.i_rate == 0
-     || p_dec->fmt_in->audio.i_physical_channels == 0
-     || p_dec->fmt_in->audio.i_bytes_per_frame == 0
-     || p_dec->fmt_in->audio.i_frame_length == 0 )
+    if( p_dec->fmt_in.i_codec != VLC_CODEC_A52
+     || p_dec->fmt_in.audio.i_rate == 0
+     || p_dec->fmt_in.audio.i_physical_channels == 0
+     || p_dec->fmt_in.audio.i_bytes_per_frame == 0
+     || p_dec->fmt_in.audio.i_frame_length == 0 )
         return VLC_EGENERIC;
 
     /* Allocate the memory needed to store the module's structure */
@@ -289,8 +291,8 @@ static int Open( vlc_object_t *p_this )
     p_sys->b_dynrng = var_InheritBool( p_this, "a52-dynrng" );
     p_sys->b_dontwarn = 0;
 
-    p_sys->i_nb_channels = aout_FormatNbChannels( &p_dec->fmt_in->audio );
-    if( channels_vlc2a52( &p_dec->fmt_in->audio, &p_sys->i_flags )
+    p_sys->i_nb_channels = aout_FormatNbChannels( &p_dec->fmt_in.audio );
+    if( channels_vlc2a52( &p_dec->fmt_in.audio, &p_sys->i_flags )
         != VLC_SUCCESS )
     {
         msg_Warn( p_this, "unknown sample format!" );
@@ -314,10 +316,10 @@ static int Open( vlc_object_t *p_this )
     };
 
     aout_CheckChannelReorder( pi_channels_in, NULL,
-                              p_dec->fmt_in->audio.i_physical_channels,
+                              p_dec->fmt_in.audio.i_physical_channels,
                               p_sys->pi_chan_table );
 
-    p_dec->fmt_out.audio = p_dec->fmt_in->audio;
+    p_dec->fmt_out.audio = p_dec->fmt_in.audio;
 #ifdef LIBA52_FIXED
     p_dec->fmt_out.audio.i_format = VLC_CODEC_S32N;
 #else

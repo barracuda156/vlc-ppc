@@ -123,8 +123,8 @@ function callback_error(path,url,msg)
 <h1>Error loading ]]..url..[[</h1><pre>]]..(config.no_error_detail and "Remove configuration option `no_error_detail' on the server to get more information."
 or vlc.strings.convert_xml_special_chars(tostring(msg)))..[[</pre>
 <p>
-<a href="https://www.videolan.org/">VideoLAN</a><br/>
-<a href="https://www.lua.org/manual/5.1/">Lua 5.1 Reference Manual</a>
+<a href="http://www.videolan.org/">VideoLAN</a><br/>
+<a href="http://www.lua.org/manual/5.1/">Lua 5.1 Reference Manual</a>
 </p>
 </body>
 </html>]]
@@ -161,13 +161,12 @@ function callback_art(data, request, args)
                 num = num()
             end
         end
-        local pl_item
-        if num then
-            pl_item = vlc.playlist.get(num)
+        local item
+        if num == nil then
+            item = vlc.input.item()
         else
-            pl_item = vlc.playlist.current_item()
+            item = vlc.playlist.get(num).item
         end
-        local item = pl_item.item
         local metas = item:metas()
         local filename = vlc.strings.make_path(metas["artwork_url"])
         local size = vlc.net.stat(filename).size

@@ -23,7 +23,6 @@
 #endif
 
 #include <assert.h>
-#include <errno.h>
 
 #include <vlc_common.h>
 #include <vlc_network.h>
@@ -274,7 +273,7 @@ char *config_GetUserDir (vlc_userdir_t type)
 {
     switch (type)
     {
-        case VLC_USERDATA_DIR:
+        case VLC_DATA_DIR:
             return config_GetHomeDir(".share",
                 "/sdcard/Android/data/org.videolan.vlc");
         case VLC_CACHE_DIR:
@@ -301,32 +300,6 @@ char *config_GetUserDir (vlc_userdir_t type)
         }
     }
     return NULL;
-}
-
-char *config_GetSysPath(vlc_sysdir_t type, const char *filename)
-{
-    char *dir = NULL;
-
-    switch (type)
-    {
-        case VLC_SYSDATA_DIR:
-            dir = strdup("/system/usr/share");
-            break;
-        case VLC_LIB_DIR:
-            dir = config_GetLibDir();
-            break;
-        default:
-            break;
-    }
-
-    if (filename == NULL || dir == NULL)
-        return dir;
-
-    char *path;
-    if (unlikely(asprintf(&path, "%s/%s", dir, filename) == -1))
-        path = NULL;
-    free(dir);
-    return path;
 }
 
 /**

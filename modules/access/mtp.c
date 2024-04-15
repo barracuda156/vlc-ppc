@@ -39,6 +39,7 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+#include <vlc_input.h>
 #include <vlc_access.h>
 #include <vlc_dialog.h>
 #include <vlc_fs.h>
@@ -55,6 +56,7 @@ static void Close( vlc_object_t * );
 vlc_module_begin()
     set_description( N_("MTP input") )
     set_shortname( N_("MTP") )
+    set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_ACCESS )
     set_capability( "access", 0 )
     add_shortcut( "mtp" )
@@ -81,10 +83,6 @@ static int Open( vlc_object_t *p_this )
     int i_track_id;
     LIBMTP_raw_device_t *p_rawdevices;
     int i_numrawdevices;
-
-    int *fdp = vlc_obj_malloc( p_this, sizeof (*fdp) );
-    if( unlikely(fdp == NULL) )
-        return VLC_ENOMEM;
 
     if( sscanf( p_access->psz_location, "%"SCNu32":%"SCNu8":%"SCNu16":%d",
                 &i_bus, &i_dev, &i_product_id, &i_track_id ) != 4 )
@@ -132,8 +130,7 @@ static int Open( vlc_object_t *p_this )
         return VLC_EGENERIC;
     }
 
-    *fdp = fd;
-    p_access->p_sys = fdp;
+    p_access->p_sys = (void *)(intptr_t)fd;
     ACCESS_SET_CALLBACKS( Read, NULL, Control, Seek );
     return VLC_SUCCESS;
 }
@@ -144,9 +141,9 @@ static int Open( vlc_object_t *p_this )
 static void Close( vlc_object_t * p_this )
 {
     stream_t *p_access = ( stream_t* )p_this;
-    int *fdp = p_access->p_sys;
+    int fd = (intptr_t)p_access->p_sys;
 
-    vlc_close ( *fdp );
+    vlc_close ( fd );
 }
 
 /*****************************************************************************
@@ -154,7 +151,7 @@ static void Close( vlc_object_t * p_this )
  *****************************************************************************/
 static ssize_t Read( stream_t *p_access, void *p_buffer, size_t i_len )
 {
-    int *fdp = p_access->p_sys, fd = *fdp;
+    int fd = (intptr_t)p_access->p_sys;
     ssize_t i_ret = read( fd, p_buffer, i_len );
 
     if( i_ret < 0 )
@@ -183,7 +180,7 @@ static ssize_t Read( stream_t *p_access, void *p_buffer, size_t i_len )
  *****************************************************************************/
 static int Seek( stream_t *p_access, uint64_t i_pos )
 {
-    int *fdp = p_access->p_sys, fd = *fdp;
+    int fd = (intptr_t)p_access->p_sys;
 
     if (lseek( fd, i_pos, SEEK_SET ) == (off_t)-1)
         return VLC_EGENERIC;
@@ -195,8 +192,9 @@ static int Seek( stream_t *p_access, uint64_t i_pos )
  *****************************************************************************/
 static int Control( stream_t *p_access, int i_query, va_list args )
 {
-    int *fdp = p_access->p_sys, fd = *fdp;
+    int fd = (intptr_t)p_access->p_sys;
     bool   *pb_bool;
+    int64_t      *pi_64;
 
     switch( i_query )
     {
@@ -226,8 +224,9 @@ static int Control( stream_t *p_access, int i_query, va_list args )
         }
 
         case STREAM_GET_PTS_DELAY:
-            *va_arg( args, vlc_tick_t * ) =
-                VLC_TICK_FROM_MS(var_InheritInteger( p_access, "file-caching" ));
+            pi_64 = va_arg( args, int64_t * );
+            *pi_64 = INT64_C(1000)
+                   * var_InheritInteger( p_access, "file-caching" );
             break;
 
         case STREAM_SET_PAUSE_STATE:

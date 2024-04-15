@@ -1,6 +1,7 @@
 /*
  * core.c - libvlc smoke test
  *
+ * $Id: b7fe646cd38e78f30ac4ce7cfb1918a711a5a9a0 $
  */
 
 /**********************************************************************
@@ -28,7 +29,7 @@ static void test_core (const char ** argv, int argc)
 {
     libvlc_instance_t *vlc;
 
-    test_log ("Testing core\n");
+    log ("Testing core\n");
 
     vlc = libvlc_new (argc, argv);
     assert (vlc != NULL);
@@ -56,7 +57,7 @@ static void test_audiovideofilterlists (const char ** argv, int argc)
 {
     libvlc_instance_t *vlc;
 
-    test_log ("Testing libvlc_(audio|video)_filter_list_get()\n");
+    log ("Testing libvlc_(audio|video)_filter_list_get()\n");
 
     vlc = libvlc_new (argc, argv);
     assert (vlc != NULL);
@@ -77,7 +78,21 @@ static void test_audio_output (void)
 
     puts ("Audio outputs:");
     for (const libvlc_audio_output_t *o = mods; o != NULL; o = o->p_next)
+    {
+        libvlc_audio_output_device_t *devs;
+
         printf(" %s: %s\n", o->psz_name, o->psz_description);
+
+        devs = libvlc_audio_output_device_list_get (vlc, o->psz_name);
+        if (devs == NULL)
+            continue;
+        for (const libvlc_audio_output_device_t *d = devs;
+             d != NULL;
+             d = d->p_next)
+             printf("  %s: %s\n", d->psz_device, d->psz_description);
+
+        libvlc_audio_output_device_list_release (devs);
+    }
     libvlc_audio_output_list_release (mods);
     libvlc_release (vlc);
 }

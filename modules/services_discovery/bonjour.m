@@ -45,10 +45,10 @@ static void CloseRD( vlc_object_t * );
 VLC_SD_PROBE_HELPER( "Bonjour", N_("Bonjour Network Discovery"), SD_CAT_LAN )
 VLC_RD_PROBE_HELPER( "Bonjour_renderer", "Bonjour Renderer Discovery" )
 
-typedef struct services_discovery_sys_t
+struct services_discovery_sys_t
 {
     CFTypeRef _Nullable discoveryController;
-} services_discovery_sys_t;
+};
 
 struct vlc_renderer_discovery_sys
 {
@@ -61,6 +61,7 @@ struct vlc_renderer_discovery_sys
 vlc_module_begin()
     set_shortname( "Bonjour" )
     set_description( N_( "Bonjour Network Discovery" ) )
+    set_category( CAT_PLAYLIST )
     set_subcategory( SUBCAT_PLAYLIST_SD )
     set_capability( "services_discovery", 0 )
     set_callbacks( OpenSD, CloseSD )
@@ -68,6 +69,7 @@ vlc_module_begin()
     VLC_SD_PROBE_SUBMODULE
     add_submodule() \
         set_description( N_( "Bonjour Renderer Discovery" ) )
+        set_category( CAT_SOUT )
         set_subcategory( SUBCAT_SOUT_RENDERER )
         set_capability( "renderer_discovery", 0 )
         set_callbacks( OpenRD, CloseRD )
@@ -139,7 +141,7 @@ static NSString * ipAddressAsStringForData(NSData * data)
     ip_socket_address *socketAddress = (ip_socket_address *)[data bytes];
 
     if (socketAddress) {
-        const char *addressStr = NULL;
+        const char *addressStr;
         if (socketAddress->sa.sa_family == AF_INET) {
             addressStr = inet_ntop(socketAddress->sa.sa_family,
                                            (void *)&(socketAddress->ipv4.sin_addr),
@@ -151,8 +153,6 @@ static NSString * ipAddressAsStringForData(NSData * data)
                                            addressBuffer,
                                            sizeof(addressBuffer));
         }
-        else vlc_assert_unreachable();
-
         if (addressStr != NULL) {
             returnValue = [NSString stringWithUTF8String:addressStr];
         }
@@ -480,9 +480,9 @@ static void CloseSD(vlc_object_t *p_this)
 static int OpenRD(vlc_object_t *p_this)
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
-    struct vlc_renderer_discovery_sys *p_sys = NULL;
+    vlc_renderer_discovery_sys *p_sys = NULL;
 
-    p_rd->p_sys = p_sys = calloc(1, sizeof(struct vlc_renderer_discovery_sys));
+    p_rd->p_sys = p_sys = calloc(1, sizeof(vlc_renderer_discovery_sys));
     if (!p_sys) {
         return VLC_ENOMEM;
     }
@@ -499,7 +499,7 @@ static int OpenRD(vlc_object_t *p_this)
 static void CloseRD(vlc_object_t *p_this)
 {
     vlc_renderer_discovery_t *p_rd = (vlc_renderer_discovery_t *)p_this;
-    struct vlc_renderer_discovery_sys *p_sys = p_rd->p_sys;
+    vlc_renderer_discovery_sys *p_sys = p_rd->p_sys;
 
     VLCNetServiceDiscoveryController *discoveryController = (__bridge VLCNetServiceDiscoveryController *)(p_sys->discoveryController);
     [discoveryController stopDiscovery];

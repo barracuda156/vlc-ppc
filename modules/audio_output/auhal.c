@@ -35,6 +35,20 @@
 
 #include <IOKit/audio/IOAudioTypes.h>
 
+#include <AvailabilityMacros.h>
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1080
+#define kAudioObjectPropertyScopeOutput kAudioDevicePropertyScopeOutput
+#endif
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101000
+#define AudioFormatID UInt32
+#endif
+
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 101100
+#define kAudioFormatEnhancedAC3 'ec-3'
+#endif
+
 #pragma mark -
 #pragma mark local prototypes & module descriptor
 

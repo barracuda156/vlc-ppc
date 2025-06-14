@@ -25,10 +25,8 @@
 # include "config.h"
 #endif
 
-#include <algorithm>
-#include <iostream>
+#include <stdio.h>
 #include <map>
-#include <set>
 #include <string>
 #include <sstream>
 
@@ -36,6 +34,7 @@
 #include <vlc_common.h>
 #include <vlc_modules.h>
 #include <vlc_plugin.h>
+#include "../src/modules/modules.h" /* evil hack */
 
 typedef std::pair<std::string, std::string> mpair;
 typedef std::multimap<std::string, std::string> mumap;
@@ -45,54 +44,55 @@ typedef std::pair<int, std::string> mcpair;
 typedef std::multimap<int, std::string> mcmap;
 mcmap categories;
 
-std::set<std::string> mnames;
-
-static void ReplaceChars(std::string& str)
+static void ReplaceChars(char *str)
 {
-    std::replace(str.begin(), str.end(), ':', ';');
-    std::replace(str.begin(), str.end(), '"', '\'');
-    std::replace(str.begin(), str.end(), '`', '\'');
+    if (str) {
+        char *parser;
+        while ((parser = strchr(str, ':'))) *parser=';' ;
+        while ((parser = strchr(str, '"'))) *parser='\'' ;
+        while ((parser = strchr(str, '`'))) *parser='\'' ;
+    }
 }
 
 static void PrintOption(const module_config_t *item, const std::string &opt,
                         const std::string &excl, const std::string &args)
 {
-    std::string longtext = item->psz_longtext ? item->psz_longtext : "";
-    std::string text = item->psz_text ? item->psz_text : "";
+    char *longtext = item->psz_longtext;
+    char *text = item->psz_text;
     char i_short = item->i_short;
     ReplaceChars(longtext);
     ReplaceChars(text);
 
-    if (!longtext.length() || longtext.find('\n') != std::string::npos || longtext.find('(') != std::string::npos)
+    if (!longtext || strchr(longtext, '\n') || strchr(longtext, '('))
         longtext = text;
 
-    std::cout << "  \"";
+    printf("  \"");
 
     const char *args_c = args.empty() ? "" : "=";
     if (i_short) {
-        std::cout << "(-" << i_short;
+        printf("(-%c", i_short);
 
         if (!excl.empty())
-            std::cout << excl;
+            printf("%s", excl.c_str());
 
-        std::cout << ")--" << opt << args_c << "[" << text << "]";
+        printf(")--%s%s[%s]", opt.c_str(), args_c, text);
 
         if (!args.empty())
-            std::cout << ":" << longtext << ":" << args;
+            printf(":%s:%s", longtext, args.c_str());
 
-        std::cout << "\"\\\n  \"(--" << opt << excl << ")-" << i_short;
+        printf("\"\\\n  \"(--%s%s)-%c", opt.c_str(), excl.c_str(), i_short);
     } else {
         if (!excl.empty())
-            std::cout << "(" << excl << ")";
-        std::cout << "--" << opt;
+            printf("(%s)", excl.c_str());
+        printf("--%s", opt.c_str());
         if (!excl.empty())
-            std::cout << args_c;
+            printf("%s", args_c);
     }
 
-    std::cout << "[" << text << "]";
+    printf("[%s]", text);
     if (!args.empty())
-        std::cout << ":" << longtext << ":" << args;
-    std::cout << "\"\\\n";
+        printf( ":%s:%s", longtext, args.c_str());
+    puts( "\"\\");
 }
 
 static void ParseOption(const module_config_t *item)
@@ -108,7 +108,7 @@ static void ParseOption(const module_config_t *item)
     switch(item->i_type)
     {
     case CONFIG_ITEM_MODULE:
-        range_mod = capabilities.equal_range(item->psz_type ? item->psz_type : "");
+        range_mod = capabilities.equal_range(item->psz_type);
         args = "(" + (*range_mod.first).second;
         while (range_mod.first++ != range_mod.second)
             args += " " + range_mod.first->second;
@@ -192,47 +192,31 @@ static void ParseOption(const module_config_t *item)
 
 static void PrintModule(const module_t *mod)
 {
-    if (module_is_main(mod))
+    const char *name = mod->pp_shortcuts[0];
+    if (!strcmp(name, "main"))
         return;
 
-    const char *name = module_get_object(mod);
-    const char *cap = module_get_capability(mod);
+    if (mod->psz_capability)
+        capabilities.insert(mpair(mod->psz_capability, name));
 
-    if (strcmp(cap, "none"))
-        capabilities.insert(mpair(cap, name));
-
-    unsigned int cfg_size = 0;
-    module_config_t *cfg_list = module_config_get(mod, &cfg_size);
-
-    for (unsigned int j = 0; j < cfg_size; ++j)
-    {
-        const module_config_t *cfg = cfg_list + j;
+    module_config_t *max = &mod->p_config[mod->i_config_items];
+    for (module_config_t *cfg = mod->p_config; cfg && cfg < max; cfg++)
         if (cfg->i_type == CONFIG_SUBCATEGORY)
             categories.insert(mcpair(cfg->value.i, name));
-    }
 
-    module_config_free(cfg_list);
-
-    if (mnames.find(name) == mnames.end())
-    {
-        std::cout << name << " ";
-        mnames.insert(name);
-    }
+    if (!mod->parent)
+        printf("%s ", name);
 }
 
 static void ParseModule(const module_t *mod)
 {
-    unsigned int cfg_size = 0;
-    module_config_t *cfg_list = module_config_get(mod, &cfg_size);
+    if (mod->parent)
+        return;
 
-    for (unsigned int j = 0; j < cfg_size; ++j)
-    {
-        const module_config_t *cfg = cfg_list + j;
+    module_config_t *max = mod->p_config + mod->confsize;
+    for (module_config_t *cfg = mod->p_config; cfg && cfg < max; cfg++)
         if (CONFIG_ITEM(cfg->i_type))
             ParseOption(cfg);
-    }
-
-    module_config_free(cfg_list);
 }
 
 int main(int argc, const char **argv)
@@ -246,48 +230,45 @@ int main(int argc, const char **argv)
 
     mod_list = module_list_get(&modules);
     if (!mod_list || modules == 0)
-    {
-        libvlc_release(libvlc);
         return 2;
-    }
 
     module_t **max = &mod_list[modules];
 
-    std::cout << "#compdef vlc cvlc rvlc svlc mvlc qvlc nvlc\n"
+    puts("#compdef vlc cvlc rvlc svlc mvlc qvlc nvlc\n"
            "#This file is autogenerated by zsh.cpp\n"
            "typeset -A opt_args\n"
            "local context state line ret=1\n"
-           "local modules\n\n";
+           "local modules\n");
 
-    std::cout << "vlc_modules=\"";
+    printf("vlc_modules=\"");
     for (module_t **mod = mod_list; mod < max; mod++)
         PrintModule(*mod);
-    std::cout << "\"\n\n";
+    puts("\"\n");
 
-    std::cout << "_arguments -S -s \\\n";
+    puts("_arguments -S -s \\");
     for (module_t **mod = mod_list; mod < max; mod++)
         ParseModule(*mod);
-    std::cout << "  \"(--module)-p[print help on module]:print help on module:($vlc_modules)\"\\\n";
-    std::cout << "  \"(-p)--module[print help on module]:print help on module:($vlc_modules)\"\\\n";
-    std::cout << "  \"(--help)-h[print help]\"\\\n";
-    std::cout << "  \"(-h)--help[print help]\"\\\n";
-    std::cout << "  \"(--longhelp)-H[print detailed help]\"\\\n";
-    std::cout << "  \"(-H)--longhelp[print detailed help]\"\\\n";
-    std::cout << "  \"(--list)-l[print a list of available modules]\"\\\n";
-    std::cout << "  \"(-l)--list[print a list of available modules]\"\\\n";
-    std::cout << "  \"--reset-config[reset the current config to the default values]\"\\\n";
-    std::cout << "  \"--config[use alternate config file]\"\\\n";
-    std::cout << "  \"--reset-plugins-cache[resets the current plugins cache]\"\\\n";
-    std::cout << "  \"--version[print version information]\"\\\n";
-    std::cout << "  \"*:Playlist item:->mrl\" && ret=0\n\n";
+    puts("  \"(--module)-p[print help on module]:print help on module:($vlc_modules)\"\\");
+    puts("  \"(-p)--module[print help on module]:print help on module:($vlc_modules)\"\\");
+    puts("  \"(--help)-h[print help]\"\\");
+    puts("  \"(-h)--help[print help]\"\\");
+    puts("  \"(--longhelp)-H[print detailed help]\"\\");
+    puts("  \"(-H)--longhelp[print detailed help]\"\\");
+    puts("  \"(--list)-l[print a list of available modules]\"\\");
+    puts("  \"(-l)--list[print a list of available modules]\"\\");
+    puts("  \"--reset-config[reset the current config to the default values]\"\\");
+    puts("  \"--config[use alternate config file]\"\\");
+    puts("  \"--reset-plugins-cache[resets the current plugins cache]\"\\");
+    puts("  \"--version[print version information]\"\\");
+    puts("  \"*:Playlist item:->mrl\" && ret=0\n");
 
-    std::cout << "case $state in\n";
-    std::cout << "  mrl)\n";
-    std::cout << "    _alternative 'files:file:_files' 'urls:URL:_urls' && ret=0\n";
-    std::cout << "  ;;\n";
-    std::cout << "esac\n\n";
+    puts("case $state in");
+    puts("  mrl)");
+    puts("    _alternative 'files:file:_files' 'urls:URL:_urls' && ret=0");
+    puts("  ;;");
+    puts("esac\n");
 
-    std::cout << "return ret\n";
+    puts("return ret");
 
     module_list_free(mod_list);
     libvlc_release(libvlc);

@@ -38,7 +38,6 @@
 #ifdef HAVE_ALSA
 # include <vlc_modules.h>
 #endif
-#include <vlc_fs.h>
 #include <vlc_url.h>
 
 static int OpenV4L (vlc_object_t *);
@@ -94,13 +93,15 @@ static int vlc_sd_probe_Open (vlc_object_t *obj)
     struct udev_monitor *mon = udev_monitor_new_from_netlink (udev, "udev");
     if (mon != NULL)
     {
-        vlc_sd_probe_Add (probe, "v4l", N_("Video capture"), SD_CAT_DEVICES);
+        vlc_sd_probe_Add (probe, "v4l{longname=\"Video capture\"}",
+                          N_("Video capture"), SD_CAT_DEVICES);
 #ifdef HAVE_ALSA
         if (!module_exists ("pulselist"))
-            vlc_sd_probe_Add (probe, "alsa", N_("Audio capture"),
-                              SD_CAT_DEVICES);
+            vlc_sd_probe_Add (probe, "alsa{longname=\"Audio capture\"}",
+                              N_("Audio capture"), SD_CAT_DEVICES);
 #endif
-        vlc_sd_probe_Add (probe, "disc", N_("Discs"), SD_CAT_DEVICES);
+        vlc_sd_probe_Add (probe, "disc{longname=\"Discs\"}", N_("Discs"),
+                          SD_CAT_DEVICES);
         udev_monitor_unref (mon);
     }
     udev_unref (udev);
@@ -117,7 +118,6 @@ struct device
 struct subsys
 {
     const char *name;
-    const char *description;
     char * (*get_mrl) (struct udev_device *dev);
     char * (*get_name) (struct udev_device *dev);
     int item_type;
@@ -137,12 +137,11 @@ struct services_discovery_sys_t
 static int cmpdev (const void *a, const void *b)
 {
     const dev_t *da = a, *db = b;
+    dev_t delta = *da - *db;
 
-    if (*da > *db)
-        return +1;
-    if (*da < *db)
-        return -1;
-    return 0;
+    if (sizeof (delta) > sizeof (int))
+        return delta ? (((signed)delta > 0) ? 1 : -1) : 0;
+    return (signed)delta;
 }
 
 static void DestroyDevice (void *data)
@@ -151,7 +150,7 @@ static void DestroyDevice (void *data)
 
     if (d->sd)
         services_discovery_RemoveItem (d->sd, d->item);
-    input_item_Release (d->item);
+    vlc_gc_decref (d->item);
     free (d);
 }
 
@@ -168,8 +167,9 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     if (mrl == NULL)
         return 0; /* don't know if it was an error... */
     char *name = p_sys->subsys->get_name (dev);
-    input_item_t *item = input_item_NewExt (mrl, name ? name : mrl, -1,
-                                            p_sys->subsys->item_type, ITEM_LOCAL);
+    input_item_t *item = input_item_NewWithType (mrl, name ? name : mrl,
+                                                 0, NULL, 0, -1,
+                                                 p_sys->subsys->item_type);
     msg_Dbg (sd, "adding %s (%s)", mrl, name);
     free (name);
     free (mrl);
@@ -179,7 +179,7 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
     struct device *d = malloc (sizeof (*d));
     if (d == NULL)
     {
-        input_item_Release (item);
+        vlc_gc_decref (item);
         return -1;
     }
     d->devnum = udev_device_get_devnum (dev);
@@ -198,7 +198,7 @@ static int AddDevice (services_discovery_t *sd, struct udev_device *dev)
         *dp = d;
     }
 
-    services_discovery_AddItem(sd, item);
+    services_discovery_AddItem (sd, item, NULL);
     d->sd = sd;
     return 0;
 }
@@ -232,8 +232,6 @@ static int Open (vlc_object_t *obj, const struct subsys *subsys)
 
     if (p_sys == NULL)
         return VLC_ENOMEM;
-
-    sd->description = vlc_gettext(subsys->description);
     sd->p_sys = p_sys;
     p_sys->subsys = subsys;
     p_sys->root = NULL;
@@ -442,8 +440,7 @@ static char *v4l_get_name (struct udev_device *dev)
 int OpenV4L (vlc_object_t *obj)
 {
     static const struct subsys subsys = {
-        "video4linux", N_("Video capture"),
-        v4l_get_mrl, v4l_get_name, ITEM_TYPE_CARD,
+        "video4linux", v4l_get_mrl, v4l_get_name, ITEM_TYPE_CARD,
     };
 
     return Open (obj, &subsys);
@@ -517,8 +514,7 @@ out:
 int OpenALSA (vlc_object_t *obj)
 {
     static const struct subsys subsys = {
-        "sound", N_("Audio capture"),
-        alsa_get_mrl, alsa_get_name, ITEM_TYPE_CARD,
+        "sound", alsa_get_mrl, alsa_get_name, ITEM_TYPE_CARD,
     };
 
     return Open (obj, &subsys);
@@ -539,9 +535,9 @@ static char *disc_get_mrl (struct udev_device *dev)
     val = udev_device_get_property_value (dev, "ID_CDROM_MEDIA_STATE");
     if (val == NULL)
     {   /* Force probing of the disc in the drive if any. */
-        int fd = vlc_open (node, O_RDONLY);
+        int fd = open (node, O_RDONLY|O_CLOEXEC);
         if (fd != -1)
-            vlc_close (fd);
+            close (fd);
         return NULL;
     }
     if (!strcmp (val, "blank"))
@@ -585,21 +581,21 @@ static char *disc_get_name (struct udev_device *dev)
     const char *cat = NULL;
     udev_list_entry_foreach (entry, list)
     {
-        const char *propname = udev_list_entry_get_name(entry);
+        const char *name = udev_list_entry_get_name (entry);
 
-        if (strncmp(propname, "ID_CDROM_MEDIA_", 15))
+        if (strncmp (name, "ID_CDROM_MEDIA_", 15))
             continue;
         if (!atoi (udev_list_entry_get_value (entry)))
             continue;
-        propname += 15;
+        name += 15;
 
-        if (!strncmp(propname, "CD", 2))
+        if (!strncmp (name, "CD", 2))
             cat = N_("CD");
-        else if (!strncmp(propname, "DVD", 3))
+        else if (!strncmp (name, "DVD", 3))
             cat = N_("DVD");
-        else if (!strncmp(propname, "BD", 2))
+        else if (!strncmp (name, "BD", 2))
             cat = N_("Blu-ray");
-        else if (!strncmp(propname, "HDDVD", 5))
+        else if (!strncmp (name, "HDDVD", 5))
             cat = N_("HD DVD");
 
         if (cat != NULL)
@@ -622,7 +618,7 @@ static char *disc_get_name (struct udev_device *dev)
 int OpenDisc (vlc_object_t *obj)
 {
     static const struct subsys subsys = {
-        "block", N_("Discs"), disc_get_mrl, disc_get_name, ITEM_TYPE_DISC,
+        "block", disc_get_mrl, disc_get_name, ITEM_TYPE_DISC,
     };
 
     return Open (obj, &subsys);

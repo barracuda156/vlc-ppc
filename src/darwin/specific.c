@@ -33,7 +33,9 @@
 #include <dirent.h>                                                /* *dir() */
 #include <CoreFoundation/CoreFoundation.h>
 
-#include <locale.h>
+#ifdef HAVE_LOCALE_H
+#   include <locale.h>
+#endif
 
 /*****************************************************************************
  * system_Init: fill in program path & retrieve language

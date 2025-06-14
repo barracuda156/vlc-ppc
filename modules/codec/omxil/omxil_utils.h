@@ -21,8 +21,6 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#include <vlc_es.h>
-
 /*****************************************************************************
  * OMX macros
  *****************************************************************************/
@@ -82,16 +80,6 @@ static inline OMX_TICKS ToOmxTicks(int64_t value)
 /*****************************************************************************
  * OMX buffer FIFO macros
  *****************************************************************************/
-#define OMX_FIFO_INIT(p_fifo, next) \
-    do { vlc_mutex_init( &(p_fifo)->lock ); \
-         vlc_cond_init( &(p_fifo)->wait ); \
-         (p_fifo)->offset = offsetof(OMX_BUFFERHEADERTYPE, next) / sizeof(void *); \
-         (p_fifo)->pp_last = &(p_fifo)->p_first; } while(0)
-
-#define OMX_FIFO_DESTROY(p_fifo) \
-    do { vlc_mutex_destroy( &(p_fifo)->lock ); \
-         vlc_cond_destroy (&(p_fifo)->wait); } while(0)
-
 #define OMX_FIFO_PEEK(p_fifo, p_buffer) \
          p_buffer = (p_fifo)->p_first;
 
@@ -211,6 +199,8 @@ void CopyOmxPicture( int i_color_format, picture_t *p_pic,
 
 void CopyVlcPicture( decoder_t *, OMX_BUFFERHEADERTYPE *, picture_t * );
 
+int IgnoreOmxDecoderPadding(const char *psz_name);
+
 /*****************************************************************************
  * Logging utility functions
  *****************************************************************************/
@@ -220,21 +210,6 @@ const char *EventToString(OMX_EVENTTYPE event);
 const char *ErrorToString(OMX_ERRORTYPE error);
 
 void PrintOmx(decoder_t *p_dec, OMX_HANDLETYPE omx_handle, OMX_U32 i_port);
-
-/*****************************************************************************
- * Utility functions
- *****************************************************************************/
-bool OMXCodec_IsBlacklisted( const char *p_name, unsigned int i_name_len );
-
-enum {
-    OMXCODEC_NO_QUIRKS = 0,
-    OMXCODEC_QUIRKS_NEED_CSD = 0x1,
-    OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING = 0x2,
-    OMXCODEC_VIDEO_QUIRKS_SUPPORT_INTERLACED = 0x4,
-    OMXCODEC_AUDIO_QUIRKS_NEED_CHANNELS = 0x8,
-};
-int OMXCodec_GetQuirks( enum es_format_category_e i_cat, vlc_fourcc_t i_codec,
-                        const char *p_name, unsigned int i_name_len );
 
 /*****************************************************************************
  * fourcc -> omx id mapping
@@ -249,8 +224,7 @@ int GetOmxAudioFormat( vlc_fourcc_t i_fourcc,
                        const char **ppsz_name );
 int OmxToVlcAudioFormat( OMX_AUDIO_CODINGTYPE i_omx_codec,
                        vlc_fourcc_t *pi_fourcc, const char **ppsz_name );
-const char *GetOmxRole( vlc_fourcc_t i_fourcc, enum es_format_category_e i_cat,
-                        bool b_enc );
+const char *GetOmxRole( vlc_fourcc_t i_fourcc, int i_cat, bool b_enc );
 int GetOmxChromaFormat( vlc_fourcc_t i_fourcc,
                         OMX_COLOR_FORMATTYPE *pi_omx_codec,
                         const char **ppsz_name );
@@ -286,6 +260,8 @@ unsigned int GetAudioParamSize(OMX_INDEXTYPE index);
 /*****************************************************************************
  * H264 specific code
  *****************************************************************************/
+bool h264_get_profile_level(const es_format_t *p_fmt, size_t *p_profile, size_t *p_level, size_t *p_nal_size);
+
 size_t convert_omx_to_profile_idc(OMX_VIDEO_AVCPROFILETYPE profile_type);
 
 size_t convert_omx_to_level_idc(OMX_VIDEO_AVCLEVELTYPE level_type);

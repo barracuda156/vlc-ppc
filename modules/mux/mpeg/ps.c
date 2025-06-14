@@ -80,7 +80,7 @@ vlc_module_end ()
  *****************************************************************************/
 static int Control  ( sout_mux_t *, int, va_list );
 static int AddStream( sout_mux_t *, sout_input_t * );
-static void DelStream( sout_mux_t *, sout_input_t * );
+static int DelStream( sout_mux_t *, sout_input_t * );
 static int Mux      ( sout_mux_t * );
 
 /*****************************************************************************
@@ -235,17 +235,17 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     switch( i_query )
     {
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
-            pb_bool = va_arg( args, bool * );
+            pb_bool = (bool*)va_arg( args, bool * );
             *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_ADD_STREAM_WAIT:
-            pb_bool = va_arg( args, bool * );
+            pb_bool = (bool*)va_arg( args, bool * );
             *pb_bool = false;
             return VLC_SUCCESS;
 
         case MUX_GET_MIME:
-            ppsz = va_arg( args, char ** );
+            ppsz = (char**)va_arg( args, char ** );
             *ppsz = strdup( "video/mpeg" );
             return VLC_SUCCESS;
 
@@ -267,8 +267,6 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
              (char*)&p_input->p_fmt->i_codec );
 
     p_input->p_sys = p_stream = malloc( sizeof( ps_stream_t ) );
-    if( unlikely(p_input->p_sys == NULL) )
-        return VLC_ENOMEM;
     p_stream->i_stream_type = 0x81;
 
     /* Init this new stream */
@@ -385,7 +383,7 @@ error:
 /*****************************************************************************
  * DelStream:
  *****************************************************************************/
-static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
+static int DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
 {
     sout_mux_sys_t *p_sys = p_mux->p_sys;
     ps_stream_t *p_stream =(ps_stream_t*)p_input->p_sys;
@@ -439,6 +437,7 @@ static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
     p_sys->i_psm_version++;
 
     free( p_stream );
+    return VLC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -514,8 +513,8 @@ static int Mux( sout_mux_t *p_mux )
 
         /* Get and mux a packet */
         p_data = block_FifoGet( p_input->p_fifo );
-        EStoPES ( &p_data, p_input->p_fmt, p_stream->i_stream_id,
-                       p_sys->b_mpeg2, 0, 0, p_sys->i_pes_max_size, 0 );
+         EStoPES ( &p_data, p_data, p_input->p_fmt, p_stream->i_stream_id,
+                       p_sys->b_mpeg2, 0, 0, p_sys->i_pes_max_size );
 
         block_ChainAppend( &p_ps, p_data );
 

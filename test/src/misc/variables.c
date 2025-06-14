@@ -26,24 +26,24 @@
 #include "../../libvlc/test.h"
 #include "../lib/libvlc_internal.h"
 
-static const char *psz_var_name[] = {
-    "a", "abcdef", "abcdefg", "abc123", "abc-123", "é€!!"
-};
-#define VAR_COUNT (ARRAY_SIZE(psz_var_name))
-static vlc_value_t var_value[VAR_COUNT];
+const char *psz_var_name[] = { "a", "abcdef", "abcdefg", "abc123", "abc-123", "é€!!" };
+const int i_var_count = 6;
+vlc_value_t var_value[6];
+
 
 static void test_integer( libvlc_int_t *p_libvlc )
 {
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    int i;
+    for( i = 0; i < i_var_count; i++ )
         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_INTEGER );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         var_value[i].i_int = rand();
         var_SetInteger( p_libvlc, psz_var_name[i], var_value[i].i_int );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         assert( var_GetInteger( p_libvlc, psz_var_name[i] ) == var_value[i].i_int );
         var_IncInteger( p_libvlc, psz_var_name[i] );
@@ -52,139 +52,93 @@ static void test_integer( libvlc_int_t *p_libvlc )
         assert( var_GetInteger( p_libvlc, psz_var_name[i] ) == var_value[i].i_int );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
 }
 
 static void test_booleans( libvlc_int_t *p_libvlc )
 {
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
-        var_Create( p_libvlc, psz_var_name[i], VLC_VAR_BOOL );
+    int i;
+    for( i = 0; i < i_var_count; i++ )
+         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_BOOL );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         var_value[i].b_bool = (rand() > RAND_MAX/2);
         var_SetBool( p_libvlc, psz_var_name[i], var_value[i].b_bool );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         assert( var_GetBool( p_libvlc, psz_var_name[i] ) == var_value[i].b_bool );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_ToggleBool( p_libvlc, psz_var_name[i] );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         assert( var_GetBool( p_libvlc, psz_var_name[i] ) != var_value[i].b_bool );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
+        var_Destroy( p_libvlc, psz_var_name[i] );
+}
+
+static void test_times( libvlc_int_t *p_libvlc )
+{
+    int i;
+    for( i = 0; i < i_var_count; i++ )
+         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_TIME );
+
+    for( i = 0; i < i_var_count; i++ )
+    {
+        var_value[i].i_time = rand();
+        var_SetTime( p_libvlc, psz_var_name[i], var_value[i].i_time );
+    }
+
+    for( i = 0; i < i_var_count; i++ )
+        assert( var_GetTime( p_libvlc, psz_var_name[i] ) == var_value[i].i_time );
+
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
 }
 
 static void test_floats( libvlc_int_t *p_libvlc )
 {
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
-        var_Create( p_libvlc, psz_var_name[i], VLC_VAR_FLOAT );
+    int i;
+    for( i = 0; i < i_var_count; i++ )
+         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_FLOAT );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         var_value[i].f_float = rand();
         var_SetFloat( p_libvlc, psz_var_name[i], var_value[i].f_float );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         assert( var_GetFloat( p_libvlc, psz_var_name[i] ) == var_value[i].f_float );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
-}
-
-static void test_fracts( libvlc_int_t *p_libvlc )
-{
-    const char *name = psz_var_name[0];
-    unsigned num, den;
-
-    var_Create( p_libvlc, name, VLC_VAR_STRING );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) != 0 );
-
-    var_SetString( p_libvlc, name, "123garbage" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) != 0 );
-
-    var_SetString( p_libvlc, name, "4/5garbage" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) != 0 );
-
-    var_SetString( p_libvlc, name, "6.7garbage" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) != 0 );
-
-    var_SetString( p_libvlc, name, "." );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 0 && den == 1 );
-
-    var_SetString( p_libvlc, name, "010" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 10 && den == 1 );
-
-    var_SetString( p_libvlc, name, "30" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 30 && den == 1 );
-
-    var_SetString( p_libvlc, name, "30.0" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 30 && den == 1 );
-
-    var_SetString( p_libvlc, name, "030.030" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 3003 && den == 100 );
-
-    var_SetString( p_libvlc, name, "60/2" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 30 && den == 1 );
-
-    var_SetString( p_libvlc, name, "29.97" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 2997 && den == 100 );
-
-    var_SetString( p_libvlc, name, "30000/1001" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 30000 && den == 1001 );
-
-    var_SetString( p_libvlc, name, ".125" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 1 && den == 8 );
-
-    var_SetString( p_libvlc, name, "12:9" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 4 && den == 3 );
-
-    var_SetString( p_libvlc, name, "000000/00000000" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 0 && den == 0 );
-
-    var_SetString( p_libvlc, name, "12345/0" );
-    assert( var_InheritURational( p_libvlc, &num, &den, name ) == 0 );
-    assert( num == 1 && den == 0 );
-
-    var_Destroy( p_libvlc, name );
 }
 
 static void test_strings( libvlc_int_t *p_libvlc )
 {
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
-        var_Create( p_libvlc, psz_var_name[i], VLC_VAR_STRING );
+    int i;
+    char *psz_tmp;
+    for( i = 0; i < i_var_count; i++ )
+         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_STRING );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_SetString( p_libvlc, psz_var_name[i], psz_var_name[i] );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
-        char *psz_tmp = var_GetString( p_libvlc, psz_var_name[i] );
-
-        assert( psz_tmp != NULL );
+        psz_tmp = var_GetString( p_libvlc, psz_var_name[i] );
         assert( !strcmp( psz_tmp, psz_var_name[i] ) );
         free( psz_tmp );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
+
 
     /* Some more test for strings */
     var_Create( p_libvlc, "bla", VLC_VAR_STRING );
@@ -192,9 +146,7 @@ static void test_strings( libvlc_int_t *p_libvlc )
     var_SetString( p_libvlc, "bla", "" );
     assert( var_GetNonEmptyString( p_libvlc, "bla" ) == NULL );
     var_SetString( p_libvlc, "bla", "test" );
-
-    char *psz_tmp = var_GetNonEmptyString( p_libvlc, "bla" );
-    assert( psz_tmp != NULL );
+    psz_tmp = var_GetNonEmptyString( p_libvlc, "bla" );
     assert( !strcmp( psz_tmp, "test" ) );
     free( psz_tmp );
     var_Destroy( p_libvlc, "bla" );
@@ -202,46 +154,46 @@ static void test_strings( libvlc_int_t *p_libvlc )
 
 static void test_address( libvlc_int_t *p_libvlc )
 {
-    char dummy[VAR_COUNT];
+    char dummy[i_var_count];
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
-        var_Create( p_libvlc, psz_var_name[i], VLC_VAR_ADDRESS );
+    int i;
+    for( i = 0; i < i_var_count; i++ )
+         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_ADDRESS );
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
-        var_value[i].p_address = &dummy[i];
+        var_value[i].p_address = dummy + i;
         var_SetAddress( p_libvlc, psz_var_name[i], var_value[i].p_address );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         vlc_value_t val;
         var_Get( p_libvlc, psz_var_name[i], &val );
         assert( val.p_address == var_value[i].p_address );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
 }
 
 static int callback( vlc_object_t* p_this, char const *psz_var,
                      vlc_value_t oldval, vlc_value_t newval, void *p_data)
 {
-    unsigned i;
-
     (void)p_this;    (void)oldval;
+    int i;
 
     // Check the parameters
     assert( p_data == psz_var_name );
 
     // Find the variable
-    for( i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         if( !strcmp( psz_var_name[i], psz_var ) )
             break;
     }
     // Check the variable is known
-    assert( i < VAR_COUNT );
+    assert( i < i_var_count );
 
     var_value[i].i_int = newval.i_int;
     return VLC_SUCCESS;
@@ -250,14 +202,15 @@ static int callback( vlc_object_t* p_this, char const *psz_var,
 static void test_callbacks( libvlc_int_t *p_libvlc )
 {
     /* add the callbacks */
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    int i;
+    for( i = 0; i < i_var_count; i++ )
     {
         var_Create( p_libvlc, psz_var_name[i], VLC_VAR_INTEGER );
         var_AddCallback( p_libvlc, psz_var_name[i], callback, psz_var_name );
     }
 
     /* Set the variables and trigger the callbacks */
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         int i_temp = rand();
         var_SetInteger( p_libvlc, psz_var_name[i], i_temp );
@@ -268,13 +221,13 @@ static void test_callbacks( libvlc_int_t *p_libvlc )
     }
 
     /* Only trigger the callback: the value will be 0 again */
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
     {
         var_TriggerCallback( p_libvlc, psz_var_name[i] );
         assert( var_value[i].i_int == 0 );
     }
 
-    for( unsigned i = 0; i < VAR_COUNT; i++ )
+    for( i = 0; i < i_var_count; i++ )
         var_Destroy( p_libvlc, psz_var_name[i] );
 }
 
@@ -285,13 +238,12 @@ static void test_limits( libvlc_int_t *p_libvlc )
     var_Create( p_libvlc, "bla", VLC_VAR_INTEGER );
 
     var_Change( p_libvlc, "bla", VLC_VAR_GETMIN, &val, NULL );
-    assert( val.i_int == INT64_MIN );
-    var_Change( p_libvlc, "bla", VLC_VAR_GETMAX, &val, NULL );
-    assert( val.i_int == INT64_MAX );
+    assert( val.i_int == 0 );
 
-    var_Change( p_libvlc, "bla", VLC_VAR_SETMINMAX,
-                &(vlc_value_t){ .i_int = -1234 },
-                &(vlc_value_t){ .i_int = 12345 } );
+    val.i_int = -1234;
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMIN, &val, NULL );
+    val.i_int = 12345;
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMAX, &val, NULL );
 
     var_Change( p_libvlc, "bla", VLC_VAR_GETMIN, &val, NULL );
     assert( val.i_int == -1234 );
@@ -324,7 +276,8 @@ static void test_limits( libvlc_int_t *p_libvlc )
 static void test_choices( libvlc_int_t *p_libvlc )
 {
     vlc_value_t val, val2;
-    var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND );
+    var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_HASCHOICE |
+                                 VLC_VAR_ISCOMMAND );
     val.i_int = 1;
     val2.psz_string = (char*)"one";
     var_Change( p_libvlc, "bla", VLC_VAR_ADDCHOICE, &val, &val2 );
@@ -352,36 +305,30 @@ static void test_choices( libvlc_int_t *p_libvlc )
 
 static void test_change( libvlc_int_t *p_libvlc )
 {
-    vlc_value_t val, min, max, step;
-
-    min.i_int = -1242;
-    max.i_int = +42;
-    step.i_int = 13;
+    /* Add min, max and step
+       Yes we can have min > max but we don't really care */
+    vlc_value_t val;
+    int i_min, i_max, i_step;
 
     var_Create( p_libvlc, "bla", VLC_VAR_INTEGER );
-    var_Change( p_libvlc, "bla", VLC_VAR_SETMINMAX, &min, &max );
-    var_Change( p_libvlc, "bla", VLC_VAR_SETSTEP, &step, NULL );
+    val.i_int = i_min = rand();
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMIN, &val, NULL );
+    val.i_int = i_max = rand();
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMAX, &val, NULL );
+    val.i_int = i_step = rand();
+    var_Change( p_libvlc, "bla", VLC_VAR_SETSTEP, &val, NULL );
 
-    var_SetInteger( p_libvlc, "bla", 13 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == 13 );
-    var_SetInteger( p_libvlc, "bla", 27 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == 26 );
-    var_SetInteger( p_libvlc, "bla", 35 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == 39 );
-    var_SetInteger( p_libvlc, "bla", -2 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == 0 );
-    var_SetInteger( p_libvlc, "bla", -9 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == -13 );
-    var_SetInteger( p_libvlc, "bla", -27 );
-    assert( var_GetInteger( p_libvlc, "bla" ) == -26 );
+    /* Do something */
+    var_SetInteger( p_libvlc, "bla", rand() );
+    val.i_int = var_GetInteger( p_libvlc, "bla" ); /* dummy read */
 
     /* Test everything is right */
     var_Change( p_libvlc, "bla", VLC_VAR_GETMIN, &val, NULL );
-    assert( val.i_int == min.i_int );
+    assert( val.i_int == i_min );
     var_Change( p_libvlc, "bla", VLC_VAR_GETMAX, &val, NULL );
-    assert( val.i_int == max.i_int );
+    assert( val.i_int == i_max );
     var_Change( p_libvlc, "bla", VLC_VAR_GETSTEP, &val, NULL );
-    assert( val.i_int == step.i_int );
+    assert( val.i_int == i_step );
 
     var_Destroy( p_libvlc, "bla" );
 }
@@ -400,22 +347,14 @@ static void test_creation_and_type( libvlc_int_t *p_libvlc )
     assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND ) == VLC_SUCCESS );
     assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND) );
 
-    assert( var_Change( p_libvlc, "bla", VLC_VAR_GETMIN, &val, NULL ) != 0
-         || val.i_int == INT64_MIN );
-    assert( var_Change( p_libvlc, "bla", VLC_VAR_GETMAX, &val, NULL ) != 0
-         || val.i_int == INT64_MAX );
-    val.i_int = 4212;
-    var_Change( p_libvlc, "bla", VLC_VAR_SETMINMAX, &val, &val );
-    assert( var_Change( p_libvlc, "bla", VLC_VAR_GETMIN, &val, NULL ) == 0
-         && val.i_int == 4212 );
-    assert( var_Change( p_libvlc, "bla", VLC_VAR_GETMAX, &val, NULL ) == 0
-         && val.i_int == 4212 );
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMIN, &val, NULL );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMIN) );
 
-    assert( var_Change( p_libvlc, "bla" , VLC_VAR_GETSTEP, &val, NULL ) != 0 );
-    val.i_int = 4212;
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMAX, &val, NULL );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMIN | VLC_VAR_HASMAX) );
+
     var_Change( p_libvlc, "bla", VLC_VAR_SETSTEP, &val, NULL );
-    assert( var_Change( p_libvlc, "bla" , VLC_VAR_GETSTEP, &val, NULL ) == 0
-         && val.i_int == 4212 );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMIN | VLC_VAR_HASMAX | VLC_VAR_HASSTEP) );
 
     var_Destroy( p_libvlc, "bla" );
     var_Destroy( p_libvlc, "bla" );
@@ -428,14 +367,33 @@ static void test_creation_and_type( libvlc_int_t *p_libvlc )
     assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND ) == VLC_SUCCESS );
     assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND) );
 
+    assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASCHOICE ) == VLC_SUCCESS );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASCHOICE) );
+
     var_Destroy( p_libvlc, "bla" );
     var_Destroy( p_libvlc, "bla" );
     var_Destroy( p_libvlc, "bla" );
     assert( var_Get( p_libvlc, "bla", &val ) == VLC_ENOVAR );
 
     var_Create( p_libvlc, "bla", VLC_VAR_INTEGER );
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMIN, &val, NULL );
     assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND ) == VLC_SUCCESS );
-    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND) );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMIN) );
+    assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_HASCHOICE ) == VLC_SUCCESS );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMIN | VLC_VAR_HASCHOICE) );
+
+    var_Destroy( p_libvlc, "bla" );
+    var_Destroy( p_libvlc, "bla" );
+    var_Destroy( p_libvlc, "bla" );
+    assert( var_Get( p_libvlc, "bla", &val ) == VLC_ENOVAR );
+
+    var_Create( p_libvlc, "bla", VLC_VAR_INTEGER );
+    var_Change( p_libvlc, "bla", VLC_VAR_SETMAX, &val, NULL );
+    var_Change( p_libvlc, "bla", VLC_VAR_SETSTEP, &val, NULL );
+    assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND ) == VLC_SUCCESS );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMAX | VLC_VAR_HASSTEP) );
+    assert( var_Create( p_libvlc, "bla", VLC_VAR_INTEGER | VLC_VAR_HASCHOICE ) == VLC_SUCCESS );
+    assert( var_Type( p_libvlc, "bla" ) == (VLC_VAR_INTEGER | VLC_VAR_ISCOMMAND | VLC_VAR_HASMAX | VLC_VAR_HASSTEP | VLC_VAR_HASCHOICE) );
 
     var_Destroy( p_libvlc, "bla" );
     var_Destroy( p_libvlc, "bla" );
@@ -454,11 +412,11 @@ static void test_variables( libvlc_instance_t *p_vlc )
     log( "Testing for booleans\n" );
     test_booleans( p_libvlc );
 
+    log( "Testing for times\n" );
+    test_times( p_libvlc );
+
     log( "Testing for floats\n" );
     test_floats( p_libvlc );
-
-    log( "Testing for rationals\n" );
-    test_fracts( p_libvlc );
 
     log( "Testing for strings\n" );
     test_strings( p_libvlc );
@@ -499,3 +457,4 @@ int main( void )
 
     return 0;
 }
+

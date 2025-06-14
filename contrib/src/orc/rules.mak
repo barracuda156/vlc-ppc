@@ -14,7 +14,6 @@ $(TARBALLS)/orc-$(ORC_VERSION).tar.gz:
 
 orc: orc-$(ORC_VERSION).tar.gz .sum-orc
 	$(UNPACK)
-	$(APPLY) $(SRC)/orc/use-proper-func-detection.patch
 	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 

@@ -38,8 +38,6 @@
 #include <assert.h>
 #include <limits.h>
 
-#include <new>
-
 X11Window::X11Window( intf_thread_t *pIntf, GenericWindow &rWindow,
                       X11Display &rDisplay, bool dragDrop, bool playOnDrop,
                       X11Window *pParentWindow, GenericWindow::WindowType_t type ):
@@ -48,7 +46,7 @@ X11Window::X11Window( intf_thread_t *pIntf, GenericWindow &rWindow,
 {
     XSetWindowAttributes attr;
     unsigned long valuemask;
-    std::string name_type;
+    string name_type;
 
     if( type == GenericWindow::FullscreenWindow )
     {
@@ -166,7 +164,7 @@ X11Window::X11Window( intf_thread_t *pIntf, GenericWindow &rWindow,
     }
 
     // Change the window title
-    std::string name_window = "VLC (" + name_type + ")";
+    string name_window = "VLC (" + name_type + ")";
     XStoreName( XDISPLAY, m_wnd, name_window.c_str() );
 
     // Set the WM_TRANSIENT_FOR property
@@ -203,7 +201,7 @@ X11Window::X11Window( intf_thread_t *pIntf, GenericWindow &rWindow,
     long host_name_max = sysconf( _SC_HOST_NAME_MAX );
     if( host_name_max <= 0 )
         host_name_max = _POSIX_HOST_NAME_MAX;
-    hostname = new (std::nothrow) char[host_name_max];
+    hostname = new char[host_name_max];
     if( hostname && gethostname( hostname, host_name_max ) == 0 )
     {
         hostname[host_name_max - 1] = '\0';

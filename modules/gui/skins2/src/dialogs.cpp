@@ -120,7 +120,7 @@ Dialogs::~Dialogs()
         vlc_object_release( m_pProvider );
 
         /* Unregister callbacks */
-        var_DelCallback( getIntf()->obj.libvlc, "intf-popupmenu",
+        var_DelCallback( getIntf()->p_libvlc, "intf-popupmenu",
                          PopupMenuCB, this );
     }
 }
@@ -164,20 +164,21 @@ bool Dialogs::init()
     m_pModule = module_need( m_pProvider, "dialogs provider", NULL, false );
     if( m_pModule == NULL )
     {
+        msg_Err( getIntf(), "no suitable dialogs provider found (hint: compile the qt4 plugin, and make sure it is loaded properly)" );
         vlc_object_release( m_pProvider );
         m_pProvider = NULL;
         return false;
     }
 
     /* Register callback for the intf-popupmenu variable */
-    var_AddCallback( getIntf()->obj.libvlc, "intf-popupmenu",
+    var_AddCallback( getIntf()->p_libvlc, "intf-popupmenu",
                      PopupMenuCB, this );
 
     return true;
 }
 
 
-void Dialogs::showFileGeneric( const std::string &rTitle, const std::string &rExtensions,
+void Dialogs::showFileGeneric( const string &rTitle, const string &rExtensions,
                                DlgCallback callback, int flags )
 {
     if( m_pProvider && m_pProvider->pf_show_dialog )
@@ -211,7 +212,7 @@ void Dialogs::showChangeSkin()
 void Dialogs::showPlaylistLoad()
 {
     showFileGeneric( _("Open playlist"),
-                     _("Playlist Files|" EXTENSIONS_PLAYLIST "|"
+                     _("Playlist Files|"EXTENSIONS_PLAYLIST"|"
                        "All Files|*"),
                      showPlaylistLoadCB, kOPEN );
 }
@@ -341,14 +342,5 @@ void Dialogs::showInteraction( interaction_dialog_t *p_dialog )
 
         m_pProvider->pf_show_dialog( m_pProvider, INTF_DIALOG_INTERACTION,
                                      0, p_arg );
-    }
-}
-
-void Dialogs::sendKey( int key )
-{
-    if( m_pProvider && m_pProvider->pf_show_dialog )
-    {
-        m_pProvider->pf_show_dialog( m_pProvider, INTF_DIALOG_SENDKEY,
-                                     key, NULL );
     }
 }

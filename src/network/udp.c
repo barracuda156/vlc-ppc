@@ -104,8 +104,7 @@ static int net_SetupDgramSocket (vlc_object_t *p_obj, int fd,
      * SetSocketMediaStreamingMode is present in win 8 and later, so we set
      * receive buffer if that isn't present
      */
-#if (_WIN32_WINNT < _WIN32_WINNT_WIN8)
-    HINSTANCE h_Network = LoadLibrary(TEXT("Windows.Networking.dll"));
+    HINSTANCE h_Network = LoadLibraryW(L"Windows.Networking.dll");
     if( (h_Network == NULL) ||
         (GetProcAddress( h_Network, "SetSocketMediaStreamingMode" ) == NULL ) )
     {
@@ -114,7 +113,6 @@ static int net_SetupDgramSocket (vlc_object_t *p_obj, int fd,
     }
     if( h_Network )
         FreeLibrary( h_Network );
-#endif
 
     if (net_SockAddrIsMulticast (ptr->ai_addr, ptr->ai_addrlen)
      && (sizeof (struct sockaddr_storage) >= ptr->ai_addrlen))
@@ -316,7 +314,7 @@ net_SourceSubscribe (vlc_object_t *obj, int fd,
 /* MCAST_JOIN_SOURCE_GROUP was introduced to OS X in v10.7, but it doesn't work,
  * so ignore it to use the same code path as on 10.5 or 10.6 */
 #if defined (MCAST_JOIN_SOURCE_GROUP) && !defined (__APPLE__)
-    /* Family-agnostic Source-Specific Multicast join */
+    /* Agnostic SSM multicast join */
     int level;
     struct group_source_req gsr;
 
@@ -397,7 +395,7 @@ int net_Subscribe (vlc_object_t *obj, int fd,
 /* MCAST_JOIN_GROUP was introduced to OS X in v10.7, but it doesn't work,
  * so ignore it to use the same code as on 10.5 or 10.6 */
 #if defined (MCAST_JOIN_GROUP) && !defined (__APPLE__)
-    /* Family-agnostic Any-Source Multicast join */
+    /* Agnostic SSM multicast join */
     int level;
     struct group_req gr;
 

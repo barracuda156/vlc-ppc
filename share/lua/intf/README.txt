@@ -3,7 +3,7 @@ $Id$
 
 See lua/README.txt for generic documentation about Lua usage in VLC.
 
-Examples: cli.lua, http.lua
+Examples: rc.lua, telnet.lua and http.lua
 
 The "config" global variable is set to the value specified in the
 --lua-config VLC option. For example:

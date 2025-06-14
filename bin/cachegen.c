@@ -29,7 +29,7 @@
 #ifdef HAVE_GETOPT_H
 # include <getopt.h>
 #endif
-#ifdef _WIN32
+#ifdef WIN32
 # include <windows.h>
 #endif
 
@@ -41,29 +41,34 @@ static void version (void)
 static void usage (const char *path)
 {
     printf (
-"Usage: %s <path>\n"
-"Generate the LibVLC plugins cache for the specified plugins directory.\n",
+"Usage: %s [-f] <path>\n"
+"Generate the LibVLC plugins cache for the specified plugins directory.\n"
+" -f, --force  forcefully reset the plugin cache (if it exists)\n",
             path);
 }
 
 int main (int argc, char *argv[])
 {
-#if defined(_WIN32) && (_WIN32_WINNT < _WIN32_WINNT_WIN7)
+#ifdef WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS);
 #endif
-#ifdef HAVE_GETOPT_H
     static const struct option opts[] =
     {
+        { "force",      no_argument,       NULL, 'f' },
         { "help",       no_argument,       NULL, 'h' },
         { "version",    no_argument,       NULL, 'V' },
         { NULL,         no_argument,       NULL, '\0'}
     };
 
     int c;
+    bool force = false;
 
-    while ((c = getopt_long (argc, argv, "hV", opts, NULL)) != -1)
+    while ((c = getopt_long (argc, argv, "fhV", opts, NULL)) != -1)
         switch (c)
         {
+            case 'f':
+                force = true;
+                break;
             case 'h':
                 usage (argv[0]);
                 return 0;
@@ -74,9 +79,6 @@ int main (int argc, char *argv[])
                 usage (argv[0]);
                 return 1;
         }
-#else
-    int optind = 1;
-#endif
 
     for (int i = optind; i < argc; i++)
     {
@@ -89,7 +91,10 @@ int main (int argc, char *argv[])
         int vlc_argc = 0;
 
         vlc_argv[vlc_argc++] = "--quiet";
-        vlc_argv[vlc_argc++] = "--reset-plugins-cache";
+#ifndef __APPLE__
+        if (force)
+#endif
+            vlc_argv[vlc_argc++] = "--reset-plugins-cache";
         vlc_argv[vlc_argc++] = "--"; /* end of options */
         vlc_argv[vlc_argc] = NULL;
 

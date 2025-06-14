@@ -87,13 +87,22 @@ static void RtspTimeOut( void *data );
 rtsp_stream_t *RtspSetup( vlc_object_t *owner, vod_media_t *media,
                           const char *path )
 {
-    rtsp_stream_t *rtsp = calloc( 1, sizeof( *rtsp ) );
+    rtsp_stream_t *rtsp = malloc( sizeof( *rtsp ) );
 
-    if( unlikely(rtsp == NULL) )
+    if( rtsp == NULL )
+    {
+        free( rtsp );
         return NULL;
+    }
 
     rtsp->owner = owner;
     rtsp->vod_media = media;
+    rtsp->sessionc = 0;
+    rtsp->sessionv = NULL;
+    rtsp->host = NULL;
+    rtsp->url = NULL;
+    rtsp->psz_path = NULL;
+    rtsp->track_id = 0;
     vlc_mutex_init( &rtsp->lock );
 
     rtsp->timeout = var_InheritInteger(owner, "rtsp-timeout");
@@ -287,7 +296,7 @@ void RtspDelId( rtsp_stream_t *rtsp, rtsp_stream_id_t *id )
             {
                 rtsp_strack_t *tr = ses->trackv + j;
                 RtspTrackClose( tr );
-                TAB_ERASE(ses->trackc, ses->trackv, j);
+                REMOVE_ELEM( ses->trackv, ses->trackc, j );
             }
         }
     }
@@ -463,7 +472,7 @@ int RtspTrackAttach( rtsp_stream_t *rtsp, const char *name,
         vlc_rand_bytes (&track.seq_init, sizeof (track.seq_init));
         vlc_rand_bytes (&track.ssrc, sizeof (track.ssrc));
 
-        TAB_APPEND(session->trackc, session->trackv, track);
+        INSERT_ELEM(session->trackv, session->trackc, session->trackc, track);
         tr = session->trackv + session->trackc - 1;
     }
 
@@ -509,7 +518,7 @@ void RtspTrackDetach( rtsp_stream_t *rtsp, const char *name,
                 /* No (more) SETUP information: better get rid of the
                  * track so that we can have new random ssrc and
                  * seq_init next time. */
-                TAB_ERASE(session->trackc, session->trackv, i);
+                REMOVE_ELEM( session->trackv, session->trackc, i );
                 break;
             }
             /* We keep the SETUP information of the track, but stop it */
@@ -879,7 +888,8 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                         else
                             ssrc = id->ssrc;
 
-                        TAB_APPEND(ses->trackc, ses->trackv, track);
+                        INSERT_ELEM( ses->trackv, ses->trackc, ses->trackc,
+                                     track );
                     }
                     else if (tr->setup_fd == -1)
                     {
@@ -1161,7 +1171,7 @@ static int RtspHandler( rtsp_stream_t *rtsp, rtsp_stream_id_t *id,
                             /* Keep VoD tracks whose instance is still
                              * running */
                             if (!(vod && ses->trackv[i].sout_id != NULL))
-                                TAB_ERASE(ses->trackc, ses->trackv, i);
+                                REMOVE_ELEM( ses->trackv, ses->trackc, i );
                         }
                     }
                     RtspClientAlive(ses);

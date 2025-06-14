@@ -22,12 +22,19 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_MKV_MKV_HPP_
-#define VLC_MKV_MKV_HPP_
+#ifndef _MKV_H_
+#define _MKV_H_
 
 /*****************************************************************************
  * Preamble
  *****************************************************************************/
+
+
+/* config.h may include inttypes.h, so make sure we define that option
+ * early enough. */
+#define __STDC_FORMAT_MACROS 1
+#define __STDC_CONSTANT_MACROS 1
+#define __STDC_LIMIT_MACROS 1
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -52,8 +59,6 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <map>
-#include <stdexcept>
 
 /* libebml and matroska */
 #include "ebml/EbmlHead.h"
@@ -90,13 +95,14 @@
 
 #include "ebml/StdIOCallback.h"
 
+extern "C" {
+   #include "../mp4/libmp4.h"
+}
 #ifdef HAVE_ZLIB_H
 #   include <zlib.h>
 #endif
 
-#ifndef NDEBUG
-//# define MKV_DEBUG 0
-#endif
+#define MKV_DEBUG 0
 
 #define MATROSKA_COMPRESSION_NONE  -1
 #define MATROSKA_COMPRESSION_ZLIB   0
@@ -114,14 +120,13 @@ enum
 #define MKVD_TIMECODESCALE 1000000
 
 #define MKV_IS_ID( el, C ) ( el != NULL && typeid( *el ) == typeid( C ) )
-#define MKV_CHECKED_PTR_DECL( name, type, src ) type * name = MKV_IS_ID(src, type) ? static_cast<type*>(src) : NULL
 
 
 using namespace LIBMATROSKA_NAMESPACE;
+using namespace std;
 
 void BlockDecode( demux_t *p_demux, KaxBlock *block, KaxSimpleBlock *simpleblock,
-                  mtime_t i_pts, mtime_t i_duration, bool b_key_picture,
-                  bool b_discardable_picture );
+                         mtime_t i_pts, mtime_t i_duration, bool f_mandatory );
 
 class attachment_c
 {
@@ -180,59 +185,74 @@ public:
     virtual int32_t Init() { return 0; }
 };
 
-class mkv_track_t
+struct mkv_track_t
 {
-    public:
-        mkv_track_t(enum es_format_category_e es_cat);
-        ~mkv_track_t();
+    bool         b_default;
+    bool         b_enabled;
+    bool         b_forced;
+    unsigned int i_number;
 
-        typedef unsigned int track_id_t;
+    unsigned int i_extra_data;
+    uint8_t      *p_extra_data;
 
-        bool         b_default;
-        bool         b_enabled;
-        bool         b_forced;
-        track_id_t   i_number;
+    char         *psz_codec;
+    bool         b_dts_only;
+    bool         b_pts_only;
 
-        unsigned int i_extra_data;
-        uint8_t      *p_extra_data;
+    bool         b_no_duration;
+    uint64_t     i_default_duration;
+    float        f_timecodescale;
+    mtime_t      i_last_dts;
 
-        std::string  codec;
-        bool         b_dts_only;
-        bool         b_pts_only;
+    /* video */
+    es_format_t fmt;
+    float       f_fps;
+    es_out_id_t *p_es;
 
-        bool         b_no_duration;
-        uint64_t     i_default_duration;
-        float        f_timecodescale;
-        mtime_t      i_last_dts;
-        uint64_t     i_skip_until_fpos;
-
-        /* video */
-        es_format_t fmt;
-        float       f_fps;
-        es_out_id_t *p_es;
-
-        /* audio */
-        unsigned int i_original_rate;
-        uint8_t i_chans_to_reorder;            /* do we need channel reordering */
-        uint8_t pi_chan_table[AOUT_CHAN_MAX];
+    /* audio */
+    unsigned int i_original_rate;
+    uint8_t i_chans_to_reorder;            /* do we need channel reordering */
+    uint8_t pi_chan_table[AOUT_CHAN_MAX];
 
 
-        /* Private track paramters */
-        PrivateTrackData *p_sys;
+    /* Private track paramters */
+    PrivateTrackData *p_sys;
 
-        bool            b_discontinuity;
+    bool            b_inited;
+    /* data to be send first */
+    int             i_data_init;
+    uint8_t         *p_data_init;
 
-        /* informative */
-        std::string str_codec_name;
+    /* hack : it's for seek */
+    bool            b_search_keyframe;
+    bool            b_silent;
 
-        /* encryption/compression */
-        int                    i_compression_type;
-        uint32_t               i_encoding_scope;
-        KaxContentCompSettings *p_compression_data;
+    /* informative */
+    const char   *psz_codec_name;
+    const char   *psz_codec_settings;
+    const char   *psz_codec_info_url;
+    const char   *psz_codec_download_url;
 
-        /* Matroska 4 new elements used by Opus */
-        mtime_t i_seek_preroll;
-        mtime_t i_codec_delay;
+    /* encryption/compression */
+    int                    i_compression_type;
+    uint32_t               i_encoding_scope;
+    KaxContentCompSettings *p_compression_data;
+
+    /* Matroska 4 new elements used by Opus */
+    mtime_t i_seek_preroll;
+    mtime_t i_codec_delay;
+
+};
+
+struct mkv_index_t
+{
+    int     i_track;
+    int     i_block_number;
+
+    int64_t i_position;
+    int64_t i_time;
+
+    bool       b_key;
 };
 
 

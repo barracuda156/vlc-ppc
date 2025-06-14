@@ -17,17 +17,15 @@ zvbi: zvbi-$(ZVBI_VERSION).tar.bz2 .sum-zvbi
 	$(UNPACK)
 	$(APPLY) $(SRC)/zvbi/zvbi-ssize_max.patch
 	$(APPLY) $(SRC)/zvbi/zvbi-ioctl.patch
-	$(APPLY) $(SRC)/zvbi/zvbi-fix-static-linking.patch
 ifdef HAVE_WIN32
 	$(APPLY) $(SRC)/zvbi/zvbi-win32.patch
 endif
+ifdef HAVE_DARWIN_OS
 	$(APPLY) $(SRC)/zvbi/zvbi-fix-clang-support.patch
-ifdef HAVE_ANDROID
-	$(APPLY) $(SRC)/zvbi/zvbi-android.patch
 endif
 	$(MOVE)
 
-DEPS_zvbi = pthreads png $(DEPS_png) iconv $(DEPS_iconv)
+DEPS_zvbi = pthreads iconv $(DEPS_iconv)
 
 ZVBI_CFLAGS := $(CFLAGS)
 ZVBICONF := \
@@ -35,7 +33,6 @@ ZVBICONF := \
 	--disable-nls --disable-proxy \
 	--without-doxygen \
 	$(HOSTCONF)
-
 ifdef HAVE_MACOSX
 ZVBI_CFLAGS += -fnested-functions
 endif
@@ -44,8 +41,9 @@ ZVBI_CFLAGS += -DPTW32_STATIC_LIB
 endif
 
 .zvbi: zvbi
-	$(UPDATE_AUTOCONFIG)
+ifdef HAVE_WIN32
 	$(RECONF)
+endif
 	cd $< && $(HOSTVARS) CFLAGS="$(ZVBI_CFLAGS)" ./configure $(ZVBICONF)
 	cd $</src && $(MAKE) install
 	cd $< && $(MAKE) SUBDIRS=. install

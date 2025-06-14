@@ -25,9 +25,9 @@
 #include "evt_mouse.hpp"
 
 
-const std::string EvtMouse::getAsString() const
+const string EvtMouse::getAsString() const
 {
-    std::string event = "mouse";
+    string event = "mouse";
 
     // Add the button
     if( m_button == kLeft )

@@ -94,12 +94,12 @@ static int Open( vlc_object_t * p_this )
     const uint8_t *p_peek;
     es_format_t fmt;
 
-    if( vlc_stream_Peek( p_demux->s, &p_peek, 5 ) < 5 ) return VLC_EGENERIC;
+    if( stream_Peek( p_demux->s, &p_peek, 5 ) < 5 ) return VLC_EGENERIC;
 
     if( p_peek[0] != 'B' || p_peek[1] != 'B' ||
         p_peek[2] != 'C' || p_peek[3] != 'D') /* start of ParseInfo */
     {
-        if( !p_demux->obj.force ) return VLC_EGENERIC;
+        if( !p_demux->b_force ) return VLC_EGENERIC;
 
         msg_Err( p_demux, "This doesn't look like a Dirac stream (incorrect parsecode)" );
         msg_Warn( p_demux, "continuing anyway" );
@@ -156,8 +156,6 @@ static int Demux( demux_t *p_demux)
     demux_sys_t *p_sys = p_demux->p_sys;
     block_t *p_block_in, *p_block_out;
 
-    bool b_eof = false;
-
     if( p_sys->i_state == DIRAC_DEMUX_DISCONT )
     {
         p_sys->i_state++;
@@ -169,12 +167,12 @@ static int Demux( demux_t *p_demux)
     }
     else
     {
-        p_block_in = vlc_stream_Block( p_demux->s, DIRAC_PACKET_SIZE );
+        p_block_in = stream_Block( p_demux->s, DIRAC_PACKET_SIZE );
         if( !p_block_in )
         {
-            b_eof = true;
+            return 0;
         }
-        else if ( p_sys->i_state == DIRAC_DEMUX_FIRST)
+        if ( p_sys->i_state == DIRAC_DEMUX_FIRST)
         {
             p_sys->i_state++;
             /* by default, timestamps are invalid.
@@ -183,8 +181,7 @@ static int Demux( demux_t *p_demux)
         }
     }
 
-    while( (p_block_out = p_sys->p_packetizer->pf_packetize( p_sys->p_packetizer,
-                                                             (p_block_in) ? &p_block_in : NULL )) )
+    while( (p_block_out = p_sys->p_packetizer->pf_packetize( p_sys->p_packetizer, &p_block_in )) )
     {
         while( p_block_out )
         {
@@ -205,14 +202,13 @@ static int Demux( demux_t *p_demux)
                 p_sys->i_pts_offset_lowtide = i_delay;
             }
 
-            es_out_SetPCR( p_demux->out, p_block_out->i_dts );
+            es_out_Control( p_demux->out, ES_OUT_SET_PCR, p_block_out->i_dts );
             es_out_Send( p_demux->out, p_sys->p_es, p_block_out );
 
             p_block_out = p_next;
         }
     }
-
-    return b_eof ? VLC_DEMUXER_EOF : VLC_DEMUXER_SUCCESS;
+    return 1;
 }
 
 /*****************************************************************************
@@ -223,7 +219,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     demux_sys_t *p_sys  = p_demux->p_sys;
     if( DEMUX_GET_TIME == i_query )
     {
-        int64_t *pi64 = va_arg( args, int64_t * );
+        int64_t *pi64 = (int64_t*)va_arg( args, int64_t * );
         *pi64 = p_sys->i_dts;
         return VLC_SUCCESS;
     }
@@ -233,7 +229,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         {
             return VLC_EGENERIC;
         }
-        double *pd = va_arg( args, double * );
+        double *pd = (double*)va_arg( args, double * );
         *pd = (float) p_sys->p_packetizer->fmt_out.video.i_frame_rate
             / p_sys->p_packetizer->fmt_out.video.i_frame_rate_base;
         return VLC_SUCCESS;

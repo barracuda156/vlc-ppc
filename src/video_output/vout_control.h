@@ -25,8 +25,6 @@
 #ifndef LIBVLC_VOUT_CONTROL_H
 #define LIBVLC_VOUT_CONTROL_H 1
 
-typedef struct vout_window_mouse_event_t vout_window_mouse_event_t;
-
 /**
  * This function will (un)pause the display of pictures.
  * It is thread safe
@@ -41,20 +39,26 @@ void spu_OffsetSubtitleDate( spu_t *p_spu, mtime_t i_duration );
 /**
  * This function will return and reset internal statistics.
  */
-void vout_GetResetStatistic( vout_thread_t *p_vout, unsigned *pi_displayed,
-                             unsigned *pi_lost );
+void vout_GetResetStatistic( vout_thread_t *p_vout, int *pi_displayed, int *pi_lost );
 
 /**
- * This function will ensure that all ready/displayed pictures have at most
- * the provided date.
+ * This function will ensure that all ready/displayed pciture have at most
+ * the provided dat
  */
 void vout_Flush( vout_thread_t *p_vout, mtime_t i_date );
 
-/*
- * Cancel the vout, if cancel is true, it won't return any pictures after this
- * call.
+/**
+ * This function will try to detect if pictures are being leaked. If so it
+ * will release them.
+ *
+ * XXX This function is there to workaround bugs in decoder
  */
-void vout_Cancel( vout_thread_t *p_vout, bool b_canceled );
+void vout_FixLeaks( vout_thread_t *p_vout );
+
+/*
+ * Reset the states of the vout.
+ */
+void vout_Reset( vout_thread_t *p_vout );
 
 /**
  * This function will force to display the next picture while paused
@@ -65,9 +69,6 @@ void vout_NextPicture( vout_thread_t *p_vout, mtime_t *pi_duration );
  * This function will ask the display of the input title
  */
 void vout_DisplayTitle( vout_thread_t *p_vout, const char *psz_title );
-
-void vout_WindowMouseEvent( vout_thread_t *p_vout,
-                            const vout_window_mouse_event_t *mouse );
 
 /**
  * This function will return true if no more pictures are to be displayed.

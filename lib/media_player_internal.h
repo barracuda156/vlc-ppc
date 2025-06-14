@@ -30,9 +30,9 @@
 #endif
 
 #include <vlc/vlc.h>
+#include <vlc/libvlc_structures.h>
 #include <vlc/libvlc_media.h>
 #include <vlc_input.h>
-#include <vlc_viewpoint.h>
 
 #include "../modules/audio_filter/equalizer_presets.h"
 
@@ -52,10 +52,8 @@ struct libvlc_media_player_t
 
     struct libvlc_instance_t * p_libvlc_instance; /* Parent instance */
     libvlc_media_t * p_md; /* current media descriptor */
-    libvlc_event_manager_t event_manager;
+    libvlc_event_manager_t * p_event_manager;
     libvlc_state_t state;
-    vlc_viewpoint_t viewpoint;
-    int selected_es[3];
 };
 
 /* Media player - audio, video */

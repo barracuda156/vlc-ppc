@@ -34,7 +34,7 @@
 #include "../events/evt_mouse.hpp"
 #include "../events/evt_refresh.hpp"
 #include "../events/evt_scroll.hpp"
-#include <vlc_actions.h>
+#include <vlc_keys.h>
 
 
 // XXX: Cygwin (at least) doesn't define these macros. Too bad...

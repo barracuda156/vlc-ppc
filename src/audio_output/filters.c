@@ -45,42 +45,23 @@
 static filter_t *CreateFilter (vlc_object_t *obj, const char *type,
                                const char *name, filter_owner_sys_t *owner,
                                const audio_sample_format_t *infmt,
-                               const audio_sample_format_t *outfmt,
-                               config_chain_t *cfg, bool const_fmt)
+                               const audio_sample_format_t *outfmt)
 {
     filter_t *filter = vlc_custom_create (obj, sizeof (*filter), type);
     if (unlikely(filter == NULL))
         return NULL;
 
-    filter->owner.sys = owner;
-    filter->p_cfg = cfg;
+    filter->p_owner = owner;
     filter->fmt_in.audio = *infmt;
     filter->fmt_in.i_codec = infmt->i_format;
     filter->fmt_out.audio = *outfmt;
     filter->fmt_out.i_codec = outfmt->i_format;
-
-#ifndef NDEBUG
-    /* Assure that infmt/oufmt are well prepared and that channels
-     * configurations are valid*/
-    if( infmt->i_physical_channels != 0 )
-        assert( aout_FormatNbChannels( infmt ) == infmt->i_channels );
-    if( outfmt->i_physical_channels != 0 )
-        assert( aout_FormatNbChannels( outfmt ) == outfmt->i_channels );
-#endif
-
     filter->p_module = module_need (filter, type, name, false);
-
-#ifndef NDEBUG
-    if (filter->p_module == NULL || const_fmt)
+    if (filter->p_module == NULL)
     {
         /* If probing failed, formats shall not have been modified. */
         assert (AOUT_FMTS_IDENTICAL(&filter->fmt_in.audio, infmt));
         assert (AOUT_FMTS_IDENTICAL(&filter->fmt_out.audio, outfmt));
-    }
-#endif
-
-    if (filter->p_module == NULL)
-    {
         vlc_object_release (filter);
         filter = NULL;
     }
@@ -93,8 +74,7 @@ static filter_t *FindConverter (vlc_object_t *obj,
                                 const audio_sample_format_t *infmt,
                                 const audio_sample_format_t *outfmt)
 {
-    return CreateFilter (obj, "audio converter", NULL, NULL, infmt, outfmt,
-                         NULL, true);
+    return CreateFilter (obj, "audio converter", NULL, NULL, infmt, outfmt);
 }
 
 static filter_t *FindResampler (vlc_object_t *obj,
@@ -102,7 +82,7 @@ static filter_t *FindResampler (vlc_object_t *obj,
                                 const audio_sample_format_t *outfmt)
 {
     return CreateFilter (obj, "audio resampler", "$audio-resampler", NULL,
-                         infmt, outfmt, NULL, true);
+                         infmt, outfmt);
 }
 
 /**
@@ -147,8 +127,7 @@ static filter_t *TryFormat (vlc_object_t *obj, vlc_fourcc_t codec,
 static int aout_FiltersPipelineCreate(vlc_object_t *obj, filter_t **filters,
                                       unsigned *count, unsigned max,
                                  const audio_sample_format_t *restrict infmt,
-                                 const audio_sample_format_t *restrict outfmt,
-                                 bool headphones)
+                                 const audio_sample_format_t *restrict outfmt)
 {
     aout_FormatsPrint (obj, "conversion:", infmt, outfmt);
     max -= *count;
@@ -160,16 +139,29 @@ static int aout_FiltersPipelineCreate(vlc_object_t *obj, filter_t **filters,
     audio_sample_format_t input = *infmt;
     unsigned n = 0;
 
-    if (!AOUT_FMT_LINEAR(&input))
+    /* Encapsulate or decode non-linear formats */
+    if (!AOUT_FMT_LINEAR(infmt) && infmt->i_format != outfmt->i_format)
     {
-        msg_Err(obj, "Can't convert non linear input");
-        return -1;
+        if (n == max)
+            goto overflow;
+
+        filter_t *f = TryFormat (obj, VLC_CODEC_S32N, &input);
+        if (f == NULL)
+            f = TryFormat (obj, VLC_CODEC_FL32, &input);
+        if (f == NULL)
+        {
+            msg_Err (obj, "cannot find %s for conversion pipeline",
+                     "decoder");
+            goto error;
+        }
+
+        filters[n++] = f;
     }
+    assert (AOUT_FMT_LINEAR(&input));
 
     /* Remix channels */
     if (infmt->i_physical_channels != outfmt->i_physical_channels
-     || infmt->i_chan_mode != outfmt->i_chan_mode
-     || infmt->channel_type != outfmt->channel_type)
+     || infmt->i_original_channels != outfmt->i_original_channels)
     {   /* Remixing currently requires FL32... TODO: S16N */
         if (input.i_format != VLC_CODEC_FL32)
         {
@@ -194,22 +186,10 @@ static int aout_FiltersPipelineCreate(vlc_object_t *obj, filter_t **filters,
         output.i_format = input.i_format;
         output.i_rate = input.i_rate;
         output.i_physical_channels = outfmt->i_physical_channels;
-        output.channel_type = outfmt->channel_type;
-        output.i_chan_mode = outfmt->i_chan_mode;
+        output.i_original_channels = outfmt->i_original_channels;
         aout_FormatPrepare (&output);
 
-        const char *filter_type =
-            infmt->channel_type != outfmt->channel_type ?
-            "audio renderer" : "audio converter";
-
-        config_chain_t *cfg = NULL;
-        if (headphones)
-            config_ChainParseOptions(&cfg, "{headphones=true}");
-        filter_t *f = CreateFilter (obj, filter_type, NULL, NULL,
-                                    &input, &output, cfg, true);
-        if (cfg)
-            config_ChainDestroy(cfg);
-
+        filter_t *f = FindConverter (obj, &input, &output);
         if (f == NULL)
         {
             msg_Err (obj, "cannot find %s for conversion pipeline",
@@ -264,8 +244,8 @@ static int aout_FiltersPipelineCreate(vlc_object_t *obj, filter_t **filters,
 
 overflow:
     msg_Err (obj, "maximum of %u conversion filters reached", max);
-    vlc_dialog_display_error (obj, _("Audio filtering failed"),
-        _("The maximum number of filters (%u) was reached."), max);
+    dialog_Fatal (obj, _("Audio filtering failed"),
+                  _("The maximum number of filters (%u) was reached."), max);
 error:
     aout_FiltersPipelineDestroy (filters, n);
     return -1;
@@ -287,56 +267,6 @@ static block_t *aout_FiltersPipelinePlay(filter_t *const *filters,
         block = filter->pf_audio_filter (filter, block);
     }
     return block;
-}
-
-
-/**
- * Drain the chain of filters.
- */
-static block_t *aout_FiltersPipelineDrain(filter_t *const *filters,
-                                          unsigned count)
-{
-    block_t *chain = NULL;
-
-    for (unsigned i = 0; i < count; i++)
-    {
-        filter_t *filter = filters[i];
-
-        block_t *block = filter_DrainAudio (filter);
-        if (block)
-        {
-            /* If there is a drained block, filter it through the following
-             * chain of filters  */
-            if (i + 1 < count)
-                block = aout_FiltersPipelinePlay (&filters[i + 1],
-                                                  count - i - 1, block);
-            if (block)
-                block_ChainAppend (&chain, block);
-        }
-    }
-
-    if (chain)
-        return block_ChainGather(chain);
-    else
-        return NULL;
-}
-
-/**
- * Flush the chain of filters.
- */
-static void aout_FiltersPipelineFlush(filter_t *const *filters,
-                                      unsigned count)
-{
-    for (unsigned i = 0; i < count; i++)
-        filter_Flush (filters[i]);
-}
-
-static void aout_FiltersPipelineChangeViewpoint(filter_t *const *filters,
-                                                unsigned count,
-                                                const vlc_viewpoint_t *vp)
-{
-    for (unsigned i = 0; i < count; i++)
-        filter_ChangeViewpoint (filters[i], vp);
 }
 
 #define AOUT_MAX_FILTERS 10
@@ -381,14 +311,14 @@ static int VisualizationCallback (vlc_object_t *obj, const char *var,
 }
 
 vout_thread_t *aout_filter_RequestVout (filter_t *filter, vout_thread_t *vout,
-                                        const video_format_t *fmt)
+                                        video_format_t *fmt)
 {
     /* NOTE: This only works from aout_filters_t.
      * If you want to use visualization filters from another place, you will
      * need to add a new pf_aout_request_vout callback or store a pointer
      * to aout_request_vout_t inside filter_t (i.e. a level of indirection). */
-    const aout_request_vout_t *req = filter->owner.sys;
-    char *visual = var_InheritString (filter->obj.parent, "audio-visual");
+    const aout_request_vout_t *req = (void *)filter->p_owner;
+    char *visual = var_InheritString (filter->p_parent, "audio-visual");
     /* NOTE: Disable recycling to always close the filter vout because OpenGL
      * visualizations do not use this function to ask for a context. */
     bool recycle = false;
@@ -400,8 +330,7 @@ vout_thread_t *aout_filter_RequestVout (filter_t *filter, vout_thread_t *vout,
 static int AppendFilter(vlc_object_t *obj, const char *type, const char *name,
                         aout_filters_t *restrict filters, const void *owner,
                         audio_sample_format_t *restrict infmt,
-                        const audio_sample_format_t *restrict outfmt,
-                        config_chain_t *cfg)
+                        const audio_sample_format_t *restrict outfmt)
 {
     const unsigned max = sizeof (filters->tab) / sizeof (filters->tab[0]);
     if (filters->count >= max)
@@ -411,7 +340,7 @@ static int AppendFilter(vlc_object_t *obj, const char *type, const char *name,
     }
 
     filter_t *filter = CreateFilter (obj, type, name,
-                                     (void *)owner, infmt, outfmt, cfg, false);
+                                     (void *)owner, infmt, outfmt);
     if (filter == NULL)
     {
         msg_Err (obj, "cannot add user %s \"%s\" (skipped)", type, name);
@@ -420,7 +349,7 @@ static int AppendFilter(vlc_object_t *obj, const char *type, const char *name,
 
     /* convert to the filter input format if necessary */
     if (aout_FiltersPipelineCreate (obj, filters->tab, &filters->count,
-                                    max - 1, infmt, &filter->fmt_in.audio, false))
+                                    max - 1, infmt, &filter->fmt_in.audio))
     {
         msg_Err (filter, "cannot add user %s \"%s\" (skipped)", type, name);
         module_unneed (filter, filter->p_module);
@@ -435,52 +364,6 @@ static int AppendFilter(vlc_object_t *obj, const char *type, const char *name,
     return 0;
 }
 
-static int AppendRemapFilter(vlc_object_t *obj, aout_filters_t *restrict filters,
-                             audio_sample_format_t *restrict infmt,
-                             const audio_sample_format_t *restrict outfmt,
-                             const int *wg4_remap)
-{
-    char *name;
-    config_chain_t *cfg;
-
-    /* The remap audio filter use a different order than wg4 */
-    static const uint8_t wg4_to_remap[] = { 0, 2, 6, 7, 3, 5, 4, 1, 8 };
-    int remap[AOUT_CHAN_MAX];
-    bool needed = false;
-    for (int i = 0; i < AOUT_CHAN_MAX; ++i)
-    {
-        if (wg4_remap[i] != i)
-            needed = true;
-        remap[i] = wg4_remap[i] >= 0 ? wg4_to_remap[wg4_remap[i]] : -1;
-    }
-    if (!needed)
-        return 0;
-
-    char *str;
-    int ret = asprintf(&str, "remap{channel-left=%d,channel-right=%d,"
-                       "channel-middleleft=%d,channel-middleright=%d,"
-                       "channel-rearleft=%d,channel-rearright=%d,"
-                       "channel-rearcenter=%d,channel-center=%d,"
-                       "channel-lfe=%d,normalize=false}",
-                       remap[0], remap[1], remap[2], remap[3], remap[4],
-                       remap[5], remap[6], remap[7], remap[8]);
-    if (ret == -1)
-        return -1;
-
-    free(config_ChainCreate(&name, &cfg, str));
-    if (name != NULL && cfg != NULL)
-        ret = AppendFilter(obj, "audio filter", name, filters,
-                           NULL, infmt, outfmt, cfg);
-    else
-        ret = -1;
-
-    free(str);
-    free(name);
-    if (cfg)
-        config_ChainDestroy(cfg);
-    return ret;
-}
-
 #undef aout_FiltersNew
 /**
  * Sets a chain of audio filters up.
@@ -488,7 +371,6 @@ static int AppendRemapFilter(vlc_object_t *obj, aout_filters_t *restrict filters
  * \param infmt chain input format [IN]
  * \param outfmt chain output format [IN]
  * \param request_vout visualization video output request callback
- * \param cfg a valid aout_filters_cfg_t struct or NULL.
  * \return a filters chain or NULL on failure
  *
  * \note
@@ -500,8 +382,7 @@ static int AppendRemapFilter(vlc_object_t *obj, aout_filters_t *restrict filters
 aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
                                  const audio_sample_format_t *restrict infmt,
                                  const audio_sample_format_t *restrict outfmt,
-                                 const aout_request_vout_t *request_vout,
-                                 const aout_filters_cfg_t *cfg)
+                                 const aout_request_vout_t *request_vout)
 {
     aout_filters_t *filters = malloc (sizeof (*filters));
     if (unlikely(filters == NULL))
@@ -521,6 +402,7 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
     if (request_vout != NULL)
         var_AddCallback (obj, "visual", VisualizationCallback, NULL);
 
+    /* Now add user filters */
     if (!AOUT_FMT_LINEAR(outfmt))
     {   /* Non-linear output: just convert formats, no filters/visu */
         if (!AOUT_FMTS_IDENTICAL(infmt, outfmt))
@@ -536,76 +418,15 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         }
         return filters;
     }
-    if (aout_FormatNbChannels(outfmt) == 0)
-    {
-        msg_Warn (obj, "No output channel mask, cannot setup filters");
-        goto error;
-    }
-
-    assert(output_format.channel_type == AUDIO_CHANNEL_TYPE_BITMAP);
-    if (input_format.channel_type != output_format.channel_type)
-    {
-        /* Do the channel type conversion before any filters since audio
-         * converters and filters handle only AUDIO_CHANNEL_TYPE_BITMAP */
-
-        /* convert to the output format (minus resampling) if necessary */
-        output_format.i_rate = input_format.i_rate;
-        if (aout_FiltersPipelineCreate (obj, filters->tab, &filters->count,
-                                  AOUT_MAX_FILTERS, &input_format, &output_format,
-                                  cfg->headphones))
-        {
-            msg_Warn (obj, "cannot setup audio renderer pipeline");
-            /* Fallback to bitmap without any conversions */
-            input_format.channel_type = AUDIO_CHANNEL_TYPE_BITMAP;
-            aout_FormatPrepare(&input_format);
-        }
-        else
-            input_format = output_format;
-    }
-
-    if (aout_FormatNbChannels(&input_format) == 0)
-    {
-        /* The input channel map is unknown, use the WAVE one and add a
-         * converter that will drop extra channels that are not handled by VLC
-         * */
-        msg_Info(obj, "unknown channel map, using the WAVE channel layout.");
-
-        assert(input_format.i_channels > 0);
-        audio_sample_format_t input_phys_format = input_format;
-        aout_SetWavePhysicalChannels(&input_phys_format);
-
-        filter_t *f = FindConverter (obj, &input_format, &input_phys_format);
-        if (f == NULL)
-        {
-            msg_Err (obj, "cannot find channel converter");
-            goto error;
-        }
-
-        input_format = input_phys_format;
-        filters->tab[filters->count++] = f;
-    }
-
-    assert(input_format.channel_type == AUDIO_CHANNEL_TYPE_BITMAP);
 
     /* parse user filter lists */
     if (var_InheritBool (obj, "audio-time-stretch"))
     {
         if (AppendFilter(obj, "audio filter", "scaletempo",
-                         filters, NULL, &input_format, &output_format, NULL) == 0)
+                         filters, NULL, &input_format, &output_format) == 0)
             filters->rate_filter = filters->tab[filters->count - 1];
     }
 
-    if (cfg != NULL)
-    {
-        AppendRemapFilter(obj, filters, &input_format, &output_format,
-                          cfg->remap);
-
-        if (input_format.i_channels > 2 && cfg->headphones)
-            AppendFilter(obj, "audio filter", "binauralizer", filters, NULL,
-                    &input_format, &output_format, NULL);
-    }
-
-    /* Now add user filters */
     char *str = var_InheritString (obj, "audio-filter");
     if (str != NULL)
     {
@@ -613,7 +434,7 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         while ((name = strsep (&p, " :")) != NULL)
         {
             AppendFilter(obj, "audio filter", name, filters,
-                         NULL, &input_format, &output_format, NULL);
+                         NULL, &input_format, &output_format);
         }
         free (str);
     }
@@ -623,14 +444,14 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         char *visual = var_InheritString (obj, "audio-visual");
         if (visual != NULL && strcasecmp (visual, "none"))
             AppendFilter(obj, "visualization", visual, filters,
-                         request_vout, &input_format, &output_format, NULL);
+                         request_vout, &input_format, &output_format);
         free (visual);
     }
 
     /* convert to the output format (minus resampling) if necessary */
     output_format.i_rate = input_format.i_rate;
     if (aout_FiltersPipelineCreate (obj, filters->tab, &filters->count,
-                              AOUT_MAX_FILTERS, &input_format, &output_format, false))
+                              AOUT_MAX_FILTERS, &input_format, &output_format))
     {
         msg_Err (obj, "cannot setup filtering pipeline");
         goto error;
@@ -677,11 +498,6 @@ void aout_FiltersDelete (vlc_object_t *obj, aout_filters_t *filters)
     if (obj != NULL)
         var_DelCallback (obj, "visual", VisualizationCallback, NULL);
     free (filters);
-}
-
-bool aout_FiltersCanResample (aout_filters_t *filters)
-{
-    return (filters->resampler != NULL);
 }
 
 bool aout_FiltersAdjustResampling (aout_filters_t *filters, int adjust)
@@ -732,50 +548,4 @@ block_t *aout_FiltersPlay (aout_filters_t *filters, block_t *block, int rate)
 drop:
     block_Release (block);
     return NULL;
-}
-
-block_t *aout_FiltersDrain (aout_filters_t *filters)
-{
-    /* Drain the filters pipeline */
-    block_t *block = aout_FiltersPipelineDrain (filters->tab, filters->count);
-
-    if (filters->resampler != NULL)
-    {
-        block_t *chain = NULL;
-
-        filters->resampler->fmt_in.audio.i_rate += filters->resampling;
-
-        if (block)
-        {
-            /* Resample the drained block from the filters pipeline */
-            block = aout_FiltersPipelinePlay (&filters->resampler, 1, block);
-            if (block)
-                block_ChainAppend (&chain, block);
-        }
-
-        /* Drain the resampler filter */
-        block = aout_FiltersPipelineDrain (&filters->resampler, 1);
-        if (block)
-            block_ChainAppend (&chain, block);
-
-        filters->resampler->fmt_in.audio.i_rate -= filters->resampling;
-
-        return chain ? block_ChainGather (chain) : NULL;
-    }
-    else
-        return block;
-}
-
-void aout_FiltersFlush (aout_filters_t *filters)
-{
-    aout_FiltersPipelineFlush (filters->tab, filters->count);
-
-    if (filters->resampler != NULL)
-        aout_FiltersPipelineFlush (&filters->resampler, 1);
-}
-
-void aout_FiltersChangeViewpoint (aout_filters_t *filters,
-                                  const vlc_viewpoint_t *vp)
-{
-    aout_FiltersPipelineChangeViewpoint (filters->tab, filters->count, vp);
 }

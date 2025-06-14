@@ -92,20 +92,14 @@ else
     find VLC.app/Contents/Frameworks -type f -name "*.txt" -exec rm '{}' \;
 
     info "Signing frameworks"
+    IDENTIFIER="com.binarymethod.BGHUDAppKit"
+    codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/BGHUDAppKit.framework/Versions/A
     IDENTIFIER="com.growl.growlframework"
     codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Growl.framework/Versions/A
-
-    IDENTIFIER="fileop"
-    codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/Autoupdate.app/Contents/MacOS/fileop
-    IDENTIFIER="org.sparkle-project.Sparkle.Autoupdate"
+    IDENTIFIER="org.andymatuschak.sparkle.Autoupdate"
     codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Sparkle.framework/Resources/Autoupdate.app
-    IDENTIFIER="org.sparkle-project.Sparkle"
+    IDENTIFIER="org.andymatuschak.Sparkle"
     codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Sparkle.framework/Versions/A
-
-    IDENTIFIER="com.Breakpad.crash_report_sender"
-    codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Breakpad.framework/Resources/crash_report_sender.app
-    IDENTIFIER="com.googlecode.google-breakpad"
-    codesign --force --verbose -s "$IDENTITY" --preserve-metadata=identifier,entitlements --requirements "$FIRSTPARTOF_REQUIREMENT$IDENTIFIER$SECONDPARTOF_REQUIREMENT" --timestamp=none VLC.app/Contents/Frameworks/Breakpad.framework/Versions/A
 
     info "Signing the framework headers"
     for i in `find VLC.app/Contents/Frameworks/* -type f -name "*.h" -exec echo {} \;`
@@ -190,7 +184,7 @@ fi
 info "all items signed, validating..."
 
 info "Validating frameworks"
-codesign --verify -vv VLC.app/Contents/Frameworks/Breakpad.framework
+codesign --verify -vv VLC.app/Contents/Frameworks/BGHUDAppKit.framework
 codesign --verify -vv VLC.app/Contents/Frameworks/Growl.framework
 codesign --verify -vv VLC.app/Contents/Frameworks/Sparkle.framework
 

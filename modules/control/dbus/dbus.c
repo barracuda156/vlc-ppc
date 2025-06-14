@@ -53,18 +53,15 @@
 #include "dbus_tracklist.h"
 #include "dbus_introspect.h"
 
-#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
 #include <vlc_playlist.h>
-#include <vlc_input.h>
 #include <vlc_meta.h>
 #include <vlc_mtime.h>
 #include <vlc_fs.h>
 
 #include <assert.h>
-#include <limits.h>
 #include <string.h>
 
 #include <poll.h>
@@ -91,7 +88,15 @@ static const DBusObjectPathVTable dbus_mpris_vtable = {
 typedef struct
 {
     int signal;
+    int i_node;
+    int i_item;
 } callback_info_t;
+
+typedef struct
+{
+    mtime_t      i_remaining;
+    DBusTimeout *p_timeout;
+} timeout_info_t;
 
 enum
 {
@@ -107,15 +112,18 @@ static int TrackChange( intf_thread_t * );
 static int AllCallback( vlc_object_t*, const char*, vlc_value_t, vlc_value_t, void* );
 static int InputCallback( vlc_object_t*, const char*, vlc_value_t, vlc_value_t, void* );
 
-static dbus_bool_t add_timeout(DBusTimeout *, void *);
-static void remove_timeout(DBusTimeout *, void *);
-static void toggle_timeout(DBusTimeout *, void *);
-
+static dbus_bool_t add_timeout ( DBusTimeout *p_timeout, void *p_data );
 static dbus_bool_t add_watch   ( DBusWatch *p_watch, void *p_data );
+
+static void remove_timeout  ( DBusTimeout *p_timeout, void *p_data );
 static void remove_watch    ( DBusWatch *p_watch, void *p_data );
+
+static void timeout_toggled ( DBusTimeout *p_timeout, void *p_data );
 static void watch_toggled   ( DBusWatch *p_watch, void *p_data );
 
 static void wakeup_main_loop( void *p_data );
+
+static int UpdateTimeouts( intf_thread_t *p_intf, mtime_t i_lastrun );
 
 static void ProcessEvents  ( intf_thread_t    *p_intf,
                              callback_info_t **p_events,
@@ -126,6 +134,10 @@ static void ProcessWatches ( intf_thread_t    *p_intf,
                              int               i_watches,
                              struct pollfd    *p_fds,
                              int               i_fds );
+
+static void ProcessTimeouts( intf_thread_t    *p_intf,
+                             DBusTimeout     **p_timeouts,
+                             int               i_timeouts );
 
 static void DispatchDBusMessages( intf_thread_t *p_intf );
 
@@ -180,8 +192,8 @@ static int Open( vlc_object_t *p_this )
         msg_Err( p_this, "Failed to connect to the D-Bus session daemon: %s",
                 error.message );
         dbus_error_free( &error );
-        vlc_close( p_sys->p_pipe_fds[1] );
-        vlc_close( p_sys->p_pipe_fds[0] );
+        close( p_sys->p_pipe_fds[1] );
+        close( p_sys->p_pipe_fds[0] );
         free( p_sys );
         return VLC_EGENERIC;
     }
@@ -193,11 +205,13 @@ static int Open( vlc_object_t *p_this )
             &dbus_mpris_vtable, p_this );
 
     /* Try to register org.mpris.MediaPlayer2.vlc */
-    const unsigned bus_flags = DBUS_NAME_FLAG_DO_NOT_QUEUE;
-    var_Create(p_intf->obj.libvlc, "dbus-mpris-name", VLC_VAR_STRING);
-    if( dbus_bus_request_name( p_conn, DBUS_MPRIS_BUS_NAME, bus_flags, NULL )
-                                     != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER )
+    dbus_bus_request_name( p_conn, DBUS_MPRIS_BUS_NAME, 0, &error );
+    if( dbus_error_is_set( &error ) )
     {
+        msg_Dbg( p_this, "Failed to get service name %s: %s",
+                 DBUS_MPRIS_BUS_NAME, error.message );
+        dbus_error_free( &error );
+
         /* Register an instance-specific well known name of the form
          * org.mpris.MediaPlayer2.vlc.instanceXXXX where XXXX is the
          * current Process ID */
@@ -208,33 +222,33 @@ static int Open( vlc_object_t *p_this )
                   DBUS_MPRIS_BUS_NAME"."DBUS_INSTANCE_ID_PREFIX"%"PRIu32,
                   (uint32_t)getpid() );
 
-        if( dbus_bus_request_name( p_conn, unique_service, bus_flags, NULL )
-                                     == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER )
+        dbus_bus_request_name( p_conn, unique_service, 0, &error );
+        if( dbus_error_is_set( &error ) )
         {
-            msg_Dbg( p_intf, "listening on dbus as: %s", unique_service );
-            var_SetString(p_intf->obj.libvlc, "dbus-mpris-name",
-                          unique_service);
+            msg_Err( p_this, "Failed to get service name %s: %s",
+                     DBUS_MPRIS_BUS_NAME, error.message );
+            dbus_error_free( &error );
         }
+        else
+            msg_Dbg( p_intf, "listening on dbus as: %s", unique_service );
     }
     else
-    {
         msg_Dbg( p_intf, "listening on dbus as: %s", DBUS_MPRIS_BUS_NAME );
-        var_SetString(p_intf->obj.libvlc, "dbus-mpris-name",
-                      DBUS_MPRIS_BUS_NAME);
-    }
+
     dbus_connection_flush( p_conn );
 
     p_intf->p_sys = p_sys;
     p_sys->p_conn = p_conn;
-    vlc_array_init( &p_sys->events );
-    vlc_array_init( &p_sys->timeouts );
-    vlc_array_init( &p_sys->watches );
+    p_sys->p_events = vlc_array_new();
+    p_sys->p_timeouts = vlc_array_new();
+    p_sys->p_watches = vlc_array_new();
     vlc_mutex_init( &p_sys->lock );
 
     p_playlist = pl_Get( p_intf );
     p_sys->p_playlist = p_playlist;
 
-    var_AddCallback( p_playlist, "input-current", AllCallback, p_intf );
+    var_AddCallback( p_playlist, "activity", AllCallback, p_intf );
+    var_AddCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_AddCallback( p_playlist, "volume", AllCallback, p_intf );
     var_AddCallback( p_playlist, "mute", AllCallback, p_intf );
     var_AddCallback( p_playlist, "playlist-item-append", AllCallback, p_intf );
@@ -247,7 +261,7 @@ static int Open( vlc_object_t *p_this )
     if( !dbus_connection_set_timeout_functions( p_conn,
                                                 add_timeout,
                                                 remove_timeout,
-                                                toggle_timeout,
+                                                timeout_toggled,
                                                 p_intf, NULL ) )
         goto error;
 
@@ -264,17 +278,20 @@ static int Open( vlc_object_t *p_this )
     return VLC_SUCCESS;
 
 error:
-    var_Destroy(p_intf->obj.libvlc, "dbus-mpris-name");
     /* The dbus connection is private,
      * so we are responsible for closing it
      * XXX: Does this make sense when OOM ? */
     dbus_connection_close( p_sys->p_conn );
     dbus_connection_unref( p_conn );
 
+    vlc_array_destroy( p_sys->p_events );
+    vlc_array_destroy( p_sys->p_timeouts );
+    vlc_array_destroy( p_sys->p_watches );
+
     vlc_mutex_destroy( &p_sys->lock );
 
-    vlc_close( p_sys->p_pipe_fds[1] );
-    vlc_close( p_sys->p_pipe_fds[0] );
+    close( p_sys->p_pipe_fds[1] );
+    close( p_sys->p_pipe_fds[0] );
     free( p_sys );
     return VLC_ENOMEM;
 }
@@ -292,7 +309,8 @@ static void Close   ( vlc_object_t *p_this )
     vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
 
-    var_DelCallback( p_playlist, "input-current", AllCallback, p_intf );
+    var_DelCallback( p_playlist, "activity", AllCallback, p_intf );
+    var_DelCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_DelCallback( p_playlist, "volume", AllCallback, p_intf );
     var_DelCallback( p_playlist, "mute", AllCallback, p_intf );
     var_DelCallback( p_playlist, "playlist-item-append", AllCallback, p_intf );
@@ -316,130 +334,58 @@ static void Close   ( vlc_object_t *p_this )
     dbus_connection_unref( p_sys->p_conn );
 
     // Free the events array
-    for( size_t i = 0; i < vlc_array_count( &p_sys->events ); i++ )
+    for( int i = 0; i < vlc_array_count( p_sys->p_events ); i++ )
     {
-        callback_info_t* info = vlc_array_item_at_index( &p_sys->events, i );
+        callback_info_t* info = vlc_array_item_at_index( p_sys->p_events, i );
         free( info );
     }
     vlc_mutex_destroy( &p_sys->lock );
-    vlc_array_clear( &p_sys->events );
-    vlc_array_clear( &p_sys->timeouts );
-    vlc_array_clear( &p_sys->watches );
-    vlc_close( p_sys->p_pipe_fds[1] );
-    vlc_close( p_sys->p_pipe_fds[0] );
+    vlc_array_destroy( p_sys->p_events );
+    vlc_array_destroy( p_sys->p_timeouts );
+    vlc_array_destroy( p_sys->p_watches );
+    close( p_sys->p_pipe_fds[1] );
+    close( p_sys->p_pipe_fds[0] );
     free( p_sys );
 }
 
-static dbus_bool_t add_timeout(DBusTimeout *to, void *data)
+static dbus_bool_t add_timeout( DBusTimeout *p_timeout, void *p_data )
 {
-    intf_thread_t *intf = data;
-    intf_sys_t *sys = intf->p_sys;
+    intf_thread_t *p_intf = (intf_thread_t*) p_data;
+    intf_sys_t    *p_sys  = (intf_sys_t*) p_intf->p_sys;
 
-    mtime_t *expiry = malloc(sizeof (*expiry));
-    if (unlikely(expiry == NULL))
-        return FALSE;
+    timeout_info_t *p_info = calloc( 1, sizeof( timeout_info_t ) );
+    p_info->i_remaining = dbus_timeout_get_interval( p_timeout ) * 1000;/* µs */
+    p_info->p_timeout = p_timeout;
 
-    dbus_timeout_set_data(to, expiry, free);
+    dbus_timeout_set_data( p_timeout, p_info, free );
 
-    vlc_mutex_lock(&sys->lock);
-    vlc_array_append_or_abort(&sys->timeouts, to);
-    vlc_mutex_unlock(&sys->lock);
+    vlc_mutex_lock( &p_sys->lock );
+    vlc_array_append( p_sys->p_timeouts, p_timeout );
+    vlc_mutex_unlock( &p_sys->lock );
 
     return TRUE;
 }
 
-static void remove_timeout(DBusTimeout *to, void *data)
+static void remove_timeout( DBusTimeout *p_timeout, void *p_data )
 {
-    intf_thread_t *intf = data;
-    intf_sys_t *sys = intf->p_sys;
-    size_t idx;
+    intf_thread_t *p_intf = (intf_thread_t*) p_data;
+    intf_sys_t    *p_sys  = (intf_sys_t*) p_intf->p_sys;
 
-    vlc_mutex_lock(&sys->lock);
-    idx = vlc_array_index_of_item(&sys->timeouts, to);
-    vlc_array_remove(&sys->timeouts, idx);
-    vlc_mutex_unlock(&sys->lock);
+    vlc_mutex_lock( &p_sys->lock );
+
+    vlc_array_remove( p_sys->p_timeouts,
+                      vlc_array_index_of_item( p_sys->p_timeouts, p_timeout ) );
+
+    vlc_mutex_unlock( &p_sys->lock );
 }
 
-static void toggle_timeout(DBusTimeout *to, void *data)
+static void timeout_toggled( DBusTimeout *p_timeout, void *p_data )
 {
-    intf_thread_t *intf = data;
-    intf_sys_t *sys = intf->p_sys;
-    mtime_t *expiry = dbus_timeout_get_data(to);
+    intf_thread_t *p_intf = (intf_thread_t*) p_data;
 
-    vlc_mutex_lock(&sys->lock);
-    if (dbus_timeout_get_enabled(to))
-        *expiry = mdate() + UINT64_C(1000) * dbus_timeout_get_interval(to);
-    vlc_mutex_unlock(&sys->lock);
-
-    wakeup_main_loop(intf);
+    if( dbus_timeout_get_enabled( p_timeout ) )
+        wakeup_main_loop( p_intf );
 }
-
-/**
- * Computes the time until the next timeout expiration.
- * @note Interface lock must be held.
- * @return The time in milliseconds until the next expiration,
- *         or -1 if there are no pending timeouts.
- */
-static int next_timeout(intf_thread_t *intf)
-{
-    intf_sys_t *sys = intf->p_sys;
-    mtime_t next_timeout = LAST_MDATE;
-    unsigned count = vlc_array_count(&sys->timeouts);
-
-    for (unsigned i = 0; i < count; i++)
-    {
-        DBusTimeout *to = vlc_array_item_at_index(&sys->timeouts, i);
-
-        if (!dbus_timeout_get_enabled(to))
-            continue;
-
-        mtime_t *expiry = dbus_timeout_get_data(to);
-
-        if (next_timeout > *expiry)
-            next_timeout = *expiry;
-    }
-
-    if (next_timeout >= LAST_MDATE)
-        return -1;
-
-    next_timeout /= 1000;
-
-    if (next_timeout > INT_MAX)
-        return INT_MAX;
-
-    return (int)next_timeout;
-}
-
-/**
- * Process pending D-Bus timeouts.
- *
- * @note Interface lock must be held.
- */
-static void process_timeouts(intf_thread_t *intf)
-{
-    intf_sys_t *sys = intf->p_sys;
-
-    for (size_t i = 0; i < vlc_array_count(&sys->timeouts); i++)
-    {
-        DBusTimeout *to = vlc_array_item_at_index(&sys->timeouts, i);
-
-        if (!dbus_timeout_get_enabled(to))
-            continue;
-
-        mtime_t *expiry = dbus_timeout_get_data(to);
-        if (*expiry > mdate())
-            continue;
-
-        expiry += UINT64_C(1000) * dbus_timeout_get_interval(to);
-        vlc_mutex_unlock(&sys->lock);
-
-        dbus_timeout_handle(to);
-
-        vlc_mutex_lock(&sys->lock);
-        i = -1; /* lost track of state, restart from beginning */
-    }
-}
-
 
 static dbus_bool_t add_watch( DBusWatch *p_watch, void *p_data )
 {
@@ -447,7 +393,7 @@ static dbus_bool_t add_watch( DBusWatch *p_watch, void *p_data )
     intf_sys_t    *p_sys  = (intf_sys_t*) p_intf->p_sys;
 
     vlc_mutex_lock( &p_sys->lock );
-    vlc_array_append_or_abort( &p_sys->watches, p_watch );
+    vlc_array_append( p_sys->p_watches, p_watch );
     vlc_mutex_unlock( &p_sys->lock );
 
     return TRUE;
@@ -457,11 +403,12 @@ static void remove_watch( DBusWatch *p_watch, void *p_data )
 {
     intf_thread_t *p_intf = (intf_thread_t*) p_data;
     intf_sys_t    *p_sys  = (intf_sys_t*) p_intf->p_sys;
-    size_t idx;
 
     vlc_mutex_lock( &p_sys->lock );
-    idx = vlc_array_index_of_item( &p_sys->watches, p_watch );
-    vlc_array_remove( &p_sys->watches, idx );
+
+    vlc_array_remove( p_sys->p_watches,
+                      vlc_array_index_of_item( p_sys->p_watches, p_watch ) );
+
     vlc_mutex_unlock( &p_sys->lock );
 }
 
@@ -489,16 +436,15 @@ static void watch_toggled( DBusWatch *p_watch, void *p_data )
 static int GetPollFds( intf_thread_t *p_intf, struct pollfd *p_fds )
 {
     intf_sys_t *p_sys = p_intf->p_sys;
-    size_t i_watches = vlc_array_count( &p_sys->watches );
-    int i_fds = 1;
+    int i_fds = 1, i_watches = vlc_array_count( p_sys->p_watches );
 
     p_fds[0].fd = p_sys->p_pipe_fds[PIPE_OUT];
     p_fds[0].events = POLLIN | POLLPRI;
 
-    for( size_t i = 0; i < i_watches; i++ )
+    for( int i = 0; i < i_watches; i++ )
     {
         DBusWatch *p_watch = NULL;
-        p_watch = vlc_array_item_at_index( &p_sys->watches, i );
+        p_watch = vlc_array_item_at_index( p_sys->p_watches, i );
         if( !dbus_watch_get_enabled( p_watch ) )
             continue;
 
@@ -515,6 +461,53 @@ static int GetPollFds( intf_thread_t *p_intf, struct pollfd *p_fds )
     }
 
     return i_fds;
+}
+
+/**
+ * UpdateTimeouts() updates the remaining time for each timeout and
+ * returns how much time is left until the next timeout.
+ *
+ * This function must be called with p_sys->lock locked
+ *
+ * @return int The time remaining until the next timeout, in milliseconds
+ * or -1 if there are no timeouts
+ *
+ * @param intf_thread_t *p_intf This interface thread's state
+ * @param mtime_t i_loop_interval The time which has elapsed since the last
+ * call to this function
+ */
+static int UpdateTimeouts( intf_thread_t *p_intf, mtime_t i_loop_interval )
+{
+    intf_sys_t *p_sys = p_intf->p_sys;
+    mtime_t i_next_timeout = LAST_MDATE;
+    unsigned int i_timeouts = vlc_array_count( p_sys->p_timeouts );
+
+    if( 0 == i_timeouts )
+        return -1;
+
+    for( unsigned int i = 0; i < i_timeouts; i++ )
+    {
+        timeout_info_t *p_info = NULL;
+        DBusTimeout    *p_timeout = NULL;
+        mtime_t         i_interval = 0;
+
+        p_timeout = vlc_array_item_at_index( p_sys->p_timeouts, i );
+        i_interval = dbus_timeout_get_interval( p_timeout ) * 1000; /* µs */
+        p_info = (timeout_info_t*) dbus_timeout_get_data( p_timeout );
+
+        p_info->i_remaining -= __MAX( 0, i_loop_interval ) % i_interval;
+
+        if( !dbus_timeout_get_enabled( p_timeout ) )
+            continue;
+
+        /* The correct poll timeout value is the shortest one
+         * in the dbus timeouts list */
+        i_next_timeout = __MIN( i_next_timeout,
+                                __MAX( 0, p_info->i_remaining ) );
+    }
+
+    /* next timeout in milliseconds */
+    return i_next_timeout / 1000;
 }
 
 /**
@@ -548,6 +541,7 @@ static void ProcessEvents( intf_thread_t *p_intf,
 
             vlc_dictionary_insert( &player_properties, "Metadata", NULL );
             break;
+        case SIGNAL_INTF_CHANGE:
         case SIGNAL_PLAYLIST_ITEM_APPEND:
         case SIGNAL_PLAYLIST_ITEM_DELETED:
         {
@@ -608,21 +602,33 @@ static void ProcessEvents( intf_thread_t *p_intf,
             vlc_dictionary_insert( &player_properties, "CanPause", NULL );
             break;
         case SIGNAL_SEEK:
-            SeekedEmit( p_intf );
+        {
+            input_thread_t *p_input;
+            input_item_t *p_item;
+            p_input = pl_CurrentInput( p_intf );
+            if( p_input )
+            {
+                p_item = input_GetItem( p_input );
+                vlc_object_release( p_input );
+
+                if( p_item && ( p_item->i_id == p_events[i]->i_item ) )
+                    SeekedEmit( p_intf );
+            }
             break;
+        }
         default:
-            vlc_assert_unreachable();
+            assert(0);
         }
         free( p_events[i] );
     }
 
-    if( !vlc_dictionary_is_empty( &player_properties ) )
+    if( vlc_dictionary_keys_count( &player_properties ) )
         PlayerPropertiesChangedEmit( p_intf, &player_properties );
 
-    if( !vlc_dictionary_is_empty( &tracklist_properties ) )
+    if( vlc_dictionary_keys_count( &tracklist_properties ) )
         TrackListPropertiesChangedEmit( p_intf, &tracklist_properties );
 
-    if( !vlc_dictionary_is_empty( &root_properties ) )
+    if( vlc_dictionary_keys_count( &root_properties ) )
         RootPropertiesChangedEmit( p_intf, &root_properties );
 
     vlc_dictionary_clear( &player_properties,    NULL, NULL );
@@ -677,6 +683,37 @@ static void ProcessWatches( intf_thread_t *p_intf,
             if( i_flags )
                 dbus_watch_handle( p_watch, i_flags );
         }
+    }
+}
+
+/**
+ * ProcessTimeouts() handles DBus timeouts
+ *
+ * This function must be called with p_sys->lock locked
+ *
+ * @param intf_thread_t *p_intf This interface thread state
+ * @param DBusTimeout **p_timeouts List of timeouts to process
+ * @param int i_timeouts Size of p_timeouts
+ */
+static void ProcessTimeouts( intf_thread_t *p_intf,
+                             DBusTimeout  **p_timeouts, int i_timeouts )
+{
+    VLC_UNUSED( p_intf );
+
+    for( int i = 0; i < i_timeouts; i++ )
+    {
+        timeout_info_t *p_info = NULL;
+
+        p_info = (timeout_info_t*) dbus_timeout_get_data( p_timeouts[i] );
+
+        if( !dbus_timeout_get_enabled( p_info->p_timeout ) )
+            continue;
+
+        if( p_info->i_remaining > 0 )
+            continue;
+
+        dbus_timeout_handle( p_info->p_timeout );
+        p_info->i_remaining = dbus_timeout_get_interval( p_info->p_timeout );
     }
 }
 
@@ -765,35 +802,42 @@ static void *Run( void *data )
 {
     intf_thread_t *p_intf = data;
     intf_sys_t    *p_sys = p_intf->p_sys;
-
-    int canc = vlc_savecancel();
+    mtime_t        i_last_run = mdate();
 
     for( ;; )
     {
+        int canc = vlc_savecancel();
         vlc_mutex_lock( &p_sys->lock );
 
-        size_t i_watches = vlc_array_count( &p_sys->watches );
+        int i_watches = vlc_array_count( p_sys->p_watches );
         struct pollfd fds[i_watches];
         memset(fds, 0, sizeof fds);
 
         int i_fds = GetPollFds( p_intf, fds );
-        int timeout = next_timeout(p_intf);
+
+        mtime_t i_now = mdate(), i_loop_interval = i_now - i_last_run;
+
+        int i_next_timeout = UpdateTimeouts( p_intf, i_loop_interval );
+        i_last_run = i_now;
 
         vlc_mutex_unlock( &p_sys->lock );
 
         /* thread cancellation is allowed while the main loop sleeps */
         vlc_restorecancel( canc );
 
-        while (poll(fds, i_fds, timeout) == -1)
-        {
-            if (errno != EINTR)
-                goto error;
-        }
+        int i_pollres = poll( fds, i_fds, i_next_timeout );
 
         canc = vlc_savecancel();
 
+        if( -1 == i_pollres )
+        { /* XXX: What should we do when poll() fails ? */
+            msg_Err( p_intf, "poll() failed: %s", vlc_strerror_c(errno) );
+            vlc_restorecancel( canc );
+            continue;
+        }
+
         /* Was the main loop woken up manually ? */
-        if (fds[0].revents & POLLIN)
+        if( 0 < i_pollres && ( fds[0].revents & POLLIN ) )
         {
             char buf;
             (void)read( fds[0].fd, &buf, 1 );
@@ -810,25 +854,30 @@ static void *Run( void *data )
          */
         vlc_mutex_lock( &p_intf->p_sys->lock );
 
-        process_timeouts(p_intf);
+        /* Get the list of timeouts to process */
+        unsigned int i_timeouts = vlc_array_count( p_sys->p_timeouts );
+        DBusTimeout *p_timeouts[i_timeouts ? i_timeouts : 1];
+        for( unsigned int i = 0; i < i_timeouts; i++ )
+        {
+            p_timeouts[i] = vlc_array_item_at_index( p_sys->p_timeouts, i );
+        }
 
         /* Get the list of watches to process */
-        i_watches = vlc_array_count( &p_sys->watches );
-        DBusWatch *p_watches[i_watches ? i_watches : 1];
-        for( size_t i = 0; i < i_watches; i++ )
+        i_watches = vlc_array_count( p_sys->p_watches );
+        DBusWatch *p_watches[i_watches];
+        for( int i = 0; i < i_watches; i++ )
         {
-            p_watches[i] = vlc_array_item_at_index( &p_sys->watches, i );
+            p_watches[i] = vlc_array_item_at_index( p_sys->p_watches, i );
         }
 
         /* Get the list of events to process */
-        size_t i_events = vlc_array_count( &p_sys->events );
+        int i_events = vlc_array_count( p_intf->p_sys->p_events );
         callback_info_t* p_info[i_events ? i_events : 1];
-        for( size_t i = 0; i < i_events; i++ )
+        for( int i = i_events - 1; i >= 0; i-- )
         {
-            p_info[i] = vlc_array_item_at_index( &p_sys->events, i );
+            p_info[i] = vlc_array_item_at_index( p_intf->p_sys->p_events, i );
+            vlc_array_remove( p_intf->p_sys->p_events, i );
         }
-
-        vlc_array_clear( &p_sys->events );
 
         /* now we can release the lock and process what's pending */
         vlc_mutex_unlock( &p_intf->p_sys->lock );
@@ -836,11 +885,12 @@ static void *Run( void *data )
         ProcessEvents( p_intf, p_info, i_events );
         ProcessWatches( p_intf, p_watches, i_watches, fds, i_fds );
 
+        ProcessTimeouts( p_intf, p_timeouts, i_timeouts );
         DispatchDBusMessages( p_intf );
+
+        vlc_restorecancel( canc );
     }
-error:
-    vlc_restorecancel(canc);
-    return NULL;
+    assert(0);
 }
 
 static void   wakeup_main_loop( void *p_data )
@@ -875,6 +925,7 @@ static int InputCallback( vlc_object_t *p_this, const char *psz_var,
     switch( newval.i_int )
     {
         case INPUT_EVENT_DEAD:
+        case INPUT_EVENT_ABORT:
             i_state = PLAYBACK_STATE_STOPPED;
             break;
         case INPUT_EVENT_STATE:
@@ -904,7 +955,7 @@ static int InputCallback( vlc_object_t *p_this, const char *psz_var,
 
             /* Detect seeks
              * XXX: This is way more convoluted than it should be... */
-            i_pos = var_GetInteger( p_input, "time" );
+            i_pos = var_GetTime( p_input, "time" );
 
             if( !p_intf->p_sys->i_last_input_pos_event ||
                 !( var_GetInteger( p_input, "state" ) == PLAYING_S ) )
@@ -927,6 +978,7 @@ static int InputCallback( vlc_object_t *p_this, const char *psz_var,
                 break;
 
             p_info->signal = SIGNAL_SEEK;
+            p_info->i_item = input_GetItem( p_input )->i_id;
             break;
         }
         default:
@@ -942,7 +994,7 @@ static int InputCallback( vlc_object_t *p_this, const char *psz_var,
         p_info->signal = SIGNAL_STATE;
     }
     if( p_info->signal )
-        vlc_array_append_or_abort( &p_sys->events, p_info );
+        vlc_array_append( p_intf->p_sys->p_events, p_info );
     else
         free( p_info );
     vlc_mutex_unlock( &p_intf->p_sys->lock );
@@ -962,7 +1014,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
     callback_info_t info = { .signal = SIGNAL_NONE };
 
     // Wich event is it ?
-    if( !strcmp( "input-current", psz_var ) )
+    if( !strcmp( "activity", psz_var ) )
         info.signal = SIGNAL_ITEM_CURRENT;
     else if( !strcmp( "volume", psz_var ) )
     {
@@ -974,8 +1026,13 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
         if( oldval.b_bool != newval.b_bool )
             info.signal = SIGNAL_VOLUME_MUTED;
     }
+    else if( !strcmp( "intf-change", psz_var ) )
+        info.signal = SIGNAL_INTF_CHANGE;
     else if( !strcmp( "playlist-item-append", psz_var ) )
+    {
         info.signal = SIGNAL_PLAYLIST_ITEM_APPEND;
+        info.i_node = ((playlist_add_t*)newval.p_address)->i_node;
+    }
     else if( !strcmp( "playlist-item-deleted", psz_var ) )
         info.signal = SIGNAL_PLAYLIST_ITEM_DELETED;
     else if( !strcmp( "random", psz_var ) )
@@ -991,7 +1048,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
     else if( !strcmp( "can-pause", psz_var ) )
         info.signal = SIGNAL_CAN_PAUSE;
     else
-        vlc_assert_unreachable();
+        assert(0);
 
     if( info.signal == SIGNAL_NONE )
         return VLC_SUCCESS;
@@ -1003,7 +1060,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
     // Append the event
     *p_info = info;
     vlc_mutex_lock( &p_intf->p_sys->lock );
-    vlc_array_append_or_abort( &p_intf->p_sys->events, p_info );
+    vlc_array_append( p_intf->p_sys->p_events, p_info );
     vlc_mutex_unlock( &p_intf->p_sys->lock );
 
     wakeup_main_loop( p_intf );
@@ -1012,7 +1069,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
 }
 
 /*****************************************************************************
- * TrackChange: callback on playlist "input-current"
+ * TrackChange: callback on playlist "activity"
  *****************************************************************************/
 static int TrackChange( intf_thread_t *p_intf )
 {
@@ -1135,9 +1192,9 @@ int DemarshalSetPropertyValue( DBusMessage *p_msg, void *p_arg )
         free( psz ); \
     }
 
-int GetInputMeta( playlist_item_t *item, DBusMessageIter *args )
+int GetInputMeta( input_item_t* p_input,
+                  DBusMessageIter *args )
 {
-    input_item_t *p_input = item->p_input;
     DBusMessageIter dict, dict_entry, variant, list;
     /** The duration of the track can be expressed in second, milli-seconds and
         µ-seconds */
@@ -1146,19 +1203,18 @@ int GetInputMeta( playlist_item_t *item, DBusMessageIter *args )
     dbus_int64_t i_length = i_mtime / 1000;
     char *psz_trackid;
 
-    if( -1 == asprintf( &psz_trackid, MPRIS_TRACKID_FORMAT, item->i_id ) )
+    if( -1 == asprintf( &psz_trackid, MPRIS_TRACKID_FORMAT, p_input->i_id ) )
         return VLC_ENOMEM;
 
     const char* ppsz_meta_items[] =
     {
-        "mpris:trackid", "xesam:url", "xesam:title", "xesam:artist",
-        "xesam:album", "xesam:tracknumber", "vlc:time", "mpris:length",
-        "xesam:genre", "xesam:userRating", "xesam:contentCreated",
-        "mpris:artUrl", "mb:trackId", "vlc:audio-bitrate",
-        "vlc:audio-samplerate", "vlc:video-bitrate", "vlc:audio-codec",
-        "vlc:copyright", "xesam:comment", "vlc:encodedby", "language",
-        "vlc:length", "vlc:nowplaying", "vlc:publisher", "vlc:setting",
-        "status", "vlc:url", "vlc:video-codec"
+    "mpris:trackid", "xesam:url", "xesam:title", "xesam:artist", "xesam:album",
+    "xesam:tracknumber", "vlc:time", "mpris:length", "xesam:genre",
+    "xesam:userRating", "xesam:contentCreated", "mpris:artUrl", "mb:trackId",
+    "vlc:audio-bitrate", "vlc:audio-samplerate", "vlc:video-bitrate",
+    "vlc:audio-codec", "vlc:copyright", "xesam:comment", "vlc:encodedby",
+    "language", "vlc:length", "vlc:nowplaying", "vlc:publisher", "vlc:setting",
+    "status", "vlc:url", "vlc:video-codec"
     };
 
     dbus_message_iter_open_container( args, DBUS_TYPE_ARRAY, "{sv}", &dict );

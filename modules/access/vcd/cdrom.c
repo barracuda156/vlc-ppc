@@ -46,16 +46,15 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <limits.h>
 #ifdef HAVE_ARPA_INET_H
-#include <arpa/inet.h>
+#   include <arpa/inet.h>
 #endif
 
 #include <vlc_common.h>
 #include <vlc_access.h>
 #include <vlc_charset.h>
 #include <vlc_fs.h>
-#include <vlc_meta.h>
+#include <limits.h>
 
 #if defined( SYS_BSDI )
 #   include <dvd.h>
@@ -142,6 +141,7 @@ exit_free:
 
 #include "cdrom_internals.h"
 #include "cdrom.h"
+#include <vlc_meta.h>
 
 /*****************************************************************************
  * ioctl_Open: Opens a VCD device or file and returns an opaque handle
@@ -251,7 +251,7 @@ void ioctl_Close( vlc_object_t * p_this, vcddev_t *p_vcddev )
         DosClose( p_vcddev->hcd );
 #else
     if( p_vcddev->i_device_handle != -1 )
-        vlc_close( p_vcddev->i_device_handle );
+        close( p_vcddev->i_device_handle );
 #endif
     free( p_vcddev );
 }
@@ -455,6 +455,8 @@ int ioctl_GetTracksMap( vlc_object_t *p_this, const vcddev_t *p_vcddev,
 
         if( pp_sectors )
         {
+             int i;
+
              *pp_sectors = calloc( i_tracks + 1, sizeof(**pp_sectors) );
              if( *pp_sectors == NULL )
                  return 0;
@@ -482,7 +484,7 @@ int ioctl_GetTracksMap( vlc_object_t *p_this, const vcddev_t *p_vcddev,
              }
 
              /* Fill the p_sectors structure with the track/sector matches */
-             for( int i = 0 ; i <= i_tracks ; i++ )
+             for( i = 0 ; i <= i_tracks ; i++ )
              {
 #if defined( HAVE_SCSIREQ_IN_SYS_SCSIIO_H )
                  /* FIXME: is this ok? */
@@ -508,12 +510,14 @@ int ioctl_GetTracksMap( vlc_object_t *p_this, const vcddev_t *p_vcddev,
 
         if( pp_sectors )
         {
+            int i;
+
             *pp_sectors = calloc( i_tracks + 1, sizeof(**pp_sectors) );
             if( *pp_sectors == NULL )
                 return 0;
 
             /* Fill the p_sectors structure with the track/sector matches */
-            for( int i = 0 ; i <= i_tracks ; i++ )
+            for( i = 0 ; i <= i_tracks ; i++ )
             {
                 tocent.cdte_format = CDROM_LBA;
                 tocent.cdte_track =
@@ -543,9 +547,10 @@ int ioctl_ReadSectors( vlc_object_t *p_this, const vcddev_t *p_vcddev,
                        int i_sector, uint8_t *p_buffer, int i_nb, int i_type )
 {
     uint8_t *p_block;
+    int i;
 
     if( i_type == VCD_TYPE )
-        p_block = vlc_alloc( i_nb, VCD_SECTOR_SIZE );
+        p_block = malloc( VCD_SECTOR_SIZE * i_nb );
     else
         p_block = p_buffer;
 
@@ -706,7 +711,7 @@ int ioctl_ReadSectors( vlc_object_t *p_this, const vcddev_t *p_vcddev,
         }
 
 #else
-        for( int i = 0; i < i_nb; i++ )
+        for( i = 0; i < i_nb; i++ )
         {
             int i_dummy = i_sector + i + 2 * CD_FRAMES;
 
@@ -735,7 +740,7 @@ int ioctl_ReadSectors( vlc_object_t *p_this, const vcddev_t *p_vcddev,
      * sectors read */
     if( i_type == VCD_TYPE )
     {
-        for( int i = 0; i < i_nb; i++ )
+        for( i = 0; i < i_nb; i++ )
         {
             memcpy( p_buffer + i * VCD_DATA_SIZE,
                     p_block + i * VCD_SECTOR_SIZE + VCD_DATA_START,
@@ -816,7 +821,7 @@ static int OpenVCDImage( vlc_object_t * p_this, const char *psz_dev,
     msg_Dbg( p_this,"guessing vcd image file: %s", psz_vcdfile );
     p_vcddev->i_vcdimage_handle = vlc_open( psz_vcdfile,
                                     O_RDONLY | O_NONBLOCK | O_BINARY );
-
+ 
     while( fgets( line, 1024, cuefile ) && !b_found )
     {
         /* We have a cue file, but no valid vcd file yet */
@@ -917,7 +922,7 @@ static void CloseVCDImage( vlc_object_t * p_this, vcddev_t *p_vcddev )
 {
     VLC_UNUSED( p_this );
     if( p_vcddev->i_vcdimage_handle != -1 )
-        vlc_close( p_vcddev->i_vcdimage_handle );
+        close( p_vcddev->i_vcdimage_handle );
     else
         return;
 
@@ -1171,7 +1176,7 @@ static int CdTextParse( vlc_meta_t ***ppp_tracks, int *pi_tracks,
         char *psz_track = &psz_text[0];
         while( i_track <= 127 && psz_track < &psz_text[12] )
         {
-            //fprintf( stderr, "t=%d psz_track=%p end=%p", i_track, (void *)psz_track, (void *)&psz_text[12] );
+            //fprintf( stderr, "t=%d psz_track=%p end=%p", i_track, psz_track, &psz_text[12] );
             if( *psz_track )
             {
                 astrcat( &pppsz_info[i_track][i_pack_type-0x80], psz_track );

@@ -23,6 +23,11 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
+/**
+ * \file
+ * This file defines libvlc_media_library external API
+ */
+
 #ifndef VLC_LIBVLC_MEDIA_LIBRARY_H
 #define VLC_LIBVLC_MEDIA_LIBRARY_H 1
 
@@ -33,8 +38,6 @@ extern "C" {
 /** \defgroup libvlc_media_library LibVLC media library
  * \ingroup libvlc
  * @{
- * \file
- * LibVLC media library external API
  */
 
 typedef struct libvlc_media_library_t libvlc_media_library_t;

@@ -70,7 +70,7 @@ static void vlc_rand_init (void)
         ikey[i] = key[i] ^ 0x36;
     }
 
-    vlc_close (fd);
+    close (fd);
 }
 
 

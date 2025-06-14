@@ -36,18 +36,18 @@ public:
     ~ExprEvaluator() { }
 
     /// Clear the RPN stack and parse an expression
-    void parse( const std::string &rExpr );
+    void parse( const string &rExpr );
 
     /// Pop the first token from the RPN stack.
     /// Return NULL when the stack is empty.
-    std::string getToken();
+    string getToken();
 
 private:
     /// RPN stack
-    std::list<std::string> m_stack;
+    list<string> m_stack;
 
     /// Returns true if op1 has precedency over op2
-    bool hasPrecedency( const std::string &op1, const std::string &op2 ) const;
+    bool hasPrecedency( const string &op1, const string &op2 ) const;
 };
 
 #endif

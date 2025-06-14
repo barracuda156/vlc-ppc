@@ -25,7 +25,6 @@
 #include <vlc_common.h>
 #include "../libvlc.h"
 #include <vlc_playlist.h>
-#include <vlc_input.h>
 #include <vlc_interface.h>
 #include <vlc_url.h>
 
@@ -70,7 +69,7 @@ static void IPCHelperThread( void *arg )
         /* Read a count of arguments */
         DosRead( hpipeIPC, &i_argc, sizeof( i_argc ), &cbActual );
 
-        ppsz_argv = vlc_alloc( i_argc, sizeof( *ppsz_argv ));
+        ppsz_argv = malloc( i_argc * sizeof( *ppsz_argv ));
 
         for( int i_opt = 0; i_opt < i_argc; i_opt++ )
         {
@@ -98,13 +97,15 @@ static void IPCHelperThread( void *arg )
             if( p_playlist )
             {
                 playlist_AddExt( p_playlist, ppsz_argv[ i_opt ], NULL,
-                                 i_opt == 0 && ulCmd != IPC_CMD_ENQUEUE,
-                                 i_options,
+                                 PLAYLIST_APPEND |
+                                 (( i_opt || ulCmd == IPC_CMD_ENQUEUE ) ?
+                                     0 : PLAYLIST_GO ),
+                                 PLAYLIST_END, -1, i_options,
                                  ( char const ** )
                                      ( i_options ? &ppsz_argv[ i_opt + 1 ] :
                                                    NULL ),
                                  VLC_INPUT_OPTION_TRUSTED,
-                                 true );
+                                 true, pl_Unlocked );
             }
 
             for( ; i_options >= 0; i_options-- )

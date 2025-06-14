@@ -27,7 +27,7 @@
 
 
 BitmapFont::BitmapFont( intf_thread_t *pIntf, const GenericBitmap &rBitmap,
-                        const std::string &rType ):
+                        const string &rType ):
     GenericFont( pIntf ), m_rBitmap( rBitmap )
 {
     int i;

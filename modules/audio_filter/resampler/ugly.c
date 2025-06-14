@@ -49,7 +49,7 @@ vlc_module_begin ()
     set_description( N_("Nearest-neighbor audio resampler") )
     set_capability( "audio converter", 2 )
     set_category( CAT_AUDIO )
-    set_subcategory( SUBCAT_AUDIO_RESAMPLER )
+    set_subcategory( SUBCAT_AUDIO_MISC )
     set_callbacks( Create, NULL )
 
     add_submodule()
@@ -74,7 +74,10 @@ static int CreateResampler( vlc_object_t *p_this )
     filter_t * p_filter = (filter_t *)p_this;
 
     if( p_filter->fmt_in.audio.i_format != p_filter->fmt_out.audio.i_format
-     || p_filter->fmt_in.audio.i_channels != p_filter->fmt_out.audio.i_channels
+     || p_filter->fmt_in.audio.i_physical_channels
+                                 != p_filter->fmt_out.audio.i_physical_channels
+     || p_filter->fmt_in.audio.i_original_channels
+                                 != p_filter->fmt_out.audio.i_original_channels
      || !AOUT_FMT_LINEAR( &p_filter->fmt_in.audio ) )
         return VLC_EGENERIC;
 

@@ -42,7 +42,6 @@
 #endif
 
 #include <caca.h>
-#include "event_thread.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -79,7 +78,6 @@ struct vout_display_sys_t {
     cucul_dither_t *dither;
 
     picture_pool_t *pool;
-    vout_display_event_thread_t *et;
 };
 
 /**
@@ -90,8 +88,6 @@ static int Open(vlc_object_t *object)
     vout_display_t *vd = (vout_display_t *)object;
     vout_display_sys_t *sys;
 
-    if (vout_display_IsWindowed(vd))
-        return VLC_EGENERIC;
 #if !defined(__APPLE__) && !defined(_WIN32)
 # ifndef X_DISPLAY_MISSING
     if (!vlc_xlib_init(object))
@@ -170,6 +166,7 @@ static int Open(vlc_object_t *object)
         msg_Err(vd, "cannot initialize libcaca");
         goto error;
     }
+    vout_display_DeleteWindow(vd, NULL);
 
     if (vd->cfg->display.title)
         caca_set_display_title(sys->dp,
@@ -177,8 +174,6 @@ static int Open(vlc_object_t *object)
     else
         caca_set_display_title(sys->dp,
                                VOUT_TITLE "(Colour AsCii Art)");
-
-    sys->et = VoutDisplayEventCreateThread(vd);
 
     /* Fix format */
     video_format_t fmt = vd->fmt;
@@ -189,9 +184,12 @@ static int Open(vlc_object_t *object)
         fmt.i_bmask = 0x000000ff;
     }
 
+    /* TODO */
+    vout_display_info_t info = vd->info;
+
     /* Setup vout_display now that everything is fine */
     vd->fmt = fmt;
-    vd->info.needs_hide_mouse = true;
+    vd->info = info;
 
     vd->pool    = Pool;
     vd->prepare = Prepare;
@@ -200,6 +198,7 @@ static int Open(vlc_object_t *object)
     vd->manage  = Manage;
 
     /* Fix initial state */
+    vout_display_SendEventFullscreen(vd, false);
     Refresh(vd);
 
     return VLC_SUCCESS;
@@ -207,7 +206,7 @@ static int Open(vlc_object_t *object)
 error:
     if (sys) {
         if (sys->pool)
-            picture_pool_Release(sys->pool);
+            picture_pool_Delete(sys->pool);
         if (sys->dither)
             cucul_free_dither(sys->dither);
         if (sys->dp)
@@ -231,9 +230,8 @@ static void Close(vlc_object_t *object)
     vout_display_t *vd = (vout_display_t *)object;
     vout_display_sys_t *sys = vd->sys;
 
-    VoutDisplayEventKillThread(sys->et);
     if (sys->pool)
-        picture_pool_Release(sys->pool);
+        picture_pool_Delete(sys->pool);
     if (sys->dither)
         cucul_free_dither(sys->dither);
     caca_free_display(sys->dp);
@@ -313,14 +311,23 @@ static int Control(vout_display_t *vd, int query, va_list args)
 {
     vout_display_sys_t *sys = vd->sys;
 
-    (void) args;
-
     switch (query) {
     case VOUT_DISPLAY_HIDE_MOUSE:
         caca_set_mouse(sys->dp, 0);
         return VLC_SUCCESS;
 
-    case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
+    case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE: {
+        const vout_display_cfg_t *cfg = va_arg(args, const vout_display_cfg_t *);
+
+        caca_refresh_display(sys->dp);
+
+        /* Not quite good but not sure how to resize it */
+        if ((int)cfg->display.width  != caca_get_display_width(sys->dp) ||
+            (int)cfg->display.height != caca_get_display_height(sys->dp))
+            return VLC_EGENERIC;
+        return VLC_SUCCESS;
+    }
+
     case VOUT_DISPLAY_CHANGE_ZOOM:
     case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
     case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
@@ -354,7 +361,7 @@ static void Refresh(vout_display_t *vd)
 
     if (width  != vd->cfg->display.width ||
         height != vd->cfg->display.height)
-        vout_display_SendEventDisplaySize(vd, width, height);
+        vout_display_SendEventDisplaySize(vd, width, height, false);
 }
 
 /**
@@ -497,7 +504,7 @@ static void Manage(vout_display_t *vd)
         }
         case CACA_EVENT_RESIZE:
             vout_display_SendEventDisplaySize(vd, caca_get_event_resize_width(&ev),
-                                                  caca_get_event_resize_height(&ev));
+                                                  caca_get_event_resize_height(&ev), false);
             break;
         case CACA_EVENT_MOUSE_MOTION: {
             vout_display_place_t place;

@@ -30,7 +30,6 @@
 #endif
 #include <assert.h>
 
-#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
@@ -58,7 +57,7 @@ static void Close(vlc_object_t *);
   "this VLC instance will act as the master clock for synchronization " \
   "for clients listening")
 
-#define MIP_TEXT N_("Master server IP address")
+#define MIP_TEXT N_("Master server ip address")
 #define MIP_LONGTEXT N_("The IP address of " \
   "the network master clock to use for clock synchronization.")
 
@@ -152,13 +151,8 @@ void Close(vlc_object_t *object)
     intf_thread_t *intf = (intf_thread_t*)object;
     intf_sys_t *sys = intf->p_sys;
 
+    assert(sys->input == NULL);
     var_DelCallback(sys->playlist, "input-current", PlaylistEvent, intf);
-
-    if (sys->input != NULL) {
-        vlc_cancel(sys->thread);
-        vlc_join(sys->thread, NULL);
-    }
-
     net_Close(sys->fd);
     free(sys);
 }
@@ -188,11 +182,9 @@ static void *Master(void *handle)
 
         /* We received something */
         struct sockaddr_storage from;
-        socklen_t fromlen = sizeof (from);
-
-        if (recvfrom(sys->fd, data, 8, 0,
-                     (struct sockaddr *)&from, &fromlen) < 8)
-            continue;
+        unsigned struct_size = sizeof(from);
+        recvfrom(sys->fd, data, sizeof(data), 0,
+                 (struct sockaddr*)&from, &struct_size);
 
         mtime_t master_system = GetPcrSystem(sys->input);
         if (master_system < 0)
@@ -202,8 +194,8 @@ static void *Master(void *handle)
         data[1] = hton64(master_system);
 
         /* Reply to the sender */
-        sendto(sys->fd, data, 16, 0,
-               (struct sockaddr *)&from, fromlen);
+        sendto(sys->fd, data, sizeof(data), 0,
+               (struct sockaddr *)&from, struct_size);
 #if 0
         /* not sure we need the client information to sync,
            since we are the master anyway */
@@ -231,17 +223,18 @@ static void *Slave(void *handle)
             goto wait;
 
         /* Send clock request to the master */
-        const mtime_t send_date = mdate();
-
         data[0] = hton64(system);
-        send(sys->fd, data, 8, 0);
+
+        const mtime_t send_date = mdate();
+        if (send(sys->fd, data, sizeof(data[0]), 0) <= 0)
+            goto wait;
 
         /* Don't block */
         if (poll(&ufd, 1, sys->timeout) <= 0)
             continue;
 
         const mtime_t receive_date = mdate();
-        if (recv(sys->fd, data, 16, 0) < 16)
+        if (recv(sys->fd, data, sizeof(data), 0) <= 0)
             goto wait;
 
         const mtime_t master_date   = ntoh64(data[0]);
@@ -273,29 +266,40 @@ static void *Slave(void *handle)
     return NULL;
 }
 
+static int InputEvent(vlc_object_t *object, char const *cmd,
+                      vlc_value_t oldval, vlc_value_t newval, void *data)
+{
+    VLC_UNUSED(cmd); VLC_UNUSED(oldval); VLC_UNUSED(object);
+    intf_thread_t  *intf = data;
+    intf_sys_t     *sys = intf->p_sys;
+
+    if (newval.i_int == INPUT_EVENT_DEAD && sys->input) {
+        msg_Err(intf, "InputEvent DEAD");
+        vlc_cancel(sys->thread);
+        vlc_join(sys->thread, NULL);
+        vlc_object_release(sys->input);
+        sys->input = NULL;
+    }
+    return VLC_SUCCESS;
+}
+
 static int PlaylistEvent(vlc_object_t *object, char const *cmd,
                          vlc_value_t oldval, vlc_value_t newval, void *data)
 {
-    VLC_UNUSED(cmd); VLC_UNUSED(object);
+    VLC_UNUSED(cmd); VLC_UNUSED(oldval); VLC_UNUSED(object);
     intf_thread_t  *intf = data;
     intf_sys_t     *sys = intf->p_sys;
+
     input_thread_t *input = newval.p_address;
-
-    if (sys->input != NULL) {
-        msg_Err(intf, "InputEvent DEAD");
-        assert(oldval.p_address == sys->input);
-
-        vlc_cancel(sys->thread);
-        vlc_join(sys->thread, NULL);
+    assert(sys->input == NULL);
+    sys->input = vlc_object_hold(input);
+    if (vlc_clone(&sys->thread, sys->is_master ? Master : Slave, intf,
+                  VLC_THREAD_PRIORITY_INPUT)) {
+        vlc_object_release(input);
+        sys->input = NULL;
+        return VLC_SUCCESS;
     }
-
-    sys->input = input;
-
-    if (input != NULL) {
-        if (vlc_clone(&sys->thread, sys->is_master ? Master : Slave, intf,
-                      VLC_THREAD_PRIORITY_INPUT))
-            sys->input = NULL;
-    }
+    var_AddCallback(input, "intf-event", InputEvent, intf);
     return VLC_SUCCESS;
 }
 

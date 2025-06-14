@@ -25,27 +25,26 @@
 /*****************************************************************************
  * Preamble
  *****************************************************************************/
+using namespace std;
 
 #include <dshow.h>
 
-#include <vector>
-
-#include <wrl/client.h>
-using Microsoft::WRL::ComPtr;
+typedef struct dshow_stream_t dshow_stream_t;
 
 /****************************************************************************
  * Crossbar stuff
  ****************************************************************************/
 #define MAX_CROSSBAR_DEPTH 10
 
-struct CrossbarRoute
+typedef struct CrossbarRouteRec
 {
-    ComPtr<IAMCrossbar> pXbar;
+    IAMCrossbar *pXbar;
     LONG        VideoInputIndex;
     LONG        VideoOutputIndex;
     LONG        AudioInputIndex;
     LONG        AudioOutputIndex;
-};
+
+} CrossbarRoute;
 
 void DeleteCrossbarRoutes( access_sys_t * );
 HRESULT FindCrossbarRoutes( vlc_object_t *, access_sys_t *,
@@ -60,21 +59,22 @@ struct access_sys_t
     vlc_mutex_t lock;
     vlc_cond_t  wait;
 
-    ComPtr<IFilterGraph>            p_graph;
-    ComPtr<ICaptureGraphBuilder2>   p_capture_graph_builder2;
-    ComPtr<IMediaControl>           p_control;
+    IFilterGraph           *p_graph;
+    ICaptureGraphBuilder2  *p_capture_graph_builder2;
+    IMediaControl          *p_control;
 
     int                     i_crossbar_route_depth;
     CrossbarRoute           crossbar_routes[MAX_CROSSBAR_DEPTH];
 
     /* list of elementary streams */
-    std::vector<struct dshow_stream_t*> pp_streams;
+    dshow_stream_t **pp_streams;
+    int            i_streams;
     int            i_current_stream;
 
     /* misc properties */
     int            i_width;
     int            i_height;
     int            i_chroma;
-    mtime_t        i_start;
+    bool           b_chroma; /* Force a specific chroma on the dshow input */
 };
 

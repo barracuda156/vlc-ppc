@@ -66,7 +66,7 @@ struct decoder_sys_t
 static int  OpenDecoder   ( vlc_object_t * );
 static void CloseDecoder  ( vlc_object_t * );
 
-static int DecodeBlock  ( decoder_t *, block_t * );
+static picture_t *DecodeBlock  ( decoder_t *, block_t ** );
 
 /*
  * png encoder descriptor
@@ -89,7 +89,7 @@ vlc_module_begin ()
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_VCODEC )
     set_description( N_("PNG video decoder") )
-    set_capability( "video decoder", 1000 )
+    set_capability( "decoder", 1000 )
     set_callbacks( OpenDecoder, CloseDecoder )
     add_shortcut( "png" )
 
@@ -123,10 +123,11 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_dec->p_sys->p_obj = p_this;
 
     /* Set output properties */
+    p_dec->fmt_out.i_cat = VIDEO_ES;
     p_dec->fmt_out.i_codec = VLC_CODEC_RGBA;
 
     /* Set callbacks */
-    p_dec->pf_decode = DecodeBlock;
+    p_dec->pf_decode_video = DecodeBlock;
 
     return VLC_SUCCESS;
 }
@@ -185,9 +186,10 @@ static void user_warning( png_structp p_png, png_const_charp warning_msg )
  ****************************************************************************
  * This function must be fed with a complete compressed frame.
  ****************************************************************************/
-static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
+static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
+    block_t *p_block;
     picture_t *p_pic = 0;
 
     png_uint_32 i_width, i_height;
@@ -196,40 +198,40 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
 
     png_structp p_png;
     png_infop p_info, p_end_info;
-    png_bytep *volatile p_row_pointers = NULL;
+    png_bytep *p_row_pointers = NULL;
 
-    if( !p_block ) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if( !pp_block || !*pp_block ) return NULL;
 
+    p_block = *pp_block;
     p_sys->b_error = false;
 
-    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
     {
-        block_Release( p_block );
-        return VLCDEC_SUCCESS;
+        block_Release( p_block ); *pp_block = NULL;
+        return NULL;
     }
 
     p_png = png_create_read_struct( PNG_LIBPNG_VER_STRING, 0, 0, 0 );
     if( p_png == NULL )
     {
-        block_Release( p_block );
-        return VLCDEC_SUCCESS;
+        block_Release( p_block ); *pp_block = NULL;
+        return NULL;
     }
 
     p_info = png_create_info_struct( p_png );
     if( p_info == NULL )
     {
         png_destroy_read_struct( &p_png, NULL, NULL );
-        block_Release( p_block );
-        return VLCDEC_SUCCESS;
+        block_Release( p_block ); *pp_block = NULL;
+        return NULL;
     }
 
     p_end_info = png_create_info_struct( p_png );
     if( p_end_info == NULL )
     {
         png_destroy_read_struct( &p_png, &p_info, NULL );
-        block_Release( p_block );
-        return VLCDEC_SUCCESS;
+        block_Release( p_block ); *pp_block = NULL;
+        return NULL;
     }
 
     /* libpng longjmp's there in case of error */
@@ -253,6 +255,9 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
     p_dec->fmt_out.video.i_visible_height = p_dec->fmt_out.video.i_height = i_height;
     p_dec->fmt_out.video.i_sar_num = 1;
     p_dec->fmt_out.video.i_sar_den = 1;
+    p_dec->fmt_out.video.i_rmask = 0x000000ff;
+    p_dec->fmt_out.video.i_gmask = 0x0000ff00;
+    p_dec->fmt_out.video.i_bmask = 0x00ff0000;
 
     if( i_color_type == PNG_COLOR_TYPE_PALETTE )
         png_set_palette_to_rgb( p_png );
@@ -260,18 +265,9 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
     if( i_color_type == PNG_COLOR_TYPE_GRAY ||
         i_color_type == PNG_COLOR_TYPE_GRAY_ALPHA )
           png_set_gray_to_rgb( p_png );
-    if( i_color_type & PNG_COLOR_MASK_ALPHA )
-        png_set_alpha_mode( p_png, PNG_ALPHA_OPTIMIZED, PNG_DEFAULT_sRGB );
 
     /* Strip to 8 bits per channel */
-    if( i_bit_depth == 16 )
-    {
-#if PNG_LIBPNG_VER >= 10504
-        png_set_scale_16( p_png );
-#else
-        png_set_strip_16( p_png );
-#endif
-    }
+    if( i_bit_depth == 16 ) png_set_strip_16( p_png );
 
     if( png_get_valid( p_png, p_info, PNG_INFO_tRNS ) )
     {
@@ -283,13 +279,11 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
     }
 
     /* Get a new picture */
-    if( decoder_UpdateVideoFormat( p_dec ) )
-        goto error;
     p_pic = decoder_NewPicture( p_dec );
     if( !p_pic ) goto error;
 
     /* Decode picture */
-    p_row_pointers = vlc_alloc( i_height, sizeof(png_bytep) );
+    p_row_pointers = malloc( sizeof(png_bytep) * i_height );
     if( !p_row_pointers )
         goto error;
     for( i = 0; i < (int)i_height; i++ )
@@ -305,16 +299,15 @@ static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
 
     p_pic->date = p_block->i_pts > VLC_TS_INVALID ? p_block->i_pts : p_block->i_dts;
 
-    block_Release( p_block );
-    decoder_QueueVideo( p_dec, p_pic );
-    return VLCDEC_SUCCESS;
+    block_Release( p_block ); *pp_block = NULL;
+    return p_pic;
 
  error:
 
     free( p_row_pointers );
     png_destroy_read_struct( &p_png, &p_info, &p_end_info );
-    block_Release( p_block );
-    return VLCDEC_SUCCESS;
+    block_Release( p_block ); *pp_block = NULL;
+    return NULL;
 }
 
 /*****************************************************************************
@@ -346,6 +339,9 @@ static int OpenEncoder(vlc_object_t *p_this)
         p_enc->fmt_in.video.i_visible_height;
 
     p_enc->fmt_in.i_codec = VLC_CODEC_RGB24;
+    p_enc->fmt_in.video.i_rmask = 0x000000ff;
+    p_enc->fmt_in.video.i_gmask = 0x0000ff00;
+    p_enc->fmt_in.video.i_bmask = 0x00ff0000;
     p_enc->pf_encode_video = EncodeBlock;
 
     return VLC_SUCCESS;
@@ -399,6 +395,9 @@ static block_t *EncodeBlock(encoder_t *p_enc, picture_t *p_pic)
     if( p_info == NULL )
         goto error;
 
+    png_infop p_end_info = png_create_info_struct( p_png );
+    if( p_end_info == NULL ) goto error;
+
     png_set_IHDR( p_png, p_info,
             p_enc->fmt_in.video.i_visible_width,
             p_enc->fmt_in.video.i_visible_height,
@@ -417,7 +416,7 @@ static block_t *EncodeBlock(encoder_t *p_enc, picture_t *p_pic)
         if( p_sys->b_error ) goto error;
     }
 
-    png_write_end( p_png, p_info );
+    png_write_end( p_png, p_end_info );
     if( p_sys->b_error ) goto error;
 
     png_destroy_write_struct( &p_png, &p_info );

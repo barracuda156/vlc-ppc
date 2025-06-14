@@ -64,7 +64,7 @@ public:
     virtual void onResize();
 
     /// Get the type of control (custom RTTI)
-    virtual std::string getType() const { return m_rCtrl.getType(); }
+    virtual string getType() const { return m_rCtrl.getType(); }
 
 private:
     FSM m_fsm;

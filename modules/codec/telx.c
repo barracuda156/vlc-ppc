@@ -49,7 +49,7 @@
  *****************************************************************************/
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
-static int  Decode( decoder_t *, block_t * );
+static subpicture_t *Decode( decoder_t *, block_t ** );
 
 #define OVERRIDE_PAGE_TEXT N_("Override page")
 #define OVERRIDE_PAGE_LONGTEXT N_("Override the indicated page, try this if " \
@@ -70,7 +70,7 @@ static int  Decode( decoder_t *, block_t * );
 vlc_module_begin ()
     set_description( N_("Teletext subtitles decoder") )
     set_shortname( "Teletext" )
-    set_capability( "spu decoder", 50 )
+    set_capability( "decoder", 50 )
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
     set_callbacks( Open, Close )
@@ -179,10 +179,11 @@ static int Open( vlc_object_t *p_this )
         return VLC_EGENERIC;
     }
 
-    p_dec->pf_decode = Decode;
+    p_dec->pf_decode_sub = Decode;
     p_sys = p_dec->p_sys = calloc( 1, sizeof(*p_sys) );
     if( p_sys == NULL )
         return VLC_ENOMEM;
+    p_dec->fmt_out.i_cat = SPU_ES;
     p_dec->fmt_out.i_codec = 0;
 
     p_sys->i_align = 0;
@@ -333,8 +334,9 @@ static void decode_string( char * res, int res_len,
 {
     char utf8[7];
     char * pt = res;
+    int i;
 
-    for ( int i = 0; i < len; i++ )
+    for ( i = 0; i < len; i++ )
     {
         int in = bytereverse( packet[i] ) & 0x7f;
         uint16_t out = 32;
@@ -427,13 +429,14 @@ static void decode_string( char * res, int res_len,
 /*****************************************************************************
  * Decode:
  *****************************************************************************/
-static int Decode( decoder_t *p_dec, block_t *p_block )
+static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
+    block_t       *p_block;
     subpicture_t  *p_spu = NULL;
     video_format_t fmt;
     /* int erase = 0; */
-    int len;
+    int len, offset;
 #if 0
     int i_wanted_magazine = i_conf_wanted_page / 100;
     int i_wanted_page = 0x10 * ((i_conf_wanted_page % 100) / 10)
@@ -442,19 +445,21 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
     bool b_update = false;
     char psz_text[512], *pt = psz_text;
     char psz_line[256];
-    int total;
+    int i, total;
 
-    if( p_block == NULL ) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if( pp_block == NULL || *pp_block == NULL )
+        return NULL;
+    p_block = *pp_block;
+    *pp_block = NULL;
 
     dbg((p_dec, "start of telx packet with header %2x\n",
                 * (uint8_t *) p_block->p_buffer));
     len = p_block->i_buffer;
-    for ( int offset = 1; offset + 46 <= len; offset += 46 )
+    for ( offset = 1; offset + 46 <= len; offset += 46 )
     {
         uint8_t * packet = (uint8_t *) p_block->p_buffer+offset;
 //        int vbi = ((0x20 & packet[2]) != 0 ? 0 : 313) + (0x1F & packet[2]);
-
+ 
 //        dbg((p_dec, "vbi %d header %02x %02x %02x\n", vbi, packet[0], packet[1], packet[2]));
         if ( packet[0] == 0xFF ) continue;
 
@@ -485,8 +490,9 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
         {
             /* row 0 : flags and header line */
             int flag = 0;
-
-            for ( int a = 0; a < 6; a++ )
+            int a;
+ 
+            for ( a = 0; a < 6; a++ )
             {
                 flag |= (0xF & (bytereverse( hamming_8_4(packet[8 + a]) ) >> 4))
                           << (a * 4);
@@ -521,7 +527,7 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
                   (1 & (flag>>18))? " interrupt" : "",
                   (1 & (flag>>19))? " inhibit" : "",
                   (1 & (flag>>20)) ));
-
+ 
             if ( (p_sys->i_wanted_page != -1
                    && p_sys->i_page[magazine] != p_sys->i_wanted_page)
                    || !p_sys->b_is_subtitle[magazine] )
@@ -539,10 +545,12 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
             if ( /*p_block->i_pts > p_sys->prev_pts + 1500000 && */
                  p_sys->b_erase[magazine] )
             {
+                int i;
+ 
                 dbg((p_dec, "ERASE !\n"));
 
                 p_sys->b_erase[magazine] = 0;
-                for ( int i = 1; i < 32; i++ )
+                for ( i = 1; i < 32; i++ )
                 {
                     if ( !p_sys->ppsz_lines[i][0] ) continue;
                     /* b_update = true; */
@@ -647,7 +655,7 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
         goto error;
 
     total = 0;
-    for ( int i = 1; i < 24; i++ )
+    for ( i = 1; i < 24; i++ )
     {
         size_t l = strlen( p_sys->ppsz_lines[i] );
 
@@ -683,9 +691,10 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
         msg_Warn( p_dec, "can't get spu buffer" );
         goto error;
     }
-
+ 
     /* Create a new subpicture region */
-    video_format_Init(&fmt, VLC_CODEC_TEXT);
+    memset( &fmt, 0, sizeof(video_format_t) );
+    fmt.i_chroma = VLC_CODEC_TEXT;
     fmt.i_width = fmt.i_height = 0;
     fmt.i_x_offset = fmt.i_y_offset = 0;
     p_spu->p_region = subpicture_region_New( &fmt );
@@ -699,7 +708,7 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
     p_spu->p_region->i_align = SUBPICTURE_ALIGN_BOTTOM | p_sys->i_align;
     p_spu->p_region->i_x = p_sys->i_align ? 20 : 0;
     p_spu->p_region->i_y = 10;
-    p_spu->p_region->p_text = text_segment_New(psz_text);
+    p_spu->p_region->psz_text = strdup(psz_text);
 
     p_spu->i_start = p_block->i_pts;
     p_spu->i_stop = p_block->i_pts + p_block->i_length;
@@ -708,17 +717,15 @@ static int Decode( decoder_t *p_dec, block_t *p_block )
     dbg((p_dec, "%ld --> %ld\n", (long int) p_block->i_pts/100000, (long int)p_block->i_length/100000));
 
     block_Release( p_block );
-    if( p_spu != NULL )
-        decoder_QueueSub( p_dec, p_spu );
-    return VLCDEC_SUCCESS;
+    return p_spu;
 
 error:
     if ( p_spu != NULL )
     {
-        subpicture_Delete( p_spu );
+        decoder_DeleteSubpicture( p_dec, p_spu );
         p_spu = NULL;
     }
 
     block_Release( p_block );
-    return VLCDEC_SUCCESS;
+    return NULL;
 }

@@ -34,8 +34,8 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
+
 #include <vlc_filter.h>
-#include <vlc_picture.h>
 #include <vlc_image.h>
 #include "filter_picture.h"
 
@@ -53,7 +53,7 @@ static picture_t *Filter( filter_t *, picture_t * );
 vlc_module_begin ()
     set_description( N_("Psychedelic video filter") )
     set_shortname( N_( "Psychedelic" ))
-    set_capability( "video filter", 0 )
+    set_capability( "video filter2", 0 )
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
 
@@ -139,10 +139,13 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     picture_t *p_outpic;
 
     unsigned int w, h;
+    int x,y;
     uint8_t u,v;
 
     picture_t *p_converted;
     video_format_t fmt_out;
+    memset( &fmt_out, 0, sizeof(video_format_t) );
+    fmt_out.p_palette = NULL;
 
     if( !p_pic ) return NULL;
 
@@ -159,7 +162,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     /* chrominance */
     u = p_filter->p_sys->u;
     v = p_filter->p_sys->v;
-    for( int y = 0; y < p_outpic->p[U_PLANE].i_lines; y++ )
+    for( y = 0; y<p_outpic->p[U_PLANE].i_lines; y++)
     {
         memset(
                 p_outpic->p[U_PLANE].p_pixels+y*p_outpic->p[U_PLANE].i_pitch,
@@ -192,8 +195,8 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     if( p_converted )
     {
 #define copyimage( plane, b ) \
-        for( int y = 0; y<p_converted->p[plane].i_visible_lines; y++ ) { \
-        for( int x = 0; x<p_converted->p[plane].i_visible_pitch; x++ ) { \
+        for( y=0; y<p_converted->p[plane].i_visible_lines; y++) { \
+        for( x=0; x<p_converted->p[plane].i_visible_pitch; x++) { \
             int nx, ny; \
             if( p_filter->p_sys->yinc == 1 ) \
                 ny= y; \
@@ -241,7 +244,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     if( p_filter->p_sys->y <= 0 )
         p_filter->p_sys->yinc = 1;
 
-    for( int y = 0; y < 16; y++ )
+    for( y = 0; y< 16; y++ )
     {
         if( p_filter->p_sys->v == 0 && p_filter->p_sys->u != 0 )
             p_filter->p_sys->u -= 1;

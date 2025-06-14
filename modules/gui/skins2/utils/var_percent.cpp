@@ -25,7 +25,7 @@
 #include "var_percent.hpp"
 
 
-const std::string VarPercent::m_type = "percent";
+const string VarPercent::m_type = "percent";
 
 
 void VarPercent::set( float percentage )

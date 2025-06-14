@@ -58,10 +58,10 @@ EqualizerBands::~EqualizerBands()
 }
 
 
-void EqualizerBands::set( std::string bands )
+void EqualizerBands::set( string bands )
 {
-    float val = 0.0f;
-    std::stringstream ss( bands );
+    float val;
+    stringstream ss( bands );
 
     m_isUpdating = true;
     // Parse the string
@@ -84,15 +84,16 @@ VariablePtr EqualizerBands::getBand( int band )
 void EqualizerBands::onUpdate( Subject<VarPercent> &rBand, void *arg )
 {
     (void)rBand; (void)arg;
-    audio_output_t *pAout = playlist_GetAout( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    audio_output_t *pAout = playlist_GetAout( pPlaylist );
 
     // Make sure we are not called from set()
     if (!m_isUpdating)
     {
         float val;
-        std::stringstream ss;
+        stringstream ss;
         // Write one digit after the floating point
-        ss << std::setprecision( 1 ) << std::setiosflags( std::ios::fixed );
+        ss << setprecision( 1 ) << setiosflags( ios::fixed );
 
         // Convert the band values to a string
         val = 40 * ((VarPercent*)m_cBands[0].get())->get() - 20;
@@ -103,7 +104,7 @@ void EqualizerBands::onUpdate( Subject<VarPercent> &rBand, void *arg )
             ss << " " << val;
         }
 
-        std::string bands = ss.str();
+        string bands = ss.str();
 
         config_PutPsz( getIntf(), "equalizer-bands", bands.c_str() );
         if( pAout )
@@ -127,7 +128,8 @@ EqualizerPreamp::EqualizerPreamp( intf_thread_t *pIntf ): VarPercent( pIntf )
 
 void EqualizerPreamp::set( float percentage, bool updateVLC )
 {
-    audio_output_t *pAout = playlist_GetAout( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    audio_output_t *pAout = playlist_GetAout( pPlaylist );
 
     VarPercent::set( percentage );
 

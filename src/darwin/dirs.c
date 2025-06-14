@@ -1,7 +1,7 @@
 /*****************************************************************************
- * darwin_dirs.c: Darwin directories configuration
+ * darwin_dirs.c: Mac OS X directories configuration
  *****************************************************************************
- * Copyright (C) 2001-2016 VLC authors and VideoLAN
+ * Copyright (C) 2001-2014 VLC authors and VideoLAN
  * Copyright (C) 2007-2012 Rémi Denis-Courmont
  *
  * Authors: Rémi Denis-Courmont
@@ -23,18 +23,25 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
+#include <CoreFoundation/CoreFoundation.h>
+
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
 #include <vlc_common.h>
+
 #include "../libvlc.h"
+#include <vlc_configuration.h>
+#include "config/configuration.h"
 
 #include <libgen.h>
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
 
-#include <CoreFoundation/CoreFoundation.h>
+#ifndef MAXPATHLEN
+# define MAXPATHLEN 1024
+#endif
 
 char *config_GetLibDir (void)
 {
@@ -66,14 +73,6 @@ char *config_GetLibDir (void)
 
         /* Do we end by "VLC-Plugin"? oh, we must be the NPAPI plugin */
         if (len >= 10 && !strcmp( psz_img_name + len - 10, "VLC-Plugin"))
-            return strdup( dirname(psz_img_name) );
-
-        /* Do we end by "VLC for iOS"? so we are the iOS app */
-        if (len >= 11 && !strcmp( psz_img_name + len - 11, "VLC for iOS"))
-            return strdup( dirname(psz_img_name) );
-
-        /* Do we end by "VLC-TV"? so we are the tvOS app */
-        if (len >= 6 && !strcmp( psz_img_name + len - 6, "VLC-TV"))
             return strdup( dirname(psz_img_name) );
     }
 
@@ -133,37 +132,31 @@ static char *getAppDependentDir(vlc_userdir_t type)
             psz_path = "%s/Library/Caches/%s";
             break;
         default:
-            vlc_assert_unreachable();
+            assert(0);
             break;
     }
 
     // Default fallback
-    const char *fallback = "org.videolan.vlc";
-    char *name = NULL;
+    const char *name = "org.videolan.vlc";
 
     CFBundleRef mainBundle = CFBundleGetMainBundle();
     if (mainBundle) {
         CFStringRef identifierAsNS = CFBundleGetIdentifier(mainBundle);
         if (identifierAsNS) {
-            CFIndex len = CFStringGetLength(identifierAsNS);
-            CFIndex size = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8);
-            char *identifier = calloc(len + 1, sizeof(char));
-            if (identifier != NULL) {
-                Boolean ret = CFStringGetCString(identifierAsNS, identifier, size, kCFStringEncodingUTF8);
-                if (ret)
-                    name = identifier;
-            }
+            char identifier[256];
+            Boolean ret = CFStringGetCString(identifierAsNS, identifier, sizeof(identifier), kCFStringEncodingUTF8);
+            if (ret)
+                name = identifier;            
         }
     }
 
     char *psz_parent = config_GetHomeDir ();
     char *psz_dir;
-    if ( asprintf( &psz_dir, psz_path, psz_parent, (name) ? name : fallback) == -1 )
+    if ( asprintf( &psz_dir, psz_path, psz_parent, name) == -1 )
         psz_dir = NULL;
     free(psz_parent);
-    free(name);
 
-    return psz_dir;
+    return psz_dir;    
 }
 
 char *config_GetUserDir (vlc_userdir_t type)

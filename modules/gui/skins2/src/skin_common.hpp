@@ -35,6 +35,7 @@
 #include <vlc_fs.h>
 
 #include <string>
+using namespace std;
 
 class AsyncQueue;
 class Logger;
@@ -67,24 +68,34 @@ typedef void* vlc_wnd_type;
 #endif
 
 /// Wrapper around FromLocale, to avoid the need to call LocaleFree()
-static inline std::string sFromLocale( const std::string &rLocale )
+static inline string sFromLocale( const string &rLocale )
 {
     const char *s = FromLocale( rLocale.c_str() );
-    std::string res = s;
+    string res = s;
     LocaleFree( s );
     return res;
 }
 
 #ifdef _WIN32
 /// Wrapper around FromWide, to avoid the need to call free()
-static inline std::string sFromWide( const std::wstring &rWide )
+static inline string sFromWide( const wstring &rWide )
 {
     char *s = FromWide( rWide.c_str() );
-    std::string res = s;
+    string res = s;
     free( s );
     return res;
 }
 #endif
+
+/// Wrapper around ToLocale, to avoid the need to call LocaleFree()
+static inline string sToLocale( const string &rUTF8 )
+{
+    const char *s = ToLocale( rUTF8.c_str() );
+    string res = s;
+    LocaleFree( s );
+    return res;
+}
+
 
 //---------------------------------------------------------------------------
 // intf_sys_t: description and status of skin interface
@@ -93,6 +104,9 @@ struct intf_sys_t
 {
     /// The input thread
     input_thread_t *p_input;
+
+    /// The playlist thread
+    playlist_t *p_playlist;
 
     // "Singleton" objects: MUST be initialized to NULL !
     /// Logger
@@ -140,7 +154,6 @@ public:
     /// Getter (public because it is used in C callbacks in the win32
     /// interface)
     intf_thread_t *getIntf() const { return m_pIntf; }
-    playlist_t *getPL() const { return pl_Get(m_pIntf); }
 
 private:
     intf_thread_t *m_pIntf;

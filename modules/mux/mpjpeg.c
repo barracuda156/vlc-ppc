@@ -57,7 +57,7 @@ vlc_module_end ()
  *****************************************************************************/
 static int Control  ( sout_mux_t *, int, va_list );
 static int AddStream( sout_mux_t *, sout_input_t * );
-static void DelStream( sout_mux_t *, sout_input_t * );
+static int DelStream( sout_mux_t *, sout_input_t * );
 static int Mux      ( sout_mux_t * );
 
 /* This pseudo-random sequence is unlikely to ever happen */
@@ -102,17 +102,17 @@ static int Control( sout_mux_t *p_mux, int i_query, va_list args )
     switch( i_query )
     {
         case MUX_CAN_ADD_STREAM_WHILE_MUXING:
-            pb_bool = va_arg( args, bool * );
+            pb_bool = (bool*)va_arg( args, bool * );
             *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_ADD_STREAM_WAIT:
-            pb_bool = va_arg( args, bool * );
+            pb_bool = (bool*)va_arg( args, bool * );
             *pb_bool = true;
             return VLC_SUCCESS;
 
         case MUX_GET_MIME:
-            ppsz = va_arg( args, char ** );
+            ppsz = (char**)va_arg( args, char ** );
             *ppsz = strdup( "multipart/x-mixed-replace; boundary="BOUNDARY );
             return VLC_SUCCESS;
 
@@ -136,10 +136,11 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
     return VLC_SUCCESS;
 }
 
-static void DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
+static int DelStream( sout_mux_t *p_mux, sout_input_t *p_input )
 {
     VLC_UNUSED(p_input);
     msg_Dbg( p_mux, "removing input" );
+    return VLC_SUCCESS;
 }
 
 static int Mux( sout_mux_t *p_mux )

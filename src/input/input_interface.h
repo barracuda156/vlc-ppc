@@ -30,28 +30,13 @@
 /**********************************************************************
  * Item metadata
  **********************************************************************/
-void input_item_SignalPreparseEnded( input_item_t *p_i, int new_status );
 void input_item_SetPreparsed( input_item_t *p_i, bool b_preparsed );
 void input_item_SetArtNotFound( input_item_t *p_i, bool b_not_found );
 void input_item_SetArtFetched( input_item_t *p_i, bool b_art_fetched );
-void input_item_SetEpg( input_item_t *p_item, const vlc_epg_t *p_epg, bool );
-void input_item_ChangeEPGSource( input_item_t *p_item, int i_source_id );
-void input_item_SetEpgEvent( input_item_t *p_item, const vlc_epg_event_t *p_epg_evt );
-void input_item_SetEpgTime( input_item_t *, int64_t );
+void input_item_SetEpg( input_item_t *p_item, const vlc_epg_t *p_epg );
 void input_item_SetEpgOffline( input_item_t * );
 
-/**
- * Creates an item preparser.
- *
- * Creates an input thread to preparse an item. The input needs to be started
- * with input_Start() afterwards.
- *
- * @param obj parent object
- * @param item input item to preparse
- * @return an input thread or NULL on error
- */
-input_thread_t *input_CreatePreparser(vlc_object_t *obj, input_item_t *item)
-VLC_USED;
+int input_Preparse( vlc_object_t *, input_item_t * );
 
 /* misc/stats.c
  * FIXME it should NOT be defined here or not coded in misc/stats.c */

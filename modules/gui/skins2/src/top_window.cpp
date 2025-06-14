@@ -47,7 +47,7 @@
 #include "../utils/position.hpp"
 #include "../utils/ustring.hpp"
 
-#include <vlc_actions.h>
+#include <vlc_keys.h>
 #include <vlc_input.h>
 #include <vlc_url.h>
 #include <list>
@@ -207,7 +207,28 @@ void TopWindow::processEvent( EvtKey &rEvtKey )
     // Only do the action when the key is down
     if( rEvtKey.getKeyState() == EvtKey::kDown )
     {
-        getIntf()->p_sys->p_dialogs->sendKey( rEvtKey.getModKey() );
+        //XXX not to be hardcoded!
+        // Ctrl-S = Change skin
+        if( (rEvtKey.getMod() & EvtInput::kModCtrl) &&
+            rEvtKey.getKey() == 's' )
+        {
+            CmdDlgChangeSkin cmd( getIntf() );
+            cmd.execute();
+            return;
+        }
+
+        //XXX not to be hardcoded!
+        // Ctrl-T = Toggle on top
+        if( (rEvtKey.getMod() & EvtInput::kModCtrl) &&
+            rEvtKey.getKey() == 't' )
+        {
+            CmdOnTop cmd( getIntf() );
+            cmd.execute();
+            return;
+        }
+
+        var_SetInteger( getIntf()->p_libvlc, "key-pressed",
+                        rEvtKey.getModKey() );
     }
 
     // Always store the modifier, which can be needed for scroll events.
@@ -239,7 +260,7 @@ void TopWindow::processEvent( EvtScroll &rEvtScroll )
         int i = (rEvtScroll.getDirection() == EvtScroll::kUp ?
                  KEY_MOUSEWHEELUP : KEY_MOUSEWHEELDOWN) | m_currModifier;
 
-        getIntf()->p_sys->p_dialogs->sendKey( i );
+        var_SetInteger( getIntf()->p_libvlc, "key-pressed", i );
     }
 }
 
@@ -260,16 +281,20 @@ void TopWindow::processEvent( EvtDragDrop &rEvtDragDrop )
     {
         input_thread_t *pInput = getIntf()->p_sys->p_input;
         bool is_subtitle = false;
-        std::list<std::string> files = rEvtDragDrop.getFiles();
+        list<string> files = rEvtDragDrop.getFiles();
         if( files.size() == 1 && pInput != NULL )
         {
-            std::list<std::string>::const_iterator it = files.begin();
-            is_subtitle = !input_AddSlave( pInput, SLAVE_TYPE_SPU,
-                                           it->c_str(), true, true, true );
+            list<string>::const_iterator it = files.begin();
+            char* psz_file = make_path( it->c_str() );
+            if( psz_file )
+            {
+                is_subtitle = !input_AddSubtitleOSD( pInput, psz_file, true, true );
+                free( psz_file );
+            }
         }
         if( !is_subtitle )
         {
-            std::list<std::string>::const_iterator it = files.begin();
+            list<string>::const_iterator it = files.begin();
             for( bool first = true; it != files.end(); ++it, first = false )
             {
                 bool playOnDrop = m_playOnDrop && first;
@@ -482,8 +507,8 @@ CtrlGeneric *TopWindow::findHitControl( int xPos, int yPos )
     }
 
     // Get the controls in the active layout
-    const std::list<LayeredControl> &ctrlList = m_pActiveLayout->getControlList();
-    std::list<LayeredControl>::const_reverse_iterator iter;
+    const list<LayeredControl> &ctrlList = m_pActiveLayout->getControlList();
+    list<LayeredControl>::const_reverse_iterator iter;
 
     // New control hit by the mouse
     CtrlGeneric *pNewHitControl = NULL;

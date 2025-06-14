@@ -26,7 +26,7 @@
 #include "var_tree.hpp"
 #include <math.h>
 
-const std::string VarTree::m_type = "tree";
+const string VarTree::m_type = "tree";
 
 VarTree::VarTree( intf_thread_t *pIntf )
     : Variable( pIntf ), m_pParent( NULL ), m_id( 0 ),

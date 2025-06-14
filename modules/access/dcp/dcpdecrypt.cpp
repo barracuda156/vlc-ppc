@@ -327,7 +327,7 @@ int AESKey::decryptRSA( string s_cipher_text_b64 )
             if( this->extractInfo( ps_plain_text, false ) )
                 goto end;
             break;
-        case static_cast<size_t>( -1 ):
+        case -1:
             msg_Err( this->p_demux, "could not decrypt" );
             goto end;
         default:
@@ -525,6 +525,7 @@ int RSAKey::readDER( unsigned char const* ps_data_der, size_t length )
     struct tag_info tag_inf;
     gcry_mpi_t key_params[8];
     gcry_error_t err;
+    int i;
 
     /* parse the ASN1 structure */
     if( parseTag( &ps_data_der, &length, &tag_inf )
@@ -538,7 +539,7 @@ int RSAKey::readDER( unsigned char const* ps_data_der, size_t length )
     ps_data_der += tag_inf.length;
     length -= tag_inf.length;
 
-    for( int i = 0; i < 8; i++ )
+    for( i = 0; i < 8; i++ )
     {
         if( parseTag( &ps_data_der, &length, &tag_inf )
                 || tag_inf.tag != TAG_INTEGER || tag_inf.class_ || tag_inf.cons || tag_inf.ndef )
@@ -574,7 +575,7 @@ int RSAKey::readDER( unsigned char const* ps_data_der, size_t length )
     }
 
     /* clear data */
-    for( int i = 0; i < 8; i++ )
+    for( i = 0; i < 8; i++ )
         gcry_mpi_release( key_params[i] );
     return VLC_SUCCESS;
 
@@ -582,7 +583,7 @@ bad_asn1:
     msg_Err( this->p_demux, "could not parse ASN1 structure; key might be corrupted" );
 
 error:
-    for( int i = 0; i < 8; i++ )
+    for( i = 0; i < 8; i++ )
         gcry_mpi_release( key_params[i] );
     return VLC_EGENERIC;
 }

@@ -111,13 +111,14 @@ static char *rtsp_get( rtsp_client_t *rtsp )
 static int rtsp_put( rtsp_client_t *rtsp, const char *psz_string )
 {
     unsigned int i_buffer = strlen( psz_string );
-    uint8_t *psz_buffer = xmalloc( i_buffer + 2 );
+    char *psz_buffer = xmalloc( i_buffer + 3 );
     int i_ret;
 
-    memcpy( psz_buffer, psz_string, i_buffer );
+    strcpy( psz_buffer, psz_string );
     psz_buffer[i_buffer] = '\r'; psz_buffer[i_buffer+1] = '\n';
+    psz_buffer[i_buffer+2] = 0;
 
-    i_ret = rtsp->pf_write( rtsp->p_userdata, psz_buffer, i_buffer + 2 );
+    i_ret = rtsp->pf_write( rtsp->p_userdata, (uint8_t*)psz_buffer, i_buffer + 2 );
 
     free( psz_buffer );
     return i_ret;
@@ -214,7 +215,7 @@ static void rtsp_schedule_standard( rtsp_client_t *rtsp )
 
 static int rtsp_get_answers( rtsp_client_t *rtsp )
 {
-    stream_t *p_access = (stream_t*)rtsp->p_userdata;
+    access_t *p_access = (access_t*)rtsp->p_userdata;
     char *answer = NULL;
     unsigned int answer_seq;
     char **answer_ptr = rtsp->p_private->answers;
@@ -649,7 +650,7 @@ char *rtsp_get_mrl( rtsp_client_t *rtsp )
 
 void rtsp_schedule_field( rtsp_client_t *rtsp, const char *data )
 {
-    stream_t * p_access = (stream_t*)rtsp->p_userdata;
+    access_t * p_access = (access_t*)rtsp->p_userdata;
     char **pptr;
     int i = 0;
 

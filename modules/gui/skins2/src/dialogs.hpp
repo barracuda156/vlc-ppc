@@ -95,9 +95,6 @@ public:
     /// Show an interaction dialog
     void showInteraction( interaction_dialog_t * );
 
-    /// Send hotkeys (key accelerators)
-    void sendKey( int key );
-
 private:
     // Private because it's a singleton
     Dialogs( intf_thread_t *pIntf );
@@ -121,7 +118,7 @@ private:
      *  parameters
      *  The 'flags' parameter is a logical or of the flags_t values
      */
-    void showFileGeneric( const std::string &rTitle, const std::string &rExtensions,
+    void showFileGeneric( const string &rTitle, const string &rExtensions,
                           DlgCallback callback, int flags );
 
     /// Callback for the Change Skin dialog

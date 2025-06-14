@@ -32,12 +32,9 @@
 
 #pragma GCC visibility push(default)
 
-static_assert(offsetof (vlc_vdp_video_field_t, context) == 0,
-              "Cast assumption failure");
-
-static void SurfaceDestroy(struct picture_context_t *ctx)
+static void SurfaceDestroy(void *opaque)
 {
-    vlc_vdp_video_field_t *field = (vlc_vdp_video_field_t *)ctx;
+    vlc_vdp_video_field_t *field = opaque;
     vlc_vdp_video_frame_t *frame = field->frame;
     VdpStatus err;
 
@@ -54,25 +51,6 @@ static void SurfaceDestroy(struct picture_context_t *ctx)
                 vdp_get_error_string(frame->vdp, err));
     vdp_release_x11(frame->vdp);
     free(frame);
-}
-
-static picture_context_t *SurfaceCopy(picture_context_t *ctx)
-{
-    vlc_vdp_video_field_t *fold = (vlc_vdp_video_field_t *)ctx;
-    vlc_vdp_video_frame_t *frame = fold->frame;
-    vlc_vdp_video_field_t *fnew = malloc(sizeof (*fnew));
-    if (unlikely(fnew == NULL))
-        return NULL;
-
-    fnew->context.destroy = SurfaceDestroy;
-    fnew->context.copy = SurfaceCopy;
-    fnew->frame = frame;
-    fnew->structure = fold->structure;
-    fnew->procamp = fold->procamp;
-    fnew->sharpen = fold->sharpen;
-
-    atomic_fetch_add(&frame->refs, 1);
-    return &fnew->context;
 }
 
 static const VdpProcamp procamp_default =
@@ -94,11 +72,11 @@ vlc_vdp_video_field_t *vlc_vdp_video_create(vdp_t *vdp,
     {
         free(frame);
         free(field);
+        vdp_video_surface_destroy(vdp, surface);
         return NULL;
     }
 
-    field->context.destroy = SurfaceDestroy;
-    field->context.copy = SurfaceCopy;
+    field->destroy = SurfaceDestroy;
     field->frame = frame;
     field->structure = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME;
     field->procamp = procamp_default;
@@ -118,9 +96,26 @@ VdpStatus vlc_vdp_video_attach(vdp_t *vdp, VdpVideoSurface surface,
         return VDP_STATUS_RESOURCES;
 
     assert(pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_420
-        || pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_422
-        || pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_444);
+        || pic->format.i_chroma == VLC_CODEC_VDPAU_VIDEO_422);
+    assert(!picture_IsReferenced(pic));
     assert(pic->context == NULL);
-    pic->context = &field->context;
+    pic->context = field;
     return VDP_STATUS_OK;
+}
+
+vlc_vdp_video_field_t *vlc_vdp_video_copy(vlc_vdp_video_field_t *fold)
+{
+    vlc_vdp_video_frame_t *frame = fold->frame;
+    vlc_vdp_video_field_t *fnew = malloc(sizeof (*fnew));
+    if (unlikely(fnew == NULL))
+        return NULL;
+
+    fnew->destroy = SurfaceDestroy;
+    fnew->frame = frame;
+    fnew->structure = fold->structure;
+    fnew->procamp = fold->procamp;
+    fnew->sharpen = fold->sharpen;
+
+    atomic_fetch_add(&frame->refs, 1);
+    return fnew;
 }

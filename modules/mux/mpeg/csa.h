@@ -21,8 +21,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_MPEG_CSA_H_
-#define VLC_MPEG_CSA_H_
+#ifndef _CSA_H
+#define _CSA_H 1
 
 typedef struct csa_t csa_t;
 #define csa_New     __csa_New

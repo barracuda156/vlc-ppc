@@ -37,7 +37,7 @@ public:
                   : CmdGeneric( pIntf ), m_rList( rList ) { }
     virtual ~CmdPlaylistDel() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist del"; }
+    virtual string getType() const { return "playlist del"; }
 
 private:
     /// List
@@ -66,7 +66,7 @@ public:
                      : CmdGeneric( pIntf ), m_value( value ) { }
     virtual ~CmdPlaylistRandom() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist random"; }
+    virtual string getType() const { return "playlist random"; }
 
 private:
     /// Random state
@@ -82,7 +82,7 @@ public:
                    : CmdGeneric( pIntf ), m_value( value ) { }
     virtual ~CmdPlaylistLoop() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist loop"; }
+    virtual string getType() const { return "playlist loop"; }
 
 private:
     /// Loop state
@@ -98,7 +98,7 @@ public:
                      : CmdGeneric( pIntf ), m_value( value ) { }
     virtual ~CmdPlaylistRepeat() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist repeat"; }
+    virtual string getType() const { return "playlist repeat"; }
 
 private:
     /// Repeat state
@@ -110,15 +110,15 @@ private:
 class CmdPlaylistLoad: public CmdGeneric
 {
 public:
-    CmdPlaylistLoad( intf_thread_t *pIntf, const std::string& rFile )
+    CmdPlaylistLoad( intf_thread_t *pIntf, const string& rFile )
                    : CmdGeneric( pIntf ), m_file( rFile ) { }
     virtual ~CmdPlaylistLoad() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist load"; }
+    virtual string getType() const { return "playlist load"; }
 
 private:
     /// Playlist file to load
-    std::string m_file;
+    string m_file;
 };
 
 
@@ -126,15 +126,15 @@ private:
 class CmdPlaylistSave: public CmdGeneric
 {
 public:
-    CmdPlaylistSave( intf_thread_t *pIntf, const std::string& rFile )
+    CmdPlaylistSave( intf_thread_t *pIntf, const string& rFile )
                    : CmdGeneric( pIntf ), m_file( rFile ) { }
     virtual ~CmdPlaylistSave() { }
     virtual void execute();
-    virtual std::string getType() const { return "playlist save"; }
+    virtual string getType() const { return "playlist save"; }
 
 private:
     /// Playlist file to save
-    std::string m_file;
+    string m_file;
 };
 
 

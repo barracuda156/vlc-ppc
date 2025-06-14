@@ -50,7 +50,7 @@ static void Close( vlc_object_t * );
 #define SOUT_CFG_PREFIX "sout-http-"
 
 #define USER_TEXT N_("Username")
-#define USER_LONGTEXT N_("Username that will be " \
+#define USER_LONGTEXT N_("User name that will be " \
                          "requested to access the stream." )
 #define PASS_TEXT N_("Password")
 #define PASS_LONGTEXT N_("Password that will be " \
@@ -90,6 +90,7 @@ static const char *const ppsz_sout_options[] = {
 };
 
 static ssize_t Write( sout_access_out_t *, block_t * );
+static int Seek ( sout_access_out_t *, off_t  );
 static int Control( sout_access_out_t *, int, va_list );
 
 struct sout_access_out_sys_t
@@ -104,7 +105,7 @@ struct sout_access_out_sys_t
     int                 i_header_allocated;
     int                 i_header_size;
     uint8_t             *p_header;
-    bool                b_header_complete;
+    bool          b_header_complete;
     bool                b_metacube;
     bool                b_has_keyframes;
 };
@@ -276,11 +277,8 @@ static int Open( vlc_object_t *p_this )
 
     if( p_sys->b_metacube )
     {
-        const httpd_header headers[] = {
-            { (char *)"Content-encoding", (char *)"metacube" }
-        };
-        int err = httpd_StreamSetHTTPHeaders( p_sys->p_httpd_stream, headers,
-                                              ARRAY_SIZE(headers) );
+        httpd_header headers[] = {{ "Content-encoding", "metacube" }};
+        int err = httpd_StreamSetHTTPHeaders( p_sys->p_httpd_stream, headers, sizeof( headers ) / sizeof( httpd_header ) );
         if( err != VLC_SUCCESS )
         {
             free( p_sys );
@@ -294,6 +292,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->b_header_complete  = false;
 
     p_access->pf_write       = Write;
+    p_access->pf_seek        = Seek;
     p_access->pf_control     = Control;
 
     return VLC_SUCCESS;
@@ -381,21 +380,13 @@ static ssize_t Write( sout_access_out_t *p_access, block_t *p_buffer )
                 hdr.csum = hton16( metacube2_compute_crc( &hdr ) );
 
                 int i_header_size = p_sys->i_header_size + sizeof( hdr );
-                block_t *p_hdr_block = block_Alloc( i_header_size );
-                if( p_hdr_block == NULL ) {
-                    block_ChainRelease( p_buffer );
-                    return VLC_ENOMEM;
-                }
-                p_hdr_block->i_flags = 0;
-                memcpy( p_hdr_block->p_buffer, &hdr, sizeof( hdr ) );
-                memcpy( p_hdr_block->p_buffer + sizeof( hdr ), p_sys->p_header, p_sys->i_header_size );
+                uint8_t *p_hdr_block = xmalloc( i_header_size );
+                memcpy( p_hdr_block, &hdr, sizeof( hdr ) );
+                memcpy( p_hdr_block + sizeof( hdr ), p_sys->p_header, p_sys->i_header_size );
 
-                /* send the combined header here instead of sending them as regular
-                 * data, so that we get them as a single Metacube header block */
-                httpd_StreamHeader( p_sys->p_httpd_stream, p_hdr_block->p_buffer, p_hdr_block->i_buffer );
-                httpd_StreamSend( p_sys->p_httpd_stream, p_hdr_block );
+                httpd_StreamHeader( p_sys->p_httpd_stream, p_hdr_block, i_header_size );
 
-                block_Release( p_hdr_block );
+                free( p_hdr_block );
             }
             else
             {
@@ -415,13 +406,6 @@ static ssize_t Write( sout_access_out_t *p_access, block_t *p_buffer )
 
         if( p_sys->b_metacube )
         {
-            /* header data is combined into one packet and sent earlier */
-            if( p_buffer->i_flags & BLOCK_FLAG_HEADER ) {
-                block_Release( p_buffer );
-                p_buffer = p_next;
-                continue;
-            }
-
             /* prepend Metacube header */
             struct metacube2_block_header hdr;
             memcpy( hdr.sync, METACUBE2_SYNC, sizeof( METACUBE2_SYNC ) );
@@ -459,4 +443,14 @@ static ssize_t Write( sout_access_out_t *p_access, block_t *p_buffer )
     }
 
     return( i_err < 0 ? VLC_EGENERIC : i_len );
+}
+
+/*****************************************************************************
+ * Seek: seek to a specific location in a file
+ *****************************************************************************/
+static int Seek( sout_access_out_t *p_access, off_t i_pos )
+{
+    (void)i_pos;
+    msg_Warn( p_access, "HTTP sout access cannot seek" );
+    return VLC_EGENERIC;
 }

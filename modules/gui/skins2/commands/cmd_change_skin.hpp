@@ -32,15 +32,15 @@
 class CmdChangeSkin: public CmdGeneric
 {
 public:
-    CmdChangeSkin( intf_thread_t *pIntf, const std::string &rFile ):
+    CmdChangeSkin( intf_thread_t *pIntf, const string &rFile ):
         CmdGeneric( pIntf ), m_file( rFile ) { }
     virtual ~CmdChangeSkin() { }
     virtual void execute();
-    virtual std::string getType() const { return "change skin"; }
+    virtual string getType() const { return "change skin"; }
 
 private:
     /// Skin file to load
-    std::string m_file;
+    string m_file;
 };
 
 #endif

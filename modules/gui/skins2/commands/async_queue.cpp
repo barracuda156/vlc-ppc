@@ -26,7 +26,6 @@
 #include "../src/os_factory.hpp"
 #include "../src/os_timer.hpp"
 
-#include <new>
 
 AsyncQueue::AsyncQueue( intf_thread_t *pIntf ): SkinObject( pIntf ),
     m_cmdFlush( this )
@@ -55,7 +54,7 @@ AsyncQueue *AsyncQueue::instance( intf_thread_t *pIntf )
     if( ! pIntf->p_sys->p_queue )
     {
         AsyncQueue *pQueue;
-        pQueue = new (std::nothrow) AsyncQueue( pIntf );
+        pQueue = new AsyncQueue( pIntf );
         if( pQueue )
         {
              // Initialization succeeded
@@ -88,7 +87,7 @@ void AsyncQueue::push( const CmdGenericPtr &rcCommand, bool removePrev )
 }
 
 
-void AsyncQueue::remove( const std::string &rType, const CmdGenericPtr &rcCommand )
+void AsyncQueue::remove( const string &rType, const CmdGenericPtr &rcCommand )
 {
     cmdList_t::iterator it;
     for( it = m_cmdList.begin(); it != m_cmdList.end(); /* nothing */ )

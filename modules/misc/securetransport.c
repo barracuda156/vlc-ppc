@@ -13,7 +13,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public License
+ * You should have received a copy of the GNU Öesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
@@ -46,10 +46,8 @@
 static int  OpenClient  (vlc_tls_creds_t *);
 static void CloseClient (vlc_tls_creds_t *);
 
-#if !TARGET_OS_IPHONE
-    static int  OpenServer  (vlc_tls_creds_t *crd, const char *cert, const char *key);
-    static void CloseServer (vlc_tls_creds_t *);
-#endif
+static int  OpenServer  (vlc_tls_creds_t *crd, const char *cert, const char *key);
+static void CloseServer (vlc_tls_creds_t *);
 
 vlc_module_begin ()
     set_description(N_("TLS support for OS X and iOS"))
@@ -60,7 +58,7 @@ vlc_module_begin ()
 
     /*
      * The server module currently uses an OSX only API, to be compatible with 10.6.
-      If the module is needed on iOS, then the "modern" keychain lookup API need to be
+     * If the module is needed on iOS, then the "modern" keychain lookup API need to be
      * implemented.
      */
 #if !TARGET_OS_IPHONE
@@ -78,30 +76,27 @@ vlc_module_end ()
 #define cfKeyHost CFSTR("host")
 #define cfKeyCertificate CFSTR("certificate")
 
-typedef struct {
+struct vlc_tls_creds_sys
+{
     CFMutableArrayRef whitelist;
 
     /* valid in server mode */
     CFArrayRef server_cert_chain;
-} vlc_tls_creds_sys_t;
+};
 
-typedef struct {
-    vlc_tls_t tls;
+struct vlc_tls_sys {
     SSLContextRef p_context;
     vlc_tls_creds_sys_t *p_cred;
     size_t i_send_buffered_bytes;
-    vlc_tls_t *sock;
-    vlc_object_t *obj;
+    int i_fd;
 
     bool b_blocking_send;
     bool b_handshaked;
     bool b_server_mode;
-} vlc_tls_st_t;
+};
 
 static int st_Error (vlc_tls_t *obj, int val)
 {
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)obj;
-
     switch (val)
     {
         case errSSLWouldBlock:
@@ -110,11 +105,11 @@ static int st_Error (vlc_tls_t *obj, int val)
 
         case errSSLClosedGraceful:
         case errSSLClosedAbort:
-            msg_Dbg(sys->obj, "Connection closed with code %d", val);
+            msg_Dbg(obj, "Connection closed with code %d", val);
             errno = ECONNRESET;
             break;
         default:
-            msg_Err(sys->obj, "Found error %d", val);
+            msg_Err(obj, "Found error %d", val);
             errno = ECONNRESET;
     }
     return -1;
@@ -130,18 +125,19 @@ static OSStatus st_SocketReadFunc (SSLConnectionRef connection,
                                    size_t *dataLength) {
 
     vlc_tls_t *session = (vlc_tls_t *)connection;
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-    struct iovec iov = {
-        .iov_base = data,
-        .iov_len = *dataLength,
-    };
-    OSStatus retValue = noErr;
+    vlc_tls_sys_t *sys = session->sys;
 
-    while (iov.iov_len > 0) {
-        ssize_t val = sys->sock->readv(sys->sock, &iov, 1);
+    size_t bytesToGo = *dataLength;
+    size_t initLen = bytesToGo;
+    UInt8 *currData = (UInt8 *)data;
+    OSStatus retValue = noErr;
+    ssize_t val;
+
+    for (;;) {
+        val = read(sys->i_fd, currData, bytesToGo);
         if (val <= 0) {
             if (val == 0) {
-                msg_Dbg(sys->obj, "found eof");
+                msg_Dbg(session, "found eof");
                 retValue = errSSLClosedGraceful;
             } else { /* do the switch */
                 switch (errno) {
@@ -157,20 +153,25 @@ static OSStatus st_SocketReadFunc (SSLConnectionRef connection,
                         sys->b_blocking_send = false;
                         break;
                     default:
-                        msg_Err(sys->obj, "try to read %zu bytes, "
-                                "got error %d", iov.iov_len, errno);
+                        msg_Err(session, "try to read %d bytes, got error %d",
+                                (int)bytesToGo, errno);
                         retValue = ioErr;
                         break;
                 }
             }
             break;
+        } else {
+            bytesToGo -= val;
+            currData += val;
         }
 
-        iov.iov_base = (char *)iov.iov_base + val;
-        iov.iov_len -= val;
+        if (bytesToGo == 0) {
+            /* filled buffer with incoming data, done */
+            break;
+        }
     }
+    *dataLength = initLen - bytesToGo;
 
-    *dataLength -= iov.iov_len;
     return retValue;
 }
 
@@ -184,53 +185,49 @@ static OSStatus st_SocketWriteFunc (SSLConnectionRef connection,
                                     size_t *dataLength) {
 
     vlc_tls_t *session = (vlc_tls_t *)connection;
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-    struct iovec iov = {
-        .iov_base = (void *)data,
-        .iov_len = *dataLength,
-    };
+    vlc_tls_sys_t *sys = session->sys;
+
+    size_t bytesSent = 0;
+    size_t dataLen = *dataLength;
     OSStatus retValue = noErr;
+    ssize_t val;
 
-    while (iov.iov_len > 0) {
-        ssize_t val = sys->sock->writev(sys->sock, &iov, 1);
-        if (val < 0) {
-            switch (errno) {
-                case EAGAIN:
-                    retValue = errSSLWouldBlock;
-                    sys->b_blocking_send = true;
-                    break;
+    do {
+        val = write(sys->i_fd, (char *)data + bytesSent, dataLen - bytesSent);
+    } while (val >= 0 && (bytesSent += val) < dataLen);
 
-                case EPIPE:
-                case ECONNRESET:
-                    retValue = errSSLClosedAbort;
-                    break;
+    if (val < 0) {
+        switch(errno) {
+            case EAGAIN:
+                retValue = errSSLWouldBlock;
+                sys->b_blocking_send = true;
+                break;
 
-                default:
-                    msg_Err(sys->obj, "error while writing: %d", errno);
-                    retValue = ioErr;
-                    break;
-            }
-            break;
+            case EPIPE:
+            case ECONNRESET:
+                retValue = errSSLClosedAbort;
+                break;
+
+            default:
+                msg_Err(session, "error while writing: %d", errno);
+                retValue = ioErr;
         }
-
-        iov.iov_base = (char *)iov.iov_base + val;
-        iov.iov_len -= val;
     }
 
-    *dataLength -= iov.iov_len;
+    *dataLength = bytesSent;
     return retValue;
 }
 
 static int st_validateServerCertificate (vlc_tls_t *session, const char *hostname) {
 
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
     int result = -1;
+    vlc_tls_sys_t *sys = session->sys;
     SecCertificateRef leaf_cert = NULL;
 
     SecTrustRef trust = NULL;
     OSStatus ret = SSLCopyPeerTrust(sys->p_context, &trust);
     if (ret != noErr || trust == NULL) {
-        msg_Err(sys->obj, "error getting certifictate chain");
+        msg_Err(session, "error getting certifictate chain");
         return -1;
     }
 
@@ -242,7 +239,7 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
     /* enable default root / anchor certificates */
     ret = SecTrustSetAnchorCertificates(trust, NULL);
     if (ret != noErr) {
-        msg_Err(sys->obj, "error setting anchor certificates");
+        msg_Err(session, "error setting anchor certificates");
         result = -1;
         goto out;
     }
@@ -251,7 +248,7 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
 
     ret = SecTrustEvaluate(trust, &trust_eval_result);
     if (ret != noErr) {
-        msg_Err(sys->obj, "error calling SecTrustEvaluate");
+        msg_Err(session, "error calling SecTrustEvaluate");
         result = -1;
         goto out;
     }
@@ -259,14 +256,14 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
     switch (trust_eval_result) {
         case kSecTrustResultUnspecified:
         case kSecTrustResultProceed:
-            msg_Dbg(sys->obj, "cerfificate verification successful, result is %d", trust_eval_result);
+            msg_Dbg(session, "cerfificate verification successful, result is %d", trust_eval_result);
             result = 0;
             goto out;
 
         case kSecTrustResultRecoverableTrustFailure:
         case kSecTrustResultDeny:
         default:
-            msg_Warn(sys->obj, "cerfificate verification failed, result is %d", trust_eval_result);
+            msg_Warn(session, "cerfificate verification failed, result is %d", trust_eval_result);
     }
 
     /* get leaf certificate */
@@ -311,7 +308,7 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
             continue;
 
         if (CFEqual(knownHost, cfHostname) && CFEqual(knownCert, leaf_cert)) {
-            msg_Warn(sys->obj, "certificate already accepted, continuing");
+            msg_Warn(session, "certificate already accepted, continuing");
             result = 0;
             goto out;
         }
@@ -334,13 +331,11 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
              "This problem may be caused by a configuration error "
              "or an attempt to breach your security or your privacy.\n\n"
              "If in doubt, abort now.\n");
-    int answer = vlc_dialog_wait_question(sys->obj,
-                                          VLC_DIALOG_QUESTION_WARNING, _("Abort"),
-                                          _("Accept certificate temporarily"),
-                                          NULL, _("Insecure site"),
-                                          vlc_gettext (msg), hostname);
-    if (answer == 1) {
-        msg_Warn(sys->obj, "Proceeding despite of failed certificate validation");
+    int answer = dialog_Question(session, _("Insecure site"), vlc_gettext (msg),
+                                  _("Abort"), _("Accept certificate temporarily"), NULL, hostname);
+
+    if (answer == 2) {
+        msg_Warn(session, "Proceeding despite of failed certificate validation");
 
         /* save leaf certificate in whitelist */
         const void *keys[] = {cfKeyHost, cfKeyCertificate};
@@ -350,7 +345,7 @@ static int st_validateServerCertificate (vlc_tls_t *session, const char *hostnam
                                                    &kCFTypeDictionaryKeyCallBacks,
                                                    &kCFTypeDictionaryValueCallBacks);
         if (!dict) {
-            msg_Err(sys->obj, "error creating dict");
+            msg_Err(session, "error creating dict");
             result = -1;
             goto out;
         }
@@ -382,21 +377,16 @@ out:
  * 1 if more would-be blocking recv is needed,
  * 2 if more would-be blocking send is required.
  */
-static int st_Handshake (vlc_tls_creds_t *crd, vlc_tls_t *session,
-                         const char *host, const char *service,
-                         char **restrict alp) {
-
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-
+static int st_Handshake (vlc_tls_t *session, const char *host,
+                                        const char *service) {
     VLC_UNUSED(service);
 
+    vlc_tls_sys_t *sys = session->sys;
+
     OSStatus retValue = SSLHandshake(sys->p_context);
-    if (alp != NULL) {
-        *alp = NULL;
-    }
 
     if (retValue == errSSLWouldBlock) {
-        msg_Dbg(crd, "handshake is blocked, try again later");
+        msg_Dbg(session, "handshake is blocked, try again later");
         return 1 + (sys->b_blocking_send ? 1 : 0);
     }
 
@@ -405,49 +395,37 @@ static int st_Handshake (vlc_tls_creds_t *crd, vlc_tls_t *session,
             if (sys->b_server_mode == false && st_validateServerCertificate(session, host) != 0) {
                 return -1;
             }
-            msg_Dbg(crd, "handshake completed successfully");
+            msg_Dbg(session, "handshake completed successfully");
             sys->b_handshaked = true;
             return 0;
 
         case errSSLServerAuthCompleted:
-            msg_Dbg(crd, "SSLHandshake returned errSSLServerAuthCompleted, continuing handshake");
-            return st_Handshake(crd, session, host, service, alp);
+            return st_Handshake(session, host, service);
 
         case errSSLConnectionRefused:
-            msg_Err(crd, "connection was refused");
+            msg_Err(session, "connection was refused");
             return -1;
         case errSSLNegotiation:
-            msg_Err(crd, "cipher suite negotiation failed");
+            msg_Err(session, "cipher suite negotiation failed");
             return -1;
         case errSSLFatalAlert:
-            msg_Err(crd, "fatal error occurred during handshake");
+            msg_Err(session, "fatal error occured during handshake");
             return -1;
 
         default:
-            msg_Err(crd, "handshake returned error %d", (int)retValue);
+            msg_Err(session, "handshake returned error %d", (int)retValue);
             return -1;
     }
-}
-
-static int st_GetFD (vlc_tls_t *session)
-{
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-    vlc_tls_t *sock = sys->sock;
-
-    return vlc_tls_GetFD(sock);
 }
 
 /**
  * Sends data through a TLS session.
  */
-static ssize_t st_Send (vlc_tls_t *session, const struct iovec *iov,
-                        unsigned count)
+static int st_Send (void *opaque, const void *buf, size_t length)
 {
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
+    vlc_tls_t *session = opaque;
+    vlc_tls_sys_t *sys = session->sys;
     OSStatus ret = noErr;
-
-    if (unlikely(count == 0))
-        return 0;
 
     /*
      * SSLWrite does not return the number of bytes actually written to
@@ -482,11 +460,10 @@ static ssize_t st_Send (vlc_tls_t *session, const struct iovec *iov,
         }
 
     } else {
-        ret = SSLWrite(sys->p_context, iov->iov_base, iov->iov_len,
-                       &actualSize);
+        ret = SSLWrite(sys->p_context, buf, length, &actualSize);
 
         if (ret == errSSLWouldBlock) {
-            sys->i_send_buffered_bytes = iov->iov_len;
+            sys->i_send_buffered_bytes = length;
             errno = againErr;
             return -1;
         }
@@ -498,23 +475,20 @@ static ssize_t st_Send (vlc_tls_t *session, const struct iovec *iov,
 /**
  * Receives data through a TLS session.
  */
-static ssize_t st_Recv (vlc_tls_t *session, struct iovec *iov, unsigned count)
+static int st_Recv (void *opaque, void *buf, size_t length)
 {
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-
-    if (unlikely(count == 0))
-        return 0;
+    vlc_tls_t *session = opaque;
+    vlc_tls_sys_t *sys = session->sys;
 
     size_t actualSize;
-    OSStatus ret = SSLRead(sys->p_context, iov->iov_base, iov->iov_len,
-                           &actualSize);
+    OSStatus ret = SSLRead(sys->p_context, buf, length, &actualSize);
 
     if (ret == errSSLWouldBlock && actualSize)
         return actualSize;
 
     /* peer performed shutdown */
     if (ret == errSSLClosedNoNotify || ret == errSSLClosedGraceful) {
-        msg_Dbg(sys->obj, "Got close notification with code %i", (int)ret);
+        msg_Dbg(session, "Got close notification with code %d", ret);
         return 0;
     }
 
@@ -524,39 +498,26 @@ static ssize_t st_Recv (vlc_tls_t *session, struct iovec *iov, unsigned count)
 /**
  * Closes a TLS session.
  */
+static void st_SessionClose (vlc_tls_creds_t *crd, vlc_tls_t *session) {
 
-static int st_SessionShutdown (vlc_tls_t *session, bool duplex) {
+    VLC_UNUSED(crd);
 
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-
-    msg_Dbg(sys->obj, "shutdown TLS session");
-
-    OSStatus ret = noErr;
-    VLC_UNUSED(duplex);
-
-    if (sys->b_handshaked) {
-        ret = SSLClose(sys->p_context);
-    }
-
-    if (ret != noErr) {
-        msg_Warn(sys->obj, "Cannot close ssl context (%i)", (int)ret);
-        return ret;
-    }
-
-    return 0;
-}
-
-static void st_SessionClose (vlc_tls_t *session) {
-
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)session;
-    msg_Dbg(sys->obj, "close TLS session");
+    vlc_tls_sys_t *sys = session->sys;
+    msg_Dbg(session, "close TLS session");
 
     if (sys->p_context) {
+        if (sys->b_handshaked) {
+            OSStatus ret = SSLClose(sys->p_context);
+            if (ret != noErr) {
+                msg_Warn(session, "Cannot close ssl context");
+            }
+        }
+
 #if TARGET_OS_IPHONE
         CFRelease(sys->p_context);
 #else
         if (SSLDisposeContext(sys->p_context) != noErr) {
-            msg_Err(sys->obj, "error deleting context");
+            msg_Err(session, "error deleting context");
         }
 #endif
     }
@@ -567,42 +528,37 @@ static void st_SessionClose (vlc_tls_t *session) {
  * Initializes a client-side TLS session.
  */
 
-static vlc_tls_t *st_SessionOpenCommon(vlc_tls_creds_t *crd, vlc_tls_t *sock,
-                                       bool b_server)
-{
-    vlc_tls_st_t *sys = malloc(sizeof (*sys));
+static int st_SessionOpenCommon (vlc_tls_creds_t *crd, vlc_tls_t *session,
+                                 int fd, bool b_server) {
+
+    vlc_tls_sys_t *sys = malloc(sizeof(*session->sys));
     if (unlikely(sys == NULL))
-        return NULL;
+        return VLC_ENOMEM;
 
     sys->p_cred = crd->sys;
+    sys->i_fd = fd;
     sys->b_handshaked = false;
     sys->b_blocking_send = false;
     sys->i_send_buffered_bytes = 0;
     sys->p_context = NULL;
-    sys->sock = sock;
-    sys->b_server_mode = b_server;
-    sys->obj = VLC_OBJECT(crd);
 
-    vlc_tls_t *tls = &sys->tls;
-
-    tls->get_fd = st_GetFD;
-    tls->readv = st_Recv;
-    tls->writev = st_Send;
-    tls->shutdown = st_SessionShutdown;
-    tls->close = st_SessionClose;
-    crd->handshake = st_Handshake;
+    session->sys = sys;
+    session->sock.p_sys = session;
+    session->sock.pf_send = st_Send;
+    session->sock.pf_recv = st_Recv;
+    session->handshake = st_Handshake;
 
     SSLContextRef p_context = NULL;
 #if TARGET_OS_IPHONE
     p_context = SSLCreateContext(NULL, b_server ? kSSLServerSide : kSSLClientSide, kSSLStreamType);
     if (p_context == NULL) {
-        msg_Err(crd, "cannot create ssl context");
-        goto error;
+        msg_Err(session, "cannot create ssl context");
+        return -1;
     }
 #else
     if (SSLNewContext(b_server, &p_context) != noErr) {
-        msg_Err(crd, "error calling SSLNewContext");
-        goto error;
+        msg_Err(session, "error calling SSLNewContext");
+        return -1;
     }
 #endif
 
@@ -610,42 +566,34 @@ static vlc_tls_t *st_SessionOpenCommon(vlc_tls_creds_t *crd, vlc_tls_t *sock,
 
     OSStatus ret = SSLSetIOFuncs(p_context, st_SocketReadFunc, st_SocketWriteFunc);
     if (ret != noErr) {
-        msg_Err(crd, "cannot set io functions");
-        goto error;
+        msg_Err(session, "cannot set io functions");
+        return -1;
     }
 
-    ret = SSLSetConnection(p_context, tls);
+    ret = SSLSetConnection(p_context, session);
     if (ret != noErr) {
-        msg_Err(crd, "cannot set connection");
-        goto error;
+        msg_Err(session, "cannot set connection");
+        return -1;
     }
 
-    return tls;
-
-error:
-    st_SessionClose(tls);
-    return NULL;
+    return 0;
 }
 
-static vlc_tls_t *st_ClientSessionOpen(vlc_tls_creds_t *crd, vlc_tls_t *sock,
-                                 const char *hostname, const char *const *alpn)
-{
-    if (alpn != NULL) {
-        msg_Warn(crd, "Ignoring ALPN request due to lack of support in the backend. Proxy behavior potentially undefined.");
-#warning ALPN support missing, proxy behavior potentially undefined (rdar://29127318, #17721)
+static int st_ClientSessionOpen (vlc_tls_creds_t *crd, vlc_tls_t *session,
+                                     int fd, const char *hostname) {
+    msg_Dbg(session, "open TLS session for %s", hostname);
+
+    int ret = st_SessionOpenCommon(crd, session, fd, false);
+    if (ret != noErr) {
+        goto error;
     }
 
-    msg_Dbg(crd, "open TLS session for %s", hostname);
+    vlc_tls_sys_t *sys = session->sys;
+    sys->b_server_mode = false;
 
-    vlc_tls_t *tls = st_SessionOpenCommon(crd, sock, false);
-    if (tls == NULL)
-        return NULL;
-
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)tls;
-
-    OSStatus ret = SSLSetPeerDomainName(sys->p_context, hostname, strlen(hostname));
+    ret = SSLSetPeerDomainName(sys->p_context, hostname, strlen(hostname));
     if (ret != noErr) {
-        msg_Err(crd, "cannot set peer domain name");
+        msg_Err(session, "cannot set peer domain name");
         goto error;
     }
 
@@ -655,24 +603,23 @@ static vlc_tls_t *st_ClientSessionOpen(vlc_tls_creds_t *crd, vlc_tls_t *sock,
     /* this has effect only on iOS 5 and OSX 10.8 or later ... */
     ret = SSLSetSessionOption(sys->p_context, kSSLSessionOptionBreakOnServerAuth, true);
     if (ret != noErr) {
-        msg_Err (crd, "cannot set session option");
+        msg_Err (session, "cannot set session option");
         goto error;
     }
 #if !TARGET_OS_IPHONE
     /* ... thus calling this for earlier osx versions, which is not available on iOS in turn */
     ret = SSLSetEnableCertVerify(sys->p_context, false);
     if (ret != noErr) {
-        msg_Err(crd, "error setting enable cert verify");
+        msg_Err(session, "error setting enable cert verify");
         goto error;
     }
 #endif
 
-    return tls;
+    return VLC_SUCCESS;
 
 error:
-    st_SessionShutdown(tls, true);
-    st_SessionClose(tls);
-    return NULL;
+    st_SessionClose(crd, session);
+    return VLC_EGENERIC;
 }
 
 /**
@@ -691,6 +638,7 @@ static int OpenClient (vlc_tls_creds_t *crd) {
 
     crd->sys = sys;
     crd->open = st_ClientSessionOpen;
+    crd->close = st_SessionClose;
 
     return VLC_SUCCESS;
 }
@@ -712,32 +660,31 @@ static void CloseClient (vlc_tls_creds_t *crd) {
 /**
  * Initializes a server-side TLS session.
  */
-static vlc_tls_t *st_ServerSessionOpen (vlc_tls_creds_t *crd, vlc_tls_t *sock,
-                               const char *hostname, const char *const *alpn) {
+static int st_ServerSessionOpen (vlc_tls_creds_t *crd, vlc_tls_t *session,
+                                 int fd, const char *hostname) {
 
     VLC_UNUSED(hostname);
-    VLC_UNUSED(alpn);
-    msg_Dbg(crd, "open TLS server session");
+    msg_Dbg(session, "open TLS server session");
 
-    vlc_tls_t *tls = st_SessionOpenCommon(crd, sock, true);
-    if (tls != NULL)
-        return NULL;
-
-    vlc_tls_st_t *sys = (vlc_tls_st_t *)tls;
-    vlc_tls_creds_sys_t *p_cred_sys = crd->sys;
-
-    OSStatus ret = SSLSetCertificate(sys->p_context, p_cred_sys->server_cert_chain);
+    int ret = st_SessionOpenCommon(crd, session, fd, true);
     if (ret != noErr) {
-        msg_Err(crd, "cannot set server certificate");
         goto error;
     }
 
-    return tls;
+    vlc_tls_sys_t *sys = session->sys;
+    sys->b_server_mode = true;
+
+    ret = SSLSetCertificate(sys->p_context, crd->sys->server_cert_chain);
+    if (ret != noErr) {
+        msg_Err(session, "cannot set server certificate");
+        goto error;
+    }
+
+    return VLC_SUCCESS;
 
 error:
-    st_SessionShutdown(tls, true);
-    st_SessionClose(tls);
-    return NULL;
+    st_SessionClose(crd, session);
+    return VLC_EGENERIC;
 }
 
 /**
@@ -846,6 +793,7 @@ static int OpenServer (vlc_tls_creds_t *crd, const char *cert, const char *key) 
 
     crd->sys = sys;
     crd->open = st_ServerSessionOpen;
+    crd->close = st_SessionClose;
 
 out:
     if (policy)

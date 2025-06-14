@@ -27,7 +27,8 @@
 
 void CmdDvdNextTitle::execute()
 {
-    input_thread_t *p_input = playlist_CurrentInput( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    input_thread_t *p_input = playlist_CurrentInput( pPlaylist );
 
     if( p_input )
     {
@@ -39,7 +40,8 @@ void CmdDvdNextTitle::execute()
 
 void CmdDvdPreviousTitle::execute()
 {
-    input_thread_t *p_input = playlist_CurrentInput( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    input_thread_t *p_input = playlist_CurrentInput( pPlaylist );
 
     if( p_input )
     {
@@ -51,7 +53,8 @@ void CmdDvdPreviousTitle::execute()
 
 void CmdDvdNextChapter::execute()
 {
-    input_thread_t *p_input = playlist_CurrentInput( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    input_thread_t *p_input = playlist_CurrentInput( pPlaylist );
 
     if( p_input )
     {
@@ -63,7 +66,8 @@ void CmdDvdNextChapter::execute()
 
 void CmdDvdPreviousChapter::execute()
 {
-    input_thread_t *p_input = playlist_CurrentInput( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    input_thread_t *p_input = playlist_CurrentInput( pPlaylist );
 
     if( p_input )
     {
@@ -75,7 +79,8 @@ void CmdDvdPreviousChapter::execute()
 
 void CmdDvdRootMenu::execute()
 {
-    input_thread_t *p_input = playlist_CurrentInput( getPL() );
+    playlist_t *pPlaylist = getIntf()->p_sys->p_playlist;
+    input_thread_t *p_input = playlist_CurrentInput( pPlaylist );
 
     if( p_input )
     {

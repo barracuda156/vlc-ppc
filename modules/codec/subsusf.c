@@ -41,19 +41,14 @@
 static int  OpenDecoder   ( vlc_object_t * );
 static void CloseDecoder  ( vlc_object_t * );
 
-#define FORMAT_TEXT N_("Formatted Subtitles")
-#define FORMAT_LONGTEXT N_("Some subtitle formats allow for text formatting. " \
- "VLC partly implements this, but you can choose to disable all formatting.")
-
 vlc_module_begin ()
-    set_capability( "spu decoder", 40 )
+    set_capability( "decoder", 40 )
     set_shortname( N_("USFSubs"))
     set_description( N_("USF subtitles decoder") )
     set_callbacks( OpenDecoder, CloseDecoder )
     set_category( CAT_INPUT )
     set_subcategory( SUBCAT_INPUT_SCODEC )
-    add_bool( "subsdec-formatted", true, FORMAT_TEXT, FORMAT_LONGTEXT,
-                 false )
+    /* We inherit subsdec-align and subsdec-formatted from subsdec.c */
 vlc_module_end ()
 
 
@@ -78,7 +73,7 @@ typedef struct
 typedef struct
 {
     char *          psz_stylename; /* The name of the style, no comma's allowed */
-    text_style_t *  p_style;
+    text_style_t    font_style;
     int             i_align;
     int             i_margin_h;
     int             i_margin_v;
@@ -99,7 +94,7 @@ struct decoder_sys_t
     int                 i_images;
 };
 
-static int           DecodeBlock   ( decoder_t *, block_t * );
+static subpicture_t *DecodeBlock   ( decoder_t *, block_t ** );
 static char         *CreatePlainText( char * );
 static int           ParseImageAttachments( decoder_t *p_dec );
 
@@ -126,10 +121,14 @@ static int OpenDecoder( vlc_object_t *p_this )
     if( ( p_dec->p_sys = p_sys = calloc(1, sizeof(decoder_sys_t)) ) == NULL )
         return VLC_ENOMEM;
 
-    p_dec->pf_decode = DecodeBlock;
+    p_dec->pf_decode_sub = DecodeBlock;
+    p_dec->fmt_out.i_cat = SPU_ES;
     p_dec->fmt_out.i_codec = 0;
 
     /* init of p_sys */
+    p_sys->i_align = 0;
+    p_sys->i_original_height = 0;
+    p_sys->i_original_width = 0;
     TAB_INIT( p_sys->i_ssa_styles, p_sys->pp_ssa_styles );
     TAB_INIT( p_sys->i_images, p_sys->pp_images );
 
@@ -153,19 +152,22 @@ static int OpenDecoder( vlc_object_t *p_this )
  ****************************************************************************
  * This function must be fed with complete subtitles units.
  ****************************************************************************/
-static int DecodeBlock( decoder_t *p_dec, block_t *p_block )
+static subpicture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 {
     subpicture_t *p_spu;
+    block_t *p_block;
 
-    if( p_block == NULL ) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if( !pp_block || *pp_block == NULL )
+        return NULL;
+
+    p_block = *pp_block;
 
     p_spu = ParseText( p_dec, p_block );
 
     block_Release( p_block );
-    if( p_spu != NULL )
-        decoder_QueueSub( p_dec, p_spu );
-    return VLCDEC_SUCCESS;
+    *pp_block = NULL;
+
+    return p_spu;
 }
 
 /*****************************************************************************
@@ -178,20 +180,23 @@ static void CloseDecoder( vlc_object_t *p_this )
 
     if( p_sys->pp_ssa_styles )
     {
-        for( int i = 0; i < p_sys->i_ssa_styles; i++ )
+        int i;
+        for( i = 0; i < p_sys->i_ssa_styles; i++ )
         {
             if( !p_sys->pp_ssa_styles[i] )
                 continue;
 
             free( p_sys->pp_ssa_styles[i]->psz_stylename );
-            text_style_Delete( p_sys->pp_ssa_styles[i]->p_style );
+            //FIXME: Make font_style a pointer and use text_style_* functions
+            free( p_sys->pp_ssa_styles[i]->font_style.psz_fontname );
             free( p_sys->pp_ssa_styles[i] );
         }
         TAB_CLEAN( p_sys->i_ssa_styles, p_sys->pp_ssa_styles );
     }
     if( p_sys->pp_images )
     {
-        for( int i = 0; i < p_sys->i_images; i++ )
+        int i;
+        for( i = 0; i < p_sys->i_images; i++ )
         {
             if( !p_sys->pp_images[i] )
                 continue;
@@ -216,9 +221,6 @@ static subpicture_t *ParseText( decoder_t *p_dec, block_t *p_block )
     decoder_sys_t *p_sys = p_dec->p_sys;
     subpicture_t *p_spu = NULL;
     char *psz_subtitle = NULL;
-
-    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
-        return NULL;
 
     /* We cannot display a subpicture with no date */
     if( p_block->i_pts <= VLC_TS_INVALID )
@@ -306,7 +308,9 @@ static ssa_style_t *ParseStyle( decoder_sys_t *p_sys, char *psz_subtitle )
 
     if( psz_style )
     {
-        for( int i = 0; i < p_sys->i_ssa_styles; i++ )
+        int i;
+
+        for( i = 0; i < p_sys->i_ssa_styles; i++ )
         {
             if( !strcmp( p_sys->pp_ssa_styles[i]->psz_stylename, psz_style ) )
                 p_ssa_style = p_sys->pp_ssa_styles[i];
@@ -410,6 +414,7 @@ static void SetupPositions( subpicture_region_t *p_region, char *psz_subtitle )
 
 static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
                                               char *psz_subtitle,
+                                              int i_len,
                                               int i_sys_align )
 {
     decoder_sys_t        *p_sys = p_dec->p_sys;
@@ -417,20 +422,30 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
     video_format_t        fmt;
 
     /* Create a new subpicture region */
-    video_format_Init( &fmt, VLC_CODEC_TEXT );
+    memset( &fmt, 0, sizeof(video_format_t) );
+    fmt.i_chroma = VLC_CODEC_TEXT;
     fmt.i_width = fmt.i_height = 0;
     fmt.i_x_offset = fmt.i_y_offset = 0;
     p_text_region = subpicture_region_New( &fmt );
-    video_format_Clean( &fmt );
 
     if( p_text_region != NULL )
     {
         ssa_style_t  *p_ssa_style = NULL;
 
-        p_ssa_style = ParseStyle( p_sys, psz_subtitle );
+        p_text_region->psz_text = NULL;
+        p_text_region->psz_html = strndup( psz_subtitle, i_len );
+        if( ! p_text_region->psz_html )
+        {
+            subpicture_region_Delete( p_text_region );
+            return NULL;
+        }
+
+        p_ssa_style = ParseStyle( p_sys, p_text_region->psz_html );
         if( !p_ssa_style )
         {
-            for( int i = 0; i < p_sys->i_ssa_styles; i++ )
+            int i;
+
+            for( i = 0; i < p_sys->i_ssa_styles; i++ )
             {
                 if( !strcasecmp( p_sys->pp_ssa_styles[i]->psz_stylename, "Default" ) )
                     p_ssa_style = p_sys->pp_ssa_styles[i];
@@ -441,6 +456,7 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
         {
             msg_Dbg( p_dec, "style is: %s", p_ssa_style->psz_stylename );
 
+            p_text_region->p_style = text_style_Duplicate( &p_ssa_style->font_style );
             p_text_region->i_align = p_ssa_style->i_align;
 
             /* TODO: Setup % based offsets properly, without adversely affecting
@@ -452,14 +468,13 @@ static subpicture_region_t *CreateTextRegion( decoder_t *p_dec,
              */
             p_text_region->i_x         = p_ssa_style->i_margin_h;
             p_text_region->i_y         = p_ssa_style->i_margin_v;
-            p_text_region->p_text = text_segment_NewInheritStyle( p_ssa_style->p_style );
+
         }
         else
         {
             p_text_region->i_align = SUBPICTURE_ALIGN_BOTTOM | i_sys_align;
             p_text_region->i_x = i_sys_align ? 20 : 0;
             p_text_region->i_y = 10;
-            p_text_region->p_text = text_segment_New( NULL );
         }
         /* Look for position arguments which may override the style-based
          * defaults.
@@ -476,11 +491,12 @@ static int ParseImageAttachments( decoder_t *p_dec )
     decoder_sys_t        *p_sys = p_dec->p_sys;
     input_attachment_t  **pp_attachments;
     int                   i_attachments_cnt;
+    int                   k = 0;
 
     if( VLC_SUCCESS != decoder_GetInputAttachments( p_dec, &pp_attachments, &i_attachments_cnt ))
         return VLC_EGENERIC;
 
-    for( int k = 0; k < i_attachments_cnt; k++ )
+    for( k = 0; k < i_attachments_cnt; k++ )
     {
         input_attachment_t *p_attach = pp_attachments[k];
 
@@ -611,12 +627,6 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                     p_ssa_style = calloc( 1, sizeof(ssa_style_t) );
                     if( unlikely(!p_ssa_style) )
                         return;
-                    p_ssa_style->p_style = text_style_Create( STYLE_NO_DEFAULTS );
-                    if( unlikely(!p_ssa_style->p_style) )
-                    {
-                        free(p_ssa_style);
-                        return;
-                    }
                     /* All styles are supposed to default to Default, and then
                      * one or more settings are over-ridden.
                      * At the moment this only effects styles defined AFTER
@@ -627,17 +637,12 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                         if( !strcasecmp( p_sys->pp_ssa_styles[i]->psz_stylename, "Default" ) )
                         {
                             ssa_style_t *p_default_style = p_sys->pp_ssa_styles[i];
-                            text_style_t *p_orig_text_style = p_ssa_style->p_style;
 
                             memcpy( p_ssa_style, p_default_style, sizeof( ssa_style_t ) );
-
-                            // reset data-members that are not to be overwritten
-                            p_ssa_style->p_style = p_orig_text_style;
-                            p_ssa_style->psz_stylename = NULL;
-
                             //FIXME: Make font_style a pointer. Actually we double copy some data here,
                             //   we use text_style_Copy to avoid copying psz_fontname, though .
-                            text_style_Copy( p_ssa_style->p_style, p_default_style->p_style );
+                            text_style_Copy( &p_ssa_style->font_style, &p_default_style->font_style );
+                            p_ssa_style->psz_stylename = NULL;
                         }
                     }
 
@@ -658,8 +663,8 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                     {
                         if( !strcasecmp( "face", attr ) )
                         {
-                            free( p_ssa_style->p_style->psz_fontname );
-                            p_ssa_style->p_style->psz_fontname = strdup( val );
+                            free( p_ssa_style->font_style.psz_fontname );
+                            p_ssa_style->font_style.psz_fontname = strdup( val );
                         }
                         else if( !strcasecmp( "size", attr ) )
                         {
@@ -668,49 +673,44 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                                 int i_value = atoi( val );
 
                                 if( ( i_value >= -5 ) && ( i_value <= 5 ) )
-                                    p_ssa_style->p_style->i_font_size  +=
-                                       ( i_value * p_ssa_style->p_style->i_font_size ) / 10;
+                                    p_ssa_style->font_style.i_font_size  +=
+                                       ( i_value * p_ssa_style->font_style.i_font_size ) / 10;
                                 else if( i_value < -5 )
-                                    p_ssa_style->p_style->i_font_size  = - i_value;
+                                    p_ssa_style->font_style.i_font_size  = - i_value;
                                 else if( i_value > 5 )
-                                    p_ssa_style->p_style->i_font_size  = i_value;
+                                    p_ssa_style->font_style.i_font_size  = i_value;
                             }
                             else
-                                p_ssa_style->p_style->i_font_size  = atoi( val );
+                                p_ssa_style->font_style.i_font_size  = atoi( val );
                         }
                         else if( !strcasecmp( "italic", attr ) )
                         {
                             if( !strcasecmp( "yes", val ))
-                                p_ssa_style->p_style->i_style_flags |= STYLE_ITALIC;
+                                p_ssa_style->font_style.i_style_flags |= STYLE_ITALIC;
                             else
-                                p_ssa_style->p_style->i_style_flags &= ~STYLE_ITALIC;
-                            p_ssa_style->p_style->i_features |= STYLE_HAS_FLAGS;
+                                p_ssa_style->font_style.i_style_flags &= ~STYLE_ITALIC;
                         }
                         else if( !strcasecmp( "weight", attr ) )
                         {
                             if( !strcasecmp( "bold", val ))
-                                p_ssa_style->p_style->i_style_flags |= STYLE_BOLD;
+                                p_ssa_style->font_style.i_style_flags |= STYLE_BOLD;
                             else
-                                p_ssa_style->p_style->i_style_flags &= ~STYLE_BOLD;
-                            p_ssa_style->p_style->i_features |= STYLE_HAS_FLAGS;
+                                p_ssa_style->font_style.i_style_flags &= ~STYLE_BOLD;
                         }
                         else if( !strcasecmp( "underline", attr ) )
                         {
                             if( !strcasecmp( "yes", val ))
-                                p_ssa_style->p_style->i_style_flags |= STYLE_UNDERLINE;
+                                p_ssa_style->font_style.i_style_flags |= STYLE_UNDERLINE;
                             else
-                                p_ssa_style->p_style->i_style_flags &= ~STYLE_UNDERLINE;
-                            p_ssa_style->p_style->i_features |= STYLE_HAS_FLAGS;
+                                p_ssa_style->font_style.i_style_flags &= ~STYLE_UNDERLINE;
                         }
                         else if( !strcasecmp( "color", attr ) )
                         {
                             if( *val == '#' )
                             {
                                 unsigned long col = strtol(val+1, NULL, 16);
-                                 p_ssa_style->p_style->i_font_color = (col & 0x00ffffff);
-                                 p_ssa_style->p_style->i_font_alpha = (col >> 24) & 0xff;
-                                 p_ssa_style->p_style->i_features |= STYLE_HAS_FONT_COLOR
-                                                                   | STYLE_HAS_FONT_ALPHA;
+                                 p_ssa_style->font_style.i_font_color = (col & 0x00ffffff);
+                                 p_ssa_style->font_style.i_font_alpha = (col >> 24) & 0xff;
                             }
                         }
                         else if( !strcasecmp( "outline-color", attr ) )
@@ -718,45 +718,39 @@ static void ParseUSFHeaderTags( decoder_t *p_dec, xml_reader_t *p_xml_reader )
                             if( *val == '#' )
                             {
                                 unsigned long col = strtol(val+1, NULL, 16);
-                                p_ssa_style->p_style->i_outline_color = (col & 0x00ffffff);
-                                p_ssa_style->p_style->i_outline_alpha = (col >> 24) & 0xff;
-                                p_ssa_style->p_style->i_features |= STYLE_HAS_OUTLINE_COLOR
-                                                                  | STYLE_HAS_OUTLINE_ALPHA;
+                                p_ssa_style->font_style.i_outline_color = (col & 0x00ffffff);
+                                p_ssa_style->font_style.i_outline_alpha = (col >> 24) & 0xff;
                             }
                         }
                         else if( !strcasecmp( "outline-level", attr ) )
                         {
-                            p_ssa_style->p_style->i_outline_width = atoi( val );
+                            p_ssa_style->font_style.i_outline_width = atoi( val );
                         }
                         else if( !strcasecmp( "shadow-color", attr ) )
                         {
                             if( *val == '#' )
                             {
                                 unsigned long col = strtol(val+1, NULL, 16);
-                                p_ssa_style->p_style->i_shadow_color = (col & 0x00ffffff);
-                                p_ssa_style->p_style->i_shadow_alpha = (col >> 24) & 0xff;
-                                p_ssa_style->p_style->i_features |= STYLE_HAS_SHADOW_COLOR
-                                                                  | STYLE_HAS_SHADOW_ALPHA;
+                                p_ssa_style->font_style.i_shadow_color = (col & 0x00ffffff);
+                                p_ssa_style->font_style.i_shadow_alpha = (col >> 24) & 0xff;
                             }
                         }
                         else if( !strcasecmp( "shadow-level", attr ) )
                         {
-                            p_ssa_style->p_style->i_shadow_width = atoi( val );
+                            p_ssa_style->font_style.i_shadow_width = atoi( val );
                         }
                         else if( !strcasecmp( "back-color", attr ) )
                         {
                             if( *val == '#' )
                             {
                                 unsigned long col = strtol(val+1, NULL, 16);
-                                p_ssa_style->p_style->i_karaoke_background_color = (col & 0x00ffffff);
-                                p_ssa_style->p_style->i_karaoke_background_alpha = (col >> 24) & 0xff;
-                                p_ssa_style->p_style->i_features |= STYLE_HAS_K_BACKGROUND_COLOR
-                                                                  | STYLE_HAS_K_BACKGROUND_ALPHA;
+                                p_ssa_style->font_style.i_karaoke_background_color = (col & 0x00ffffff);
+                                p_ssa_style->font_style.i_karaoke_background_alpha = (col >> 24) & 0xff;
                             }
                         }
                         else if( !strcasecmp( "spacing", attr ) )
                         {
-                            p_ssa_style->p_style->i_spacing = atoi( val );
+                            p_ssa_style->font_style.i_spacing = atoi( val );
                         }
                     }
                 }
@@ -835,8 +829,45 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
         {
             char *psz_end = NULL;
 
+            if(( !strncasecmp( psz_subtitle, "<text ", 6 )) ||
+               ( !strncasecmp( psz_subtitle, "<text>", 6 )))
+            {
+                psz_end = strcasestr( psz_subtitle, "</text>" );
 
-            if(( !strncasecmp( psz_subtitle, "<karaoke ", 9 )) ||
+                if( psz_end )
+                {
+                    subpicture_region_t  *p_text_region;
+
+                    psz_end += strcspn( psz_end, ">" ) + 1;
+
+                    p_text_region = CreateTextRegion( p_dec,
+                                                      psz_subtitle,
+                                                      psz_end - psz_subtitle,
+                                                      p_sys->i_align );
+
+                    if( p_text_region )
+                    {
+                        p_text_region->psz_text = CreatePlainText( p_text_region->psz_html );
+
+                        if( ! var_CreateGetBool( p_dec, "subsdec-formatted" ) )
+                        {
+                            free( p_text_region->psz_html );
+                            p_text_region->psz_html = NULL;
+                        }
+                    }
+
+                    if( !p_region_first )
+                    {
+                        p_region_first = p_region_upto = p_text_region;
+                    }
+                    else if( p_text_region )
+                    {
+                        p_region_upto->p_next = p_text_region;
+                        p_region_upto = p_region_upto->p_next;
+                    }
+                }
+            }
+            else if(( !strncasecmp( psz_subtitle, "<karaoke ", 9 )) ||
                     ( !strncasecmp( psz_subtitle, "<karaoke>", 9 )))
             {
                 psz_end = strcasestr( psz_subtitle, "</karaoke>" );
@@ -849,8 +880,17 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
 
                     p_text_region = CreateTextRegion( p_dec,
                                                       psz_subtitle,
+                                                      psz_end - psz_subtitle,
                                                       p_sys->i_align );
 
+                    if( p_text_region )
+                    {
+                        if( ! var_CreateGetBool( p_dec, "subsdec-formatted" ) )
+                        {
+                            free( p_text_region->psz_html );
+                            p_text_region->psz_html = NULL;
+                        }
+                    }
                     if( !p_region_first )
                     {
                         p_region_first = p_region_upto = p_text_region;
@@ -905,6 +945,9 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
                     SetupPositions( p_image_region, psz_subtitle );
 
                     p_image_region->p_next   = NULL;
+                    p_image_region->psz_text = NULL;
+                    p_image_region->psz_html = NULL;
+
                 }
                 if( !p_region_first )
                 {
@@ -913,35 +956,6 @@ static subpicture_region_t *ParseUSFString( decoder_t *p_dec,
                 else if( p_image_region )
                 {
                     p_region_upto->p_next = p_image_region;
-                    p_region_upto = p_region_upto->p_next;
-                }
-            }
-            else
-            {
-                subpicture_region_t  *p_text_region;
-
-                if( psz_end )
-                    psz_end += strcspn( psz_end, ">" ) + 1;
-                else
-                    psz_end = psz_subtitle + strlen( psz_subtitle );
-
-                p_text_region = CreateTextRegion( p_dec,
-                                                  psz_subtitle,
-                                                  p_sys->i_align );
-
-                if( p_text_region )
-                {
-                    free( p_text_region->p_text->psz_text );
-                    p_text_region->p_text->psz_text = CreatePlainText( psz_subtitle );
-                }
-
-                if( !p_region_first )
-                {
-                    p_region_first = p_region_upto = p_text_region;
-                }
-                else if( p_text_region )
-                {
-                    p_region_upto->p_next = p_text_region;
                     p_region_upto = p_region_upto->p_next;
                 }
             }
@@ -965,7 +979,7 @@ static void ParseUSFHeader( decoder_t *p_dec )
     stream_t      *p_sub = NULL;
     xml_reader_t  *p_xml_reader = NULL;
 
-    p_sub = vlc_stream_MemoryNew( VLC_OBJECT(p_dec),
+    p_sub = stream_MemoryNew( VLC_OBJECT(p_dec),
                               p_dec->fmt_in.p_extra,
                               p_dec->fmt_in.i_extra,
                               true );
@@ -984,7 +998,7 @@ static void ParseUSFHeader( decoder_t *p_dec )
 
         xml_ReaderDelete( p_xml_reader );
     }
-    vlc_stream_Delete( p_sub );
+    stream_Delete( p_sub );
 }
 
 /* Function now handles tags which has attribute values, and tries
@@ -1072,6 +1086,7 @@ static char *CreatePlainText( char *psz_subtitle )
     s = strpbrk( psz_text, "\t\r\n " );
     while( s )
     {
+        int   k;
         char  spc = ' ';
         int   i_whitespace = strspn( s, "\t\r\n " );
 
@@ -1079,7 +1094,7 @@ static char *CreatePlainText( char *psz_subtitle )
          * occurs in the whitespace use a '\n' as our value,
          * otherwise just use a ' '
          */
-        for( int k = 0; k < i_whitespace; k++ )
+        for( k = 0; k < i_whitespace; k++ )
             if( s[k] == '\n' ) spc = '\n';
 
         if( i_whitespace > 1 )

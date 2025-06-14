@@ -48,8 +48,7 @@
 
 #include <vlc_iso_lang.h>
 
-#include "../demux/mpeg/pes.h"
-#include "../demux/mpeg/ps.h"
+#include "../demux/ps.h"
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -169,7 +168,7 @@ static int Open( vlc_object_t *p_this )
     if( !p_demux->psz_file || !*p_demux->psz_file )
     {
         /* Only when selected */
-        if( !*p_demux->psz_access )
+        if( !p_demux->psz_access || !*p_demux->psz_access )
             return VLC_EGENERIC;
 
         psz_file = var_InheritString( p_this, "dvd" );
@@ -198,7 +197,7 @@ static int Open( vlc_object_t *p_this )
     if( p_dvdread == NULL )
     {
         msg_Err( p_demux, "DVDRead cannot open source: %s", psz_file );
-        vlc_dialog_display_error( p_demux, _("Playback failure"),
+        dialog_Fatal( p_demux, _("Playback failure"),
                       _("DVDRead could not open the disc \"%s\"."), psz_file );
         free( psz_file );
         return VLC_EGENERIC;
@@ -208,16 +207,6 @@ static int Open( vlc_object_t *p_this )
     /* Ifo allocation & initialisation */
     if( !( p_vmg_file = ifoOpen( p_dvdread, 0 ) ) )
     {
-        char rgsz_volid[32];
-        if( DVDUDFVolumeInfo( p_dvdread, rgsz_volid, 32, NULL, 0 ) )
-        {
-            if( DVDISOVolumeInfo( p_dvdread, rgsz_volid, 32, NULL, 0 ) == 0 )
-            {
-                vlc_dialog_display_error( p_demux, _("Playback failure"),
-                              _("Cannot play a non UDF mastered DVD. (Found ISO9660 '%s')"), rgsz_volid );
-                msg_Err( p_demux, "Invalid UDF DVD. (Found ISO9660 '%s')", rgsz_volid );
-            }
-        }
         msg_Warn( p_demux, "cannot open VMG info" );
         return VLC_EGENERIC;
     }
@@ -263,11 +252,12 @@ static void Close( vlc_object_t *p_this )
 {
     demux_t     *p_demux = (demux_t*)p_this;
     demux_sys_t *p_sys = p_demux->p_sys;
+    int i;
 
-    for( int i = 0; i < PS_TK_COUNT; i++ )
+    for( i = 0; i < PS_TK_COUNT; i++ )
     {
         ps_track_t *tk = &p_sys->tk[i];
-        if( tk->b_configured )
+        if( tk->b_seen )
         {
             es_format_Clean( &tk->fmt );
             if( tk->es ) es_out_Del( p_demux->out, tk->es );
@@ -343,7 +333,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     {
         case DEMUX_GET_POSITION:
         {
-            pf = va_arg( args, double * );
+            pf = (double*) va_arg( args, double* );
 
             if( p_sys->i_title_blocks > 0 )
                 *pf = (double)p_sys->i_title_offset / p_sys->i_title_blocks;
@@ -354,14 +344,14 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         }
         case DEMUX_SET_POSITION:
         {
-            f = va_arg( args, double );
+            f = (double)va_arg( args, double );
 
             DvdReadSeek( p_demux, f * p_sys->i_title_blocks );
 
             return VLC_SUCCESS;
         }
         case DEMUX_GET_TIME:
-            pi64 = va_arg( args, int64_t * );
+            pi64 = (int64_t*)va_arg( args, int64_t * );
             if( p_demux->info.i_title >= 0 && p_demux->info.i_title < p_sys->i_titles )
             {
                 *pi64 = (int64_t) dvdtime_to_time( &p_sys->p_cur_pgc->playback_time, 0 ) /
@@ -372,7 +362,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_EGENERIC;
 
         case DEMUX_GET_LENGTH:
-            pi64 = va_arg( args, int64_t * );
+            pi64 = (int64_t*)va_arg( args, int64_t * );
             if( p_demux->info.i_title >= 0 && p_demux->info.i_title < p_sys->i_titles )
             {
                 *pi64 = (int64_t)dvdtime_to_time( &p_sys->p_cur_pgc->playback_time, 0 );
@@ -386,7 +376,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         case DEMUX_CAN_SEEK:
         case DEMUX_CAN_CONTROL_PACE:
             /* TODO */
-            pb = va_arg( args, bool * );
+            pb = (bool*)va_arg( args, bool * );
             *pb = true;
             return VLC_SUCCESS;
 
@@ -394,14 +384,14 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_GET_TITLE_INFO:
-            ppp_title = va_arg( args, input_title_t *** );
-            pi_int    = va_arg( args, int * );
-            *va_arg( args, int * ) = 1; /* Title offset */
-            *va_arg( args, int * ) = 1; /* Chapter offset */
+            ppp_title = (input_title_t***)va_arg( args, input_title_t*** );
+            pi_int    = (int*)va_arg( args, int* );
+            *((int*)va_arg( args, int* )) = 1; /* Title offset */
+            *((int*)va_arg( args, int* )) = 1; /* Chapter offset */
 
             /* Duplicate title infos */
             *pi_int = p_sys->i_titles;
-            *ppp_title = vlc_alloc( p_sys->i_titles, sizeof(input_title_t *) );
+            *ppp_title = malloc( p_sys->i_titles * sizeof(input_title_t *) );
             for( i = 0; i < p_sys->i_titles; i++ )
             {
                 (*ppp_title)[i] = vlc_input_title_Duplicate(p_sys->titles[i]);
@@ -409,7 +399,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_SET_TITLE:
-            i = va_arg( args, int );
+            i = (int)va_arg( args, int );
             if( DvdReadSetArea( p_demux, i, 0, -1 ) != VLC_SUCCESS )
             {
                 msg_Warn( p_demux, "cannot set title/chapter" );
@@ -422,7 +412,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_SET_SEEKPOINT:
-            i = va_arg( args, int );
+            i = (int)va_arg( args, int );
             if( DvdReadSetArea( p_demux, -1, i, -1 ) != VLC_SUCCESS )
             {
                 msg_Warn( p_demux, "cannot set title/chapter" );
@@ -433,7 +423,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-            pi64 = va_arg( args, int64_t * );
+            pi64 = (int64_t*)va_arg( args, int64_t * );
             *pi64 =
                 INT64_C(1000) * var_InheritInteger( p_demux, "disc-caching" );
             return VLC_SUCCESS;
@@ -453,6 +443,7 @@ static int Demux( demux_t *p_demux )
 
     uint8_t p_buffer[DVD_VIDEO_LB_LEN * DVD_BLOCK_READ_ONCE];
     int i_blocks_once, i_read;
+    int i;
 
     /*
      * Playback by cell in this pgc, starting at the cell for our chapter.
@@ -468,7 +459,7 @@ static int Demux( demux_t *p_demux )
                            1, p_buffer ) != 1 )
         {
             msg_Err( p_demux, "read failed for block %d", p_sys->i_next_vobu );
-            vlc_dialog_display_error( p_demux, _("Playback failure"),
+            dialog_Fatal( p_demux, _("Playback failure"),
                           _("DVDRead could not read block %d."),
                           p_sys->i_next_vobu );
             return -1;
@@ -536,7 +527,7 @@ static int Demux( demux_t *p_demux )
     {
         msg_Err( p_demux, "read failed for %d/%d blocks at 0x%02x",
                  i_read, i_blocks_once, p_sys->i_cur_block );
-        vlc_dialog_display_error( p_demux, _("Playback failure"),
+        dialog_Fatal( p_demux, _("Playback failure"),
                         _("DVDRead could not read %d/%d blocks at 0x%02x."),
                         i_read, i_blocks_once, p_sys->i_cur_block );
         return -1;
@@ -550,7 +541,7 @@ static int Demux( demux_t *p_demux )
              i_read, p_sys->i_pack_len, p_sys->i_cur_block );
 #endif
 
-    for( int i = 0; i < i_read; i++ )
+    for( i = 0; i < i_read; i++ )
     {
         DemuxBlock( p_demux, p_buffer + i * DVD_VIDEO_LB_LEN,
                     DVD_VIDEO_LB_LEN );
@@ -606,7 +597,7 @@ static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
             int i_mux_rate;
             if( !ps_pkt_parse_pack( p_pkt, &i_scr, &i_mux_rate ) )
             {
-                es_out_SetPCR( p_demux->out, i_scr );
+                es_out_Control( p_demux->out, ES_OUT_SET_PCR, i_scr );
                 if( i_mux_rate > 0 ) p_sys->i_mux_rate = i_mux_rate;
             }
             block_Release( p_pkt );
@@ -617,14 +608,14 @@ static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
             int i_id = ps_pkt_id( p_pkt );
             if( i_id >= 0xc0 )
             {
-                ps_track_t *tk = &p_sys->tk[ps_id_to_tk(i_id)];
+                ps_track_t *tk = &p_sys->tk[PS_ID_TO_TK(i_id)];
 
-                if( !tk->b_configured )
+                if( !tk->b_seen )
                 {
                     ESNew( p_demux, i_id, 0 );
                 }
-                if( tk->es &&
-                    !ps_pkt_parse_pes( VLC_OBJECT(p_demux), p_pkt, tk->i_skip ) )
+                if( tk->b_seen && tk->es &&
+                    !ps_pkt_parse_pes( p_pkt, tk->i_skip ) )
                 {
                     es_out_Send( p_demux->out, tk->es, p_pkt );
                 }
@@ -654,12 +645,12 @@ static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
 static void ESNew( demux_t *p_demux, int i_id, int i_lang )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
-    ps_track_t  *tk = &p_sys->tk[ps_id_to_tk(i_id)];
+    ps_track_t  *tk = &p_sys->tk[PS_ID_TO_TK(i_id)];
     char psz_language[3];
 
-    if( tk->b_configured ) return;
+    if( tk->b_seen ) return;
 
-    if( ps_track_fill( tk, 0, i_id, NULL, true ) )
+    if( ps_track_fill( tk, 0, i_id ) )
     {
         msg_Warn( p_demux, "unknown codec for id=0x%x", i_id );
         return;
@@ -706,7 +697,7 @@ static void ESNew( demux_t *p_demux, int i_id, int i_lang )
     else if( tk->fmt.i_cat == SPU_ES )
     {
         /* Palette */
-        tk->fmt.subs.spu.palette[0] = SPU_PALETTE_DEFINED;
+        tk->fmt.subs.spu.palette[0] = 0xBeef;
         memcpy( &tk->fmt.subs.spu.palette[1], p_sys->clut,
                 16 * sizeof( uint32_t ) );
 
@@ -714,7 +705,7 @@ static void ESNew( demux_t *p_demux, int i_id, int i_lang )
     }
 
     tk->es = es_out_Add( p_demux->out, &tk->fmt );
-    tk->b_configured = true;
+    tk->b_seen = true;
 }
 
 /*****************************************************************************
@@ -730,6 +721,7 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
 
     demux_sys_t *p_sys = p_demux->p_sys;
     int pgc_id = 0, pgn = 0;
+    int i;
 
 #define p_pgc p_sys->p_cur_pgc
 #define p_vmg p_sys->p_vmg_file
@@ -789,7 +781,7 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
         p_sys->i_title_offset = 0;
 
         p_sys->i_title_blocks = 0;
-        for( int i = i_start_cell; i <= i_end_cell; i++ )
+        for( i = i_start_cell; i <= i_end_cell; i++ )
         {
             p_sys->i_title_blocks += p_pgc->cell_playback[i].last_sector -
                 p_pgc->cell_playback[i].first_sector + 1;
@@ -848,15 +840,15 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
          */
         es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
 
-        for( int i = 0; i < PS_TK_COUNT; i++ )
+        for( i = 0; i < PS_TK_COUNT; i++ )
         {
             ps_track_t *tk = &p_sys->tk[i];
-            if( tk->b_configured )
+            if( tk->b_seen )
             {
                 es_format_Clean( &tk->fmt );
                 if( tk->es ) es_out_Del( p_demux->out, tk->es );
             }
-            tk->b_configured = false;
+            tk->b_seen = false;
         }
 
         if( p_demux->info.i_title != i_title )
@@ -911,7 +903,7 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
     p_sys->p_vts_file->vts_pgcit->pgci_srp[pgc_id-1].pgc->audio_control[i-1]
 
         /* Audio ES, in the order they appear in the .ifo */
-        for( int i = 1; i <= p_vts->vtsi_mat->nr_of_vts_audio_streams; i++ )
+        for( i = 1; i <= p_vts->vtsi_mat->nr_of_vts_audio_streams; i++ )
         {
             int i_position = 0;
             uint16_t i_id;
@@ -960,7 +952,7 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
     p_sys->p_vts_file->vts_pgcit->pgci_srp[pgc_id-1].pgc->subp_control[i-1]
 
         /* Sub Picture ES */
-        for( int i = 1; i <= p_vts->vtsi_mat->nr_of_vts_subp_streams; i++ )
+        for( i = 1; i <= p_vts->vtsi_mat->nr_of_vts_subp_streams; i++ )
         {
             int i_position = 0;
             uint16_t i_id;
@@ -1028,7 +1020,7 @@ static int DvdReadSetArea( demux_t *p_demux, int i_title, int i_chapter,
         DvdReadFindCell( p_demux );
 
         p_sys->i_title_offset = 0;
-        for( int i = p_sys->i_title_start_cell; i < p_sys->i_cur_cell; i++ )
+        for( i = p_sys->i_title_start_cell; i < p_sys->i_cur_cell; i++ )
         {
             p_sys->i_title_offset += p_pgc->cell_playback[i].last_sector -
                 p_pgc->cell_playback[i].first_sector + 1;

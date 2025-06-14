@@ -35,6 +35,18 @@
 #include <vlc_vout_window.h>
 #include <vlc_xlib.h>
 
+static int Open (vlc_object_t *);
+static void Close (vlc_object_t *);
+
+vlc_module_begin ()
+    set_shortname (N_("GLX"))
+    set_description (N_("GLX extension for OpenGL"))
+    set_category (CAT_VIDEO)
+    set_subcategory (SUBCAT_VIDEO_VOUT)
+    set_capability ("opengl", 20)
+    set_callbacks (Open, Close)
+vlc_module_end ()
+
 typedef struct vlc_gl_sys_t
 {
     Display *display;
@@ -42,38 +54,10 @@ typedef struct vlc_gl_sys_t
     GLXContext ctx;
 } vlc_gl_sys_t;
 
-static int MakeCurrent (vlc_gl_t *gl)
-{
-    vlc_gl_sys_t *sys = gl->sys;
-
-    if (!glXMakeContextCurrent (sys->display, sys->win, sys->win, sys->ctx))
-        return VLC_EGENERIC;
-    return VLC_SUCCESS;
-}
-
-static void ReleaseCurrent (vlc_gl_t *gl)
-{
-    vlc_gl_sys_t *sys = gl->sys;
-
-    glXMakeContextCurrent (sys->display, None, None, NULL);
-}
-
-static void SwapBuffers (vlc_gl_t *gl)
-{
-    vlc_gl_sys_t *sys = gl->sys;
-
-    glXSwapBuffers (sys->display, sys->win);
-}
-
-static void *GetSymbol(vlc_gl_t *gl, const char *procname)
-{
-    (void) gl;
-#ifdef GLX_ARB_get_proc_address
-    return glXGetProcAddressARB ((const GLubyte *)procname);
-#else
-    return NULL;
-#endif
-}
+static int MakeCurrent (vlc_gl_t *);
+static void ReleaseCurrent (vlc_gl_t *);
+static void SwapBuffers (vlc_gl_t *);
+static void *GetSymbol(vlc_gl_t *, const char *);
 
 static bool CheckGLX (vlc_object_t *vd, Display *dpy)
 {
@@ -205,9 +189,10 @@ static int Open (vlc_object_t *obj)
     gl->sys = sys;
     gl->makeCurrent = MakeCurrent;
     gl->releaseCurrent = ReleaseCurrent;
-    gl->resize = NULL;
     gl->swap = SwapBuffers;
     gl->getProcAddress = GetSymbol;
+    gl->lock = NULL;
+    gl->unlock = NULL;
 
 #ifdef GLX_ARB_get_proc_address
     bool is_swap_interval_set = false;
@@ -257,11 +242,35 @@ static void Close (vlc_object_t *obj)
     free (sys);
 }
 
-vlc_module_begin ()
-    set_shortname (N_("GLX"))
-    set_description (N_("GLX extension for OpenGL"))
-    set_category (CAT_VIDEO)
-    set_subcategory (SUBCAT_VIDEO_VOUT)
-    set_capability ("opengl", 20)
-    set_callbacks (Open, Close)
-vlc_module_end ()
+static int MakeCurrent (vlc_gl_t *gl)
+{
+    vlc_gl_sys_t *sys = gl->sys;
+
+    if (!glXMakeContextCurrent (sys->display, sys->win, sys->win, sys->ctx))
+        return VLC_EGENERIC;
+    return VLC_SUCCESS;
+}
+
+static void ReleaseCurrent (vlc_gl_t *gl)
+{
+    vlc_gl_sys_t *sys = gl->sys;
+
+    glXMakeContextCurrent (sys->display, None, None, NULL);
+}
+
+static void SwapBuffers (vlc_gl_t *gl)
+{
+    vlc_gl_sys_t *sys = gl->sys;
+
+    glXSwapBuffers (sys->display, sys->win);
+}
+
+static void *GetSymbol(vlc_gl_t *gl, const char *procname)
+{
+    (void) gl;
+#ifdef GLX_ARB_get_proc_address
+    return glXGetProcAddressARB ((const GLubyte *)procname);
+#else
+    return NULL;
+#endif
+}

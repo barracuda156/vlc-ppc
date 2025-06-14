@@ -24,7 +24,6 @@ dvdread: libdvdread-$(LIBDVDREAD_VERSION).tar.bz2 .sum-dvdread
 DEPS_dvdread = dvdcss
 
 .dvdread: dvdread .dvdcss
-	$(REQUIRE_GPL)
 	$(RECONF) -I m4
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --with-libdvdcss
 	cd $< && $(MAKE) install

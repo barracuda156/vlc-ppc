@@ -167,10 +167,10 @@ static int intf_Eject( vlc_object_t *p_this, const char *psz_device )
 # endif
     {
         msg_Err( p_this, "could not eject %s", psz_device );
-        vlc_close( fd );
+        close( fd );
         return VLC_EGENERIC;
     }
-    vlc_close( fd );
+    close( fd );
     return VLC_SUCCESS;
 
 #else

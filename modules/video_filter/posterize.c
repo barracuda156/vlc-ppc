@@ -35,7 +35,6 @@
 #include <vlc_plugin.h>
 #include <vlc_atomic.h>
 #include <vlc_filter.h>
-#include <vlc_picture.h>
 #include "filter_picture.h"
 
 /*****************************************************************************
@@ -70,7 +69,7 @@ vlc_module_begin ()
     set_help( N_("Posterize video by lowering the number of colors") )
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    set_capability( "video filter", 0 )
+    set_capability( "video filter2", 0 )
     add_integer_with_range( CFG_PREFIX "level", 6, 2, 256,
                            POSTERIZE_LEVEL_TEXT, POSTERIZE_LEVEL_LONGTEXT,
                            false )
@@ -193,7 +192,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
             PackedYUVPosterize( p_pic, p_outpic, level );
             break;
         default:
-            vlc_assert_unreachable();
+            assert( false );
     }
 
     return CopyInfoAndRelease( p_outpic, p_pic );
@@ -317,7 +316,7 @@ static void PackedYUVPosterize( picture_t *p_pic, picture_t *p_outpic, int i_lev
                     u = *p_in++;
                     break;
                 default:
-                    vlc_assert_unreachable();
+                    assert( false );
             }
             /* do posterization */
             YuvPosterization( &posterized_y1, &posterized_y2, &posterized_u,
@@ -350,7 +349,7 @@ static void PackedYUVPosterize( picture_t *p_pic, picture_t *p_outpic, int i_lev
                     *p_out++ = posterized_u;
                     break;
                 default:
-                    vlc_assert_unreachable();
+                    assert( false );
             }
         }
         p_in += p_pic->p[0].i_pitch - p_pic->p[0].i_visible_pitch;

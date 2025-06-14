@@ -36,7 +36,7 @@ public:
             : EvtGeneric( pIntf ), m_focus( focus ) { }
     virtual ~EvtFocus() { }
 
-    virtual const std::string getAsString() const
+    virtual const string getAsString() const
     {
         return ( m_focus ? "focus:in" : "focus:out" );
     }

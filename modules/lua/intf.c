@@ -47,18 +47,15 @@ static void *Run( void * );
 static const char * const ppsz_intf_options[] = { "intf", "config", NULL };
 
 /*****************************************************************************
- * Local structures
- *****************************************************************************/
-struct intf_sys_t
-{
-    char *psz_filename;
-    lua_State *L;
-    vlc_thread_t thread;
-    vlclua_dtable_t dtable;
-};
-/*****************************************************************************
  *
  *****************************************************************************/
+static inline void luaL_register_submodule( lua_State *L, const char *psz_name,
+                                            const luaL_Reg *l )
+{
+    lua_newtable( L );
+    luaL_register( L, NULL, l );
+    lua_setfield( L, -2, psz_name );
+}
 
 static char *MakeConfig( intf_thread_t *p_intf, const char *name )
 {
@@ -93,7 +90,7 @@ static char *MakeConfig( intf_thread_t *p_intf, const char *name )
         else
         {
             vlc_url_t url;
-            vlc_UrlParse( &url, psz_host );
+            vlc_UrlParse( &url, psz_host, 0 );
             unsigned i_port = var_InheritInteger( p_intf, "telnet-port" );
             if ( url.i_port != 0 )
             {
@@ -201,9 +198,6 @@ static const luaL_Reg p_reg[] = { { NULL, NULL } };
 
 static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
 {
-    if( lua_Disabled( p_this ) )
-        return VLC_EGENERIC;
-
     intf_thread_t *p_intf = (intf_thread_t*)p_this;
     lua_State *L;
 
@@ -214,17 +208,17 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
         char *n = var_InheritString( p_this, "lua-intf" );
         if( unlikely(n == NULL) )
             return VLC_EGENERIC;
-        name = p_intf->obj.header = n;
+        name = p_intf->psz_header = n;
     }
     else
         /* Cleaned up by vlc_object_release() */
-        p_intf->obj.header = strdup( name );
+        p_intf->psz_header = strdup( name );
 
     intf_sys_t *p_sys = malloc( sizeof(*p_sys) );
     if( unlikely(p_sys == NULL) )
     {
-        free( p_intf->obj.header );
-        p_intf->obj.header = NULL;
+        free( p_intf->psz_header );
+        p_intf->psz_header = NULL;
         return VLC_ENOMEM;
     }
     p_intf->p_sys = p_sys;
@@ -251,7 +245,7 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
     luaL_openlibs( L );
 
     /* register our functions */
-    luaL_register_namespace( L, "vlc", p_reg );
+    luaL_register( L, "vlc", p_reg );
 
     /* register submodules */
     luaopen_config( L );
@@ -383,8 +377,8 @@ static int Start_LuaIntf( vlc_object_t *p_this, const char *name )
 error:
     free( p_sys->psz_filename );
     free( p_sys );
-    free( p_intf->obj.header );
-    p_intf->obj.header = NULL;
+    free( p_intf->psz_header );
+    p_intf->psz_header = NULL;
     return VLC_EGENERIC;
 }
 

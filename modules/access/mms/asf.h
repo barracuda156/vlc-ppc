@@ -28,10 +28,10 @@
  *
  ****************************************************************************/
 
-#ifndef VLC_MMS_ASF_H_
-#define VLC_MMS_ASF_H_
+#ifndef _ASF_H_
+#define _ASF_H_ 1
 
-#include <vlc_codecs.h>
+#include "../../demux/asf/libasf_guid.h"
 
 #define ASF_CODEC_TYPE_VIDEO   0x0001
 #define ASF_CODEC_TYPE_AUDIO   0x0002

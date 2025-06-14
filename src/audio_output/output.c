@@ -64,15 +64,6 @@ static int var_Copy (vlc_object_t *src, const char *name, vlc_value_t prev,
     return var_Set (dst, name, value);
 }
 
-static int var_CopyDevice (vlc_object_t *src, const char *name,
-                           vlc_value_t prev, vlc_value_t value, void *data)
-{
-    vlc_object_t *dst = data;
-
-    (void) src; (void) name; (void) prev;
-    return var_Set (dst, "audio-device", value);
-}
-
 /**
  * Supply or update the current custom ("hardware") volume.
  * @note This only makes sense after calling aout_VolumeHardInit().
@@ -95,7 +86,7 @@ static void aout_MuteNotify (audio_output_t *aout, bool mute)
 
 static void aout_PolicyNotify (audio_output_t *aout, bool cork)
 {
-    (cork ? var_IncInteger : var_DecInteger) (aout->obj.parent, "corks");
+    (cork ? var_IncInteger : var_DecInteger) (aout->p_parent, "corks");
 }
 
 static void aout_DeviceNotify (audio_output_t *aout, const char *id)
@@ -171,25 +162,6 @@ static int FilterCallback (vlc_object_t *obj, const char *var,
     return VLC_SUCCESS;
 }
 
-static int StereoModeCallback (vlc_object_t *obj, const char *varname,
-                               vlc_value_t oldval, vlc_value_t newval, void *data)
-{
-    audio_output_t *aout = (audio_output_t *)obj;
-    (void)varname; (void)oldval; (void)newval; (void)data;
-
-    aout_RestartRequest (aout, AOUT_RESTART_STEREOMODE);
-    return 0;
-}
-
-static int ViewpointCallback (vlc_object_t *obj, const char *var,
-                              vlc_value_t prev, vlc_value_t cur, void *data)
-{
-    if( cur.p_address != NULL )
-        aout_ChangeViewpoint((audio_output_t *)obj, cur.p_address );
-    (void) var; (void) data; (void) prev;
-    return VLC_SUCCESS;
-}
-
 #undef aout_New
 /**
  * Creates an audio output object and initializes an output module.
@@ -208,9 +180,6 @@ audio_output_t *aout_New (vlc_object_t *parent)
     vlc_mutex_init (&owner->lock);
     vlc_mutex_init (&owner->req.lock);
     vlc_mutex_init (&owner->dev.lock);
-    vlc_mutex_init (&owner->vp.lock);
-    vlc_viewpoint_init (&owner->vp.value);
-    atomic_init (&owner->vp.update, false);
     owner->req.device = (char *)unset_str;
     owner->req.volume = -1.f;
     owner->req.mute = -1;
@@ -223,7 +192,6 @@ audio_output_t *aout_New (vlc_object_t *parent)
     var_Create (aout, "mute", VLC_VAR_BOOL | VLC_VAR_DOINHERIT);
     var_AddCallback (aout, "mute", var_Copy, parent);
     var_Create (aout, "device", VLC_VAR_STRING);
-    var_AddCallback (aout, "device", var_CopyDevice, parent);
 
     aout->event.volume_report = aout_VolumeNotify;
     aout->event.mute_report = aout_MuteNotify;
@@ -254,7 +222,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     char *str;
 
     /* Visualizations */
-    var_Create (aout, "visual", VLC_VAR_STRING);
+    var_Create (aout, "visual", VLC_VAR_STRING | VLC_VAR_HASCHOICE);
     text.psz_string = _("Visualizations");
     var_Change (aout, "visual", VLC_VAR_SETTEXT, &text, NULL);
     val.psz_string = (char *)"";
@@ -270,7 +238,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     text.psz_string = _("Spectrum");
     var_Change (aout, "visual", VLC_VAR_ADDCHOICE, &val, &text);
     val.psz_string = (char *)"vuMeter";
-    text.psz_string = _("VU meter");
+    text.psz_string = _("Vu meter");
     var_Change (aout, "visual", VLC_VAR_ADDCHOICE, &val, &text);
     /* Look for goom plugin */
     if (module_exists ("goom"))
@@ -279,6 +247,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
         text.psz_string = (char *)"Goom";
         var_Change (aout, "visual", VLC_VAR_ADDCHOICE, &val, &text);
     }
+#ifndef _WIN32
     /* Look for libprojectM plugin */
     if (module_exists ("projectm"))
     {
@@ -300,6 +269,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
         text.psz_string = (char*)"3D spectrum";
         var_Change (aout, "visual", VLC_VAR_ADDCHOICE, &val, &text);
     }
+#endif
     str = var_GetNonEmptyString (aout, "effect-list");
     if (str != NULL)
     {
@@ -312,8 +282,6 @@ audio_output_t *aout_New (vlc_object_t *parent)
     text.psz_string = _("Audio filters");
     var_Change (aout, "audio-filter", VLC_VAR_SETTEXT, &text, NULL);
 
-    var_Create (aout, "viewpoint", VLC_VAR_ADDRESS );
-    var_AddCallback (aout, "viewpoint", ViewpointCallback, NULL);
 
     var_Create (aout, "audio-visual", VLC_VAR_STRING | VLC_VAR_DOINHERIT);
     text.psz_string = _("Audio visualizations");
@@ -324,24 +292,15 @@ audio_output_t *aout_New (vlc_object_t *parent)
                 VLC_VAR_STRING | VLC_VAR_DOINHERIT );
     text.psz_string = _("Replay gain");
     var_Change (aout, "audio-replay-gain-mode", VLC_VAR_SETTEXT, &text, NULL);
-    cfg = config_FindConfig("audio-replay-gain-mode");
+    cfg = config_FindConfig (VLC_OBJECT(aout), "audio-replay-gain-mode");
     if (likely(cfg != NULL))
         for (unsigned i = 0; i < cfg->list_count; i++)
         {
-            val.psz_string = (char *)cfg->list.psz[i];
+            val.psz_string = cfg->list.psz[i];
             text.psz_string = vlc_gettext(cfg->list_text[i]);
             var_Change (aout, "audio-replay-gain-mode", VLC_VAR_ADDCHOICE,
                             &val, &text);
         }
-
-    /* Stereo mode */
-    var_Create (aout, "stereo-mode", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
-    owner->initial_stereo_mode = var_GetInteger (aout, "stereo-mode");
-
-    var_AddCallback (aout, "stereo-mode", StereoModeCallback, NULL);
-    vlc_value_t txt;
-    txt.psz_string = _("Stereo audio mode");
-    var_Change (aout, "stereo-mode", VLC_VAR_SETTEXT, &txt, NULL);
 
     /* Equalizer */
     var_Create (aout, "equalizer-preamp", VLC_VAR_FLOAT | VLC_VAR_DOINHERIT);
@@ -366,13 +325,10 @@ void aout_Destroy (audio_output_t *aout)
     aout->device_select = NULL;
     aout_OutputUnlock (aout);
 
-    var_DelCallback (aout, "viewpoint", ViewpointCallback, NULL);
     var_DelCallback (aout, "audio-filter", FilterCallback, NULL);
-    var_DelCallback (aout, "device", var_CopyDevice, aout->obj.parent);
-    var_DelCallback (aout, "mute", var_Copy, aout->obj.parent);
+    var_DelCallback (aout, "mute", var_Copy, aout->p_parent);
     var_SetFloat (aout, "volume", -1.f);
-    var_DelCallback (aout, "volume", var_Copy, aout->obj.parent);
-    var_DelCallback (aout, "stereo-mode", StereoModeCallback, NULL);
+    var_DelCallback (aout, "volume", var_Copy, aout->p_parent);
     vlc_object_release (aout);
 }
 
@@ -393,109 +349,8 @@ static void aout_Destructor (vlc_object_t *obj)
     }
 
     assert (owner->req.device == unset_str);
-    vlc_mutex_destroy (&owner->vp.lock);
     vlc_mutex_destroy (&owner->req.lock);
     vlc_mutex_destroy (&owner->lock);
-}
-
-static void aout_PrepareStereoMode (audio_output_t *aout,
-                                    audio_sample_format_t *restrict fmt,
-                                    aout_filters_cfg_t *filters_cfg,
-                                    audio_channel_type_t input_chan_type,
-                                    unsigned i_nb_input_channels,
-                                    int i_forced_stereo_mode)
-{
-    /* Fill Stereo mode choices */
-    var_Change (aout, "stereo-mode", VLC_VAR_CLEARCHOICES, NULL, NULL);
-    vlc_value_t val, txt, default_val = { .i_int = AOUT_VAR_CHAN_UNSET };
-    val.i_int = 0;
-
-    if (!AOUT_FMT_LINEAR(fmt))
-        return;
-
-    if (i_nb_input_channels != 2)
-    {
-        val.i_int = AOUT_VAR_CHAN_UNSET;
-        txt.psz_string = _("Original");
-        var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-    }
-    if (fmt->i_chan_mode & AOUT_CHANMODE_DOLBYSTEREO)
-    {
-        val.i_int = AOUT_VAR_CHAN_DOLBYS;
-        txt.psz_string = _("Dolby Surround");
-    }
-    else
-    {
-        val.i_int = AOUT_VAR_CHAN_STEREO;
-        txt.psz_string = _("Stereo");
-    }
-    var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-
-    if (i_nb_input_channels == 2)
-    {
-        default_val.i_int = val.i_int; /* Stereo or Dolby Surround */
-
-        val.i_int = AOUT_VAR_CHAN_LEFT;
-        txt.psz_string = _("Left");
-        var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-        val.i_int = AOUT_VAR_CHAN_RIGHT;
-        txt.psz_string = _("Right");
-        var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-
-        val.i_int = AOUT_VAR_CHAN_RSTEREO;
-        txt.psz_string = _("Reverse stereo");
-        var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-    }
-
-    if (input_chan_type == AUDIO_CHANNEL_TYPE_AMBISONICS
-     || i_nb_input_channels > 2)
-    {
-        val.i_int = AOUT_VAR_CHAN_HEADPHONES;
-        txt.psz_string = _("Headphones");
-        var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
-
-        if (i_forced_stereo_mode == AOUT_VAR_CHAN_UNSET
-         && aout->current_sink_info.headphones)
-        {
-            i_forced_stereo_mode = AOUT_VAR_CHAN_HEADPHONES;
-            default_val.i_int = val.i_int;
-            var_Change (aout, "stereo-mode", VLC_VAR_SETVALUE, &default_val,
-                        NULL);
-        }
-    }
-
-    /* The user may have selected a different channels configuration. */
-    switch (i_forced_stereo_mode)
-    {
-        case AOUT_VAR_CHAN_RSTEREO:
-            filters_cfg->remap[AOUT_CHANIDX_LEFT] = AOUT_CHANIDX_RIGHT;
-            filters_cfg->remap[AOUT_CHANIDX_RIGHT] = AOUT_CHANIDX_LEFT;
-            break;
-        case AOUT_VAR_CHAN_STEREO:
-            break;
-        case AOUT_VAR_CHAN_LEFT:
-            filters_cfg->remap[AOUT_CHANIDX_RIGHT] = AOUT_CHANIDX_DISABLE;
-            break;
-        case AOUT_VAR_CHAN_RIGHT:
-            filters_cfg->remap[AOUT_CHANIDX_LEFT] = AOUT_CHANIDX_DISABLE;
-            break;
-        case AOUT_VAR_CHAN_DOLBYS:
-            fmt->i_chan_mode = AOUT_CHANMODE_DOLBYSTEREO;
-            break;
-        case AOUT_VAR_CHAN_HEADPHONES:
-            filters_cfg->headphones = true;
-            break;
-        default:
-            if (i_nb_input_channels == 2
-             && fmt->i_chan_mode & AOUT_CHANMODE_DUALMONO)
-            {   /* Go directly to the left channel. */
-                filters_cfg->remap[AOUT_CHANIDX_RIGHT] = AOUT_CHANIDX_DISABLE;
-                default_val.i_int = val.i_int = AOUT_VAR_CHAN_LEFT;
-            }
-            var_Change (aout, "stereo-mode", VLC_VAR_SETVALUE, &default_val,
-                        NULL);
-            break;
-    }
 }
 
 /**
@@ -503,55 +358,19 @@ static void aout_PrepareStereoMode (audio_output_t *aout,
  * \param fmt audio output stream format [IN/OUT]
  * \warning The caller must hold the audio output lock.
  */
-int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt,
-                    aout_filters_cfg_t *filters_cfg)
+int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt)
 {
     aout_OutputAssertLocked (aout);
-
-    audio_channel_type_t input_chan_type = fmt->channel_type;
-    int i_forced_stereo_mode = AOUT_VAR_CHAN_UNSET;
-    unsigned i_nb_input_channels = fmt->i_channels;
 
     /* Ideally, the audio filters would be created before the audio output,
      * and the ideal audio format would be the output of the filters chain.
      * But that scheme would not really play well with digital pass-through. */
     if (AOUT_FMT_LINEAR(fmt))
-    {
-        if (fmt->channel_type == AUDIO_CHANNEL_TYPE_BITMAP
-         && aout_FormatNbChannels(fmt) == 0)
-        {
-            /* The output channel map is unknown, use the WAVE one. */
-            assert(fmt->i_channels > 0);
-            aout_SetWavePhysicalChannels(fmt);
-        }
-
-        if (fmt->channel_type == AUDIO_CHANNEL_TYPE_AMBISONICS)
-        {
-            /* Set the maximum of channels to render ambisonics contents. The
-             * aout module will still be free to select less channels in order
-             * to respect the sink setup. */
-            fmt->i_physical_channels = AOUT_CHANS_7_1;
-        }
-
-        /* Try to stay in integer domain if possible for no/slow FPU. */
+    {   /* Try to stay in integer domain if possible for no/slow FPU. */
         fmt->i_format = (fmt->i_bitspersample > 16) ? VLC_CODEC_FL32
                                                     : VLC_CODEC_S16N;
-
-        i_forced_stereo_mode = var_GetInteger (aout, "stereo-mode");
-        if (i_forced_stereo_mode != AOUT_VAR_CHAN_UNSET)
-        {
-            if (i_forced_stereo_mode == AOUT_VAR_CHAN_LEFT
-             || i_forced_stereo_mode == AOUT_VAR_CHAN_RIGHT)
-                fmt->i_physical_channels = AOUT_CHAN_CENTER;
-            else
-                fmt->i_physical_channels = AOUT_CHANS_STEREO;
-        }
-
         aout_FormatPrepare (fmt);
-        assert (aout_FormatNbChannels(fmt) > 0);
     }
-
-    aout->current_sink_info.headphones = false;
 
     if (aout->start (aout, fmt))
     {
@@ -559,24 +378,88 @@ int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt,
         return -1;
     }
 
-    aout_PrepareStereoMode (aout, fmt, filters_cfg, input_chan_type,
-                            i_nb_input_channels, i_forced_stereo_mode);
+    if (!var_Type (aout, "stereo-mode"))
+    {
+        var_Create (aout, "stereo-mode",
+                    VLC_VAR_INTEGER | VLC_VAR_HASCHOICE | VLC_VAR_DOINHERIT);
+
+        vlc_value_t txt;
+        txt.psz_string = _("Stereo audio mode");
+        var_Change (aout, "stereo-mode", VLC_VAR_SETTEXT, &txt, NULL);
+    }
+
+    /* The user may have selected a different channels configuration. */
+    var_AddCallback (aout, "stereo-mode", aout_ChannelsRestart, NULL);
+    switch (var_GetInteger (aout, "stereo-mode"))
+    {
+        case AOUT_VAR_CHAN_RSTEREO:
+            fmt->i_original_channels |= AOUT_CHAN_REVERSESTEREO;
+            break;
+        case AOUT_VAR_CHAN_STEREO:
+            fmt->i_original_channels = AOUT_CHANS_STEREO;
+            break;
+        case AOUT_VAR_CHAN_LEFT:
+            fmt->i_original_channels = AOUT_CHAN_LEFT;
+            break;
+        case AOUT_VAR_CHAN_RIGHT:
+            fmt->i_original_channels = AOUT_CHAN_RIGHT;
+            break;
+        case AOUT_VAR_CHAN_DOLBYS:
+            fmt->i_original_channels = AOUT_CHANS_STEREO|AOUT_CHAN_DOLBYSTEREO;
+            break;
+        default:
+        {
+            if ((fmt->i_original_channels & AOUT_CHAN_PHYSMASK)
+                                                          != AOUT_CHANS_STEREO)
+                 break;
+
+            vlc_value_t val, txt;
+            val.i_int = 0;
+            var_Change (aout, "stereo-mode", VLC_VAR_DELCHOICE, &val, NULL);
+            if (fmt->i_original_channels & AOUT_CHAN_DOLBYSTEREO)
+            {
+                val.i_int = AOUT_VAR_CHAN_DOLBYS;
+                txt.psz_string = _("Dolby Surround");
+            }
+            else
+            {
+                val.i_int = AOUT_VAR_CHAN_STEREO;
+                txt.psz_string = _("Stereo");
+            }
+            var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
+            var_Change (aout, "stereo-mode", VLC_VAR_SETVALUE, &val, NULL);
+            val.i_int = AOUT_VAR_CHAN_LEFT;
+            txt.psz_string = _("Left");
+            var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
+            if (fmt->i_original_channels & AOUT_CHAN_DUALMONO)
+            {   /* Go directly to the left channel. */
+                fmt->i_original_channels = AOUT_CHAN_LEFT;
+                var_Change (aout, "stereo-mode", VLC_VAR_SETVALUE, &val, NULL);
+            }
+            val.i_int = AOUT_VAR_CHAN_RIGHT;
+            txt.psz_string = _("Right");
+            var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
+            val.i_int = AOUT_VAR_CHAN_RSTEREO;
+            txt.psz_string = _("Reverse stereo");
+            var_Change (aout, "stereo-mode", VLC_VAR_ADDCHOICE, &val, &txt);
+        }
+    }
 
     aout_FormatPrepare (fmt);
-    assert (fmt->i_bytes_per_frame > 0 && fmt->i_frame_length > 0);
     aout_FormatPrint (aout, "output", fmt);
     return 0;
 }
 
 /**
  * Stops the audio output stream (undoes aout_OutputNew()).
- * \note This can only be called after a successful aout_OutputNew().
+ * \note This can only be called after a succesful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputDelete (audio_output_t *aout)
 {
     aout_OutputAssertLocked (aout);
 
+    var_DelCallback (aout, "stereo-mode", aout_ChannelsRestart, NULL);
     if (aout->stop != NULL)
         aout->stop (aout);
 }
@@ -592,19 +475,12 @@ int aout_OutputTimeGet (audio_output_t *aout, mtime_t *delay)
 
 /**
  * Plays a decoded audio buffer.
- * \note This can only be called after a successful aout_OutputNew().
+ * \note This can only be called after a succesful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputPlay (audio_output_t *aout, block_t *block)
 {
     aout_OutputAssertLocked (aout);
-#ifndef NDEBUG
-    aout_owner_t *owner = aout_owner (aout);
-    assert (owner->mixer_format.i_frame_length > 0);
-    assert (block->i_buffer == 0 || block->i_buffer / block->i_nb_samples ==
-            owner->mixer_format.i_bytes_per_frame /
-            owner->mixer_format.i_frame_length);
-#endif
     aout->play (aout, block);
 }
 
@@ -619,7 +495,7 @@ static void PauseDefault (audio_output_t *aout, bool pause, mtime_t date)
  * Notifies the audio output (if any) of pause/resume events.
  * This enables the output to expedite pause, instead of waiting for its
  * buffers to drain.
- * \note This can only be called after a successful aout_OutputNew().
+ * \note This can only be called after a succesful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputPause( audio_output_t *aout, bool pause, mtime_t date )
@@ -633,7 +509,7 @@ void aout_OutputPause( audio_output_t *aout, bool pause, mtime_t date )
  * This enables the output to expedite seek and stop.
  * \param wait if true, wait for buffer playback (i.e. drain),
  *             if false, discard the buffers immediately (i.e. flush)
- * \note This can only be called after a successful aout_OutputNew().
+ * \note This can only be called after a succesful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputFlush( audio_output_t *aout, bool wait )
@@ -739,33 +615,6 @@ int aout_VolumeSet (audio_output_t *aout, float vol)
 }
 
 /**
- * Raises the volume.
- * \param value how much to increase (> 0) or decrease (< 0) the volume
- * \param volp if non-NULL, will contain contain the resulting volume
- */
-int aout_VolumeUpdate (audio_output_t *aout, int value, float *volp)
-{
-    int ret = -1;
-    float stepSize = var_InheritFloat (aout, "volume-step") / (float)AOUT_VOLUME_DEFAULT;
-    float delta = value * stepSize;
-    float vol = aout_VolumeGet (aout);
-
-    if (vol >= 0.f)
-    {
-        vol += delta;
-        if (vol < 0.f)
-            vol = 0.f;
-        if (vol > 2.f)
-            vol = 2.f;
-        vol = (roundf (vol / stepSize)) * stepSize;
-        if (volp != NULL)
-            *volp = vol;
-        ret = aout_VolumeSet (aout, vol);
-    }
-    return ret;
-}
-
-/**
  * Gets the audio output stream mute flag.
  * \return 0 if not muted, 1 if muted, -1 if undefined.
  */
@@ -844,46 +693,20 @@ int aout_DevicesList (audio_output_t *aout, char ***ids, char ***names)
 {
     aout_owner_t *owner = aout_owner (aout);
     char **tabid, **tabname;
-    unsigned i = 0;
+    unsigned count;
 
     vlc_mutex_lock (&owner->dev.lock);
-    tabid = vlc_alloc (owner->dev.count, sizeof (*tabid));
-    tabname = vlc_alloc (owner->dev.count, sizeof (*tabname));
-
-    if (unlikely(tabid == NULL || tabname == NULL))
-        goto error;
-
+    count = owner->dev.count;
+    tabid = xmalloc (sizeof (*tabid) * count);
+    tabname = xmalloc (sizeof (*tabname) * count);
     *ids = tabid;
     *names = tabname;
-
     for (aout_dev_t *dev = owner->dev.list; dev != NULL; dev = dev->next)
     {
-        tabid[i] = strdup(dev->id);
-        if (unlikely(tabid[i] == NULL))
-            goto error;
-
-        tabname[i] = strdup(dev->name);
-        if (unlikely(tabname[i] == NULL))
-        {
-            free(tabid[i]);
-            goto error;
-        }
-
-        i++;
+        *(tabid++) = xstrdup (dev->id);
+        *(tabname++) = xstrdup (dev->name);
     }
     vlc_mutex_unlock (&owner->dev.lock);
 
-    return i;
-
-error:
-    vlc_mutex_unlock(&owner->dev.lock);
-    while (i > 0)
-    {
-        i--;
-        free(tabname[i]);
-        free(tabid[i]);
-    }
-    free(tabname);
-    free(tabid);
-    return -1;
+    return count;
 }

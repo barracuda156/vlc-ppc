@@ -6,19 +6,19 @@
  *
  * Author: Laurent Aimar <fenrir@via.ecp.fr>
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation; either version 2.1 of the License, or
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
 /*****************************************************************************
@@ -53,8 +53,8 @@ vlc_module_end ()
 /*****************************************************************************
  * Exported prototypes
  *****************************************************************************/
-static sout_stream_id_sys_t *Add( sout_stream_t *, const es_format_t * );
-static void              Del ( sout_stream_t *, sout_stream_id_sys_t * );
+static sout_stream_id_sys_t *Add ( sout_stream_t *, es_format_t * );
+static int               Del ( sout_stream_t *, sout_stream_id_sys_t * );
 static int               Send( sout_stream_t *, sout_stream_id_sys_t *,
                                block_t* );
 
@@ -76,7 +76,7 @@ struct sout_stream_id_sys_t
     void                **pp_ids;
 };
 
-static bool ESSelected( const es_format_t *fmt, char *psz_select );
+static bool ESSelected( es_format_t *fmt, char *psz_select );
 
 /*****************************************************************************
  * Open:
@@ -165,8 +165,10 @@ static void Close( vlc_object_t * p_this )
     sout_stream_t     *p_stream = (sout_stream_t*)p_this;
     sout_stream_sys_t *p_sys = p_stream->p_sys;
 
+    int i;
+
     msg_Dbg( p_stream, "closing a duplication" );
-    for( int i = 0; i < p_sys->i_nb_streams; i++ )
+    for( i = 0; i < p_sys->i_nb_streams; i++ )
     {
         sout_StreamChainDelete(p_sys->pp_streams[i], p_sys->pp_last_streams[i]);
         free( p_sys->ppsz_select[i] );
@@ -181,7 +183,7 @@ static void Close( vlc_object_t * p_this )
 /*****************************************************************************
  * Add:
  *****************************************************************************/
-static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, es_format_t *p_fmt )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     sout_stream_id_sys_t  *id;
@@ -237,7 +239,7 @@ static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, const es_format_t *p
 /*****************************************************************************
  * Del:
  *****************************************************************************/
-static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
+static int Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     int               i_stream;
@@ -253,6 +255,7 @@ static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 
     free( id->pp_ids );
     free( id );
+    return VLC_SUCCESS;
 }
 
 /*****************************************************************************
@@ -305,17 +308,28 @@ static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
  *****************************************************************************/
 static bool NumInRange( const char *psz_range, int i_num )
 {
-    int beginRange, endRange;
-    int res = sscanf(psz_range, "%d-%d", &beginRange, &endRange);
-    if (res == 0)
-        return false;
-    else if (res == 1)
-        return beginRange == i_num;
-    return (i_num >= beginRange && i_num <= endRange)
-        || (beginRange > endRange && (i_num <= beginRange && i_num >= endRange));
+    const char *psz = strchr( psz_range, '-' );
+    char *end;
+    int  i_start, i_stop;
+
+    i_start = strtol( psz_range, &end, 0 );
+    if( end == psz_range )
+        i_start = i_num;
+
+    if( psz )
+    {
+        psz++;
+        i_stop = strtol( psz, &end, 0 );
+        if( end == psz )
+            i_stop = i_num;
+    }
+    else
+        i_stop = i_start;
+
+    return i_start <= i_num && i_num <= i_stop;
 }
 
-static bool ESSelected( const es_format_t *fmt, char *psz_select )
+static bool ESSelected( es_format_t *fmt, char *psz_select )
 {
     char  *psz_dup;
     char  *psz;

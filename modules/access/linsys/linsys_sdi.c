@@ -33,7 +33,6 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <limits.h>
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -60,7 +59,7 @@
 
 #define DEMUX_BUFFER_SIZE 1350000
 #define MAX_AUDIOS        4
-#define SAMPLERATE_TOLERANCE 0.1f
+#define SAMPLERATE_TOLERANCE 0.1
 
 /*****************************************************************************
  * Module descriptor
@@ -341,7 +340,7 @@ static void Close( vlc_object_t *p_this )
  *****************************************************************************/
 static int DemuxDemux( demux_t *p_demux )
 {
-    block_t *p_block = vlc_stream_Block( p_demux->s, DEMUX_BUFFER_SIZE );
+    block_t *p_block = stream_Block( p_demux->s, DEMUX_BUFFER_SIZE );
     int i_ret;
 
     if ( p_block == NULL )
@@ -378,12 +377,12 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         case DEMUX_CAN_PAUSE:
         case DEMUX_CAN_CONTROL_PACE:
             /* TODO */
-            pb = va_arg( args, bool * );
+            pb = (bool*)va_arg( args, bool * );
             *pb = false;
             return VLC_SUCCESS;
 
         case DEMUX_GET_PTS_DELAY:
-            pi64 = va_arg( args, int64_t * );
+            pi64 = (int64_t*)va_arg( args, int64_t * );
             *pi64 = INT64_C(1000)
                   * var_InheritInteger( p_demux, "live-caching" );
             return VLC_SUCCESS;
@@ -780,7 +779,7 @@ static int InitTelx( demux_t *p_demux )
         return VLC_EGENERIC;
     }
 
-    p_sys->p_telx_buffer = vlc_alloc( p_sys->i_telx_count * p_sys->i_width, 4 );
+    p_sys->p_telx_buffer = malloc( p_sys->i_telx_count * p_sys->i_width * 4 );
     if( !p_sys->p_telx_buffer )
     {
         vbi_raw_decoder_destroy ( &p_sys->rd_telx );
@@ -847,6 +846,7 @@ static int InitAudio( demux_t *p_demux, sdi_audio_t *p_audio )
     es_format_Init( &fmt, AUDIO_ES, VLC_CODEC_S16L );
     fmt.i_id = p_audio->i_id;
     fmt.audio.i_channels          = 2;
+    fmt.audio.i_original_channels =
     fmt.audio.i_physical_channels = AOUT_CHANS_STEREO;
     fmt.audio.i_rate              = p_audio->i_rate;
     fmt.audio.i_bitspersample     = 16;
@@ -859,9 +859,9 @@ static int InitAudio( demux_t *p_demux, sdi_audio_t *p_audio )
     p_audio->i_nb_samples         = p_audio->i_rate * p_sys->i_frame_rate_base
                                     / p_sys->i_frame_rate;
     p_audio->i_max_samples        = (float)p_audio->i_nb_samples *
-                                    (1.f + SAMPLERATE_TOLERANCE);
+                                    (1. + SAMPLERATE_TOLERANCE);
 
-    p_audio->p_buffer             = vlc_alloc( p_audio->i_max_samples, sizeof(int16_t) * 2 );
+    p_audio->p_buffer             = malloc( p_audio->i_max_samples * sizeof(int16_t) * 2 );
     p_audio->i_left_samples       = p_audio->i_right_samples = 0;
     p_audio->i_block_number       = 0;
 
@@ -875,7 +875,7 @@ static void ResampleAudio( int16_t *p_out, int16_t *p_in,
                            unsigned int i_out, unsigned int i_in )
 {
     unsigned int i_remainder = 0;
-    float f_last_sample = (float)*p_in / 32768.f;
+    float f_last_sample = (float)*p_in / 32768.0;
 
     *p_out = *p_in;
     p_out += 2;
@@ -883,14 +883,14 @@ static void ResampleAudio( int16_t *p_out, int16_t *p_in,
 
     for ( unsigned int i = 1; i < i_in; i++ )
     {
-        float f_in = (float)*p_in / 32768.f;
+        float f_in = (float)*p_in / 32768.0;
         while ( i_remainder < i_out )
         {
             float f_out = f_last_sample;
             f_out += (f_in - f_last_sample) * i_remainder / i_out;
-            if ( f_out >= 1.f ) *p_out = 32767;
-            else if ( f_out < -1.f ) *p_out = -32768;
-            else *p_out = f_out * 32768.f;
+            if ( f_out >= 1.0 ) *p_out = 32767;
+            else if ( f_out < -1.0 ) *p_out = -32768;
+            else *p_out = f_out * 32768.0;
             p_out += 2;
             i_remainder += i_in;
         }
@@ -916,9 +916,9 @@ static int DecodeAudio( demux_t *p_demux, sdi_audio_t *p_audio )
         return VLC_EGENERIC;
     }
     if ( p_audio->i_left_samples <
-            (float)p_audio->i_nb_samples * (1.f - SAMPLERATE_TOLERANCE) ||
+            (float)p_audio->i_nb_samples * (1. - SAMPLERATE_TOLERANCE) ||
         p_audio->i_left_samples >
-            (float)p_audio->i_nb_samples * (1.f + SAMPLERATE_TOLERANCE) )
+            (float)p_audio->i_nb_samples * (1. + SAMPLERATE_TOLERANCE) )
     {
         msg_Warn( p_demux,
             "left samplerate out of tolerance for audio %u/%u (%u vs. %u)",
@@ -927,9 +927,9 @@ static int DecodeAudio( demux_t *p_demux, sdi_audio_t *p_audio )
         return VLC_EGENERIC;
     }
     if ( p_audio->i_right_samples <
-            (float)p_audio->i_nb_samples * (1.f - SAMPLERATE_TOLERANCE) ||
+            (float)p_audio->i_nb_samples * (1. - SAMPLERATE_TOLERANCE) ||
         p_audio->i_right_samples >
-            (float)p_audio->i_nb_samples * (1.f + SAMPLERATE_TOLERANCE) )
+            (float)p_audio->i_nb_samples * (1. + SAMPLERATE_TOLERANCE) )
     {
         msg_Warn( p_demux,
             "right samplerate out of tolerance for audio %u/%u (%u vs. %u)",
@@ -993,7 +993,7 @@ static int DecodeFrame( demux_t *p_demux )
 
     DecodeVideo( p_demux );
 
-    es_out_SetPCR( p_demux->out, p_sys->i_next_date );
+    es_out_Control( p_demux->out, ES_OUT_SET_PCR, p_sys->i_next_date );
     p_sys->i_next_date += p_sys->i_incr;
 
     if( NewFrame( p_demux ) != VLC_SUCCESS )
@@ -1660,35 +1660,47 @@ static int HandleSDBuffer( demux_t *p_demux, uint8_t *p_buffer,
 
 static int ReadULSysfs( const char *psz_fmt, unsigned int i_link )
 {
-    char psz_file[MAXLEN];
+    char psz_file[MAXLEN], psz_data[MAXLEN];
+    char *psz_tmp;
+    int i_fd;
+    ssize_t i_ret;
     unsigned int i_data;
 
-    snprintf( psz_file, sizeof(psz_file), psz_fmt, i_link );
+    snprintf( psz_file, sizeof(psz_file) - 1, psz_fmt, i_link );
 
-    FILE *stream = vlc_fopen( psz_file, "rt" );
-    if( stream == NULL )
+    if ( (i_fd = vlc_open( psz_file, O_RDONLY )) < 0 )
+        return i_fd;
+
+    i_ret = read( i_fd, psz_data, sizeof(psz_data) );
+    close( i_fd );
+
+    if ( i_ret < 0 )
+        return i_ret;
+
+    i_data = strtoul( psz_data, &psz_tmp, 0 );
+    if ( *psz_tmp != '\n' )
         return -1;
 
-    int ret = fscanf( stream, "%u", &i_data );
-    fclose( stream );
-
-    return (ret == 1 && i_data <= INT_MAX) ? (int)i_data : -1;
+    return i_data;
 }
 
-static int WriteULSysfs( const char *psz_fmt, unsigned int i_link,
-                         unsigned int i_buf )
+static ssize_t WriteULSysfs( const char *psz_fmt, unsigned int i_link,
+                             unsigned int i_buf )
 {
-    char psz_file[MAXLEN];
+    char psz_file[MAXLEN], psz_data[MAXLEN];
+    int i_fd;
+    ssize_t i_ret;
 
-    snprintf( psz_file, sizeof(psz_file), psz_fmt, i_link );
+    snprintf( psz_file, sizeof(psz_file) -1, psz_fmt, i_link );
 
-    FILE *stream = vlc_fopen( psz_file, "wt" );
-    if( stream == NULL )
-        return -1;
+    snprintf( psz_data, sizeof(psz_data) -1, "%u\n", i_buf );
 
-    int ret = fprintf( stream, "%u\n", i_buf );
-    fclose( stream );
-    return ret;
+    if ( (i_fd = vlc_open( psz_file, O_WRONLY )) < 0 )
+        return i_fd;
+
+    i_ret = write( i_fd, psz_data, strlen(psz_data) + 1 );
+    close( i_fd );
+    return i_ret;
 }
 
 static int InitCapture( demux_t *p_demux )
@@ -1737,7 +1749,7 @@ static int InitCapture( demux_t *p_demux )
 
     i_bufmemsize = ((p_sys->i_buffer_size + i_page_size - 1) / i_page_size)
                      * i_page_size;
-    p_sys->pp_buffers = vlc_alloc( p_sys->i_buffers, sizeof(uint8_t *) );
+    p_sys->pp_buffers = malloc( p_sys->i_buffers * sizeof(uint8_t *) );
     if( !p_sys->pp_buffers )
         return VLC_ENOMEM;
 
@@ -1764,7 +1776,7 @@ static void CloseCapture( demux_t *p_demux )
     StopDecode( p_demux );
     for ( unsigned int i = 0; i < p_sys->i_buffers; i++ )
         munmap( p_sys->pp_buffers[i], p_sys->i_buffer_size );
-    vlc_close( p_sys->i_fd );
+    close( p_sys->i_fd );
     free( p_sys->pp_buffers );
 }
 

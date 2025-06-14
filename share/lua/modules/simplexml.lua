@@ -90,10 +90,6 @@ function parse_url(url)
     return parsexml(vlc.stream(url))
 end
 
-function parse_stream(stream)
-    return parsexml(stream)
-end
-
 function parse_string(str)
     return parsexml(vlc.memory_stream(str))
 end

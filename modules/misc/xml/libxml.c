@@ -223,7 +223,7 @@ skip:
         case 0: /* EOF */
             return XML_READER_NONE;
         case -1: /* error */
-            return XML_READER_ERROR;
+            return -1;
     }
 
     switch( xmlTextReaderNodeType( p_sys->xml ) )
@@ -245,19 +245,19 @@ skip:
             break;
 
         case -1:
-            return XML_READER_ERROR;
+            return -1;
 
         default:
             goto skip;
     }
 
     if( unlikely(node == NULL) )
-        return XML_READER_ERROR;
+        return -1;
 
     p_sys->node = strdup( (const char *)node );
     if( pval != NULL )
         *pval = p_sys->node;
-    return likely(p_sys->node != NULL) ? ret : XML_READER_ERROR;
+    return likely(p_sys->node != NULL) ? ret : -1;
 }
 
 #if 0
@@ -287,7 +287,7 @@ static const char *ReaderNextAttr( xml_reader_t *p_reader, const char **pval )
 static int StreamRead( void *p_context, char *p_buffer, int i_buffer )
 {
     stream_t *s = (stream_t*)p_context;
-    return vlc_stream_Read( s, p_buffer, i_buffer );
+    return stream_Read( s, p_buffer, i_buffer );
 }
 
 static int ReaderIsEmptyElement( xml_reader_t *p_reader )

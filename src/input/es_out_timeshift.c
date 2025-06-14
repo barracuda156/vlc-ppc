@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
-#include <errno.h>
 #if defined (_WIN32)
 #  include <direct.h>
 #endif
@@ -114,11 +113,6 @@ typedef struct attribute_packed
         } int_epg;
         struct
         {
-            int       i_int;
-            vlc_epg_event_t *p_evt;
-        } int_epg_evt;
-        struct
-        {
             es_out_id_t *p_es;
             bool        b_bool;
         } es_bool;
@@ -127,11 +121,6 @@ typedef struct attribute_packed
             es_out_id_t *p_es;
             es_format_t *p_fmt;
         } es_fmt;
-        struct
-        {
-            int i_cat;
-            int i_policy;
-        } es_policy;
         struct
         {
             /* FIXME Really too big (double make the whole thing too big) */
@@ -167,9 +156,7 @@ struct ts_storage_t
     ts_storage_t *p_next;
 
     /* */
-#ifdef _WIN32
     char    *psz_file;  /* Filename */
-#endif
     size_t  i_file_max; /* Max size in bytes */
     int64_t i_file_size;/* Current size in bytes */
     FILE    *p_filew;   /* FILE handle for data writing */
@@ -223,7 +210,7 @@ struct es_out_id_t
 struct es_out_sys_t
 {
     input_thread_t *p_input;
-    es_out_t       *p_out;
+	es_out_t       *p_out;
 
     /* Configuration */
     int64_t        i_tmp_size_max;    /* Maximal temporary file size in byte */
@@ -294,7 +281,8 @@ static void CmdExecuteDel    ( es_out_t *, ts_cmd_t * );
 static int  CmdExecuteControl( es_out_t *, ts_cmd_t * );
 
 /* File helpers */
-static int GetTmpFile( char **ppsz_file, const char *psz_path );
+static char *GetTmpPath( char *psz_path );
+static FILE *GetTmpFile( char **ppsz_file, const char *psz_path );
 
 /*****************************************************************************
  * input_EsOutTimeshiftNew:
@@ -341,52 +329,12 @@ es_out_t *input_EsOutTimeshiftNew( input_thread_t *p_input, es_out_t *p_next_out
         p_sys->i_tmp_size_max = 50*1024*1024;
     else
         p_sys->i_tmp_size_max = __MAX( i_tmp_size_max, 1*1024*1024 );
-    msg_Dbg( p_input, "using timeshift granularity of %d MiB",
-             (int)p_sys->i_tmp_size_max/(1024*1024) );
 
-    p_sys->psz_tmp_path = var_InheritString( p_input, "input-timeshift-path" );
-#if defined (_WIN32) && !VLC_WINSTORE_APP
-    if( p_sys->psz_tmp_path == NULL )
-    {
-        const DWORD count = GetTempPath( 0, NULL );
-        if( count > 0 )
-        {
-            TCHAR *path = vlc_alloc( count + 1, sizeof(TCHAR) );
-            if( path != NULL )
-            {
-                DWORD ret = GetTempPath( count + 1, path );
-                if( ret != 0 && ret <= count )
-                    p_sys->psz_tmp_path = FromT( path );
-                free( path );
-            }
-        }
-    }
-    if( p_sys->psz_tmp_path == NULL )
-    {
-        wchar_t *wpath = _wgetcwd( NULL, 0 );
-        if( wpath != NULL )
-        {
-            p_sys->psz_tmp_path = FromWide( wpath );
-            free( wpath );
-        }
-    }
-    if( p_sys->psz_tmp_path == NULL )
-        p_sys->psz_tmp_path = strdup( "C:" );
+    char *psz_tmp_path = var_CreateGetNonEmptyString( p_input, "input-timeshift-path" );
+    p_sys->psz_tmp_path = GetTmpPath( psz_tmp_path );
 
-    if( p_sys->psz_tmp_path != NULL )
-    {
-        size_t len = strlen( p_sys->psz_tmp_path );
-
-        while( len > 0 && p_sys->psz_tmp_path[len - 1] == DIR_SEP_CHAR )
-            len--;
-
-        p_sys->psz_tmp_path[len] = '\0';
-    }
-#endif
-    if( p_sys->psz_tmp_path != NULL )
-        msg_Dbg( p_input, "using timeshift path: %s", p_sys->psz_tmp_path );
-    else
-        msg_Dbg( p_input, "using default timeshift path" );
+    msg_Dbg( p_input, "using timeshift granularity of %d MiB, in path '%s'",
+             (int)p_sys->i_tmp_size_max/(1024*1024), p_sys->psz_tmp_path );
 
 #if 0
 #define S(t) msg_Err( p_input, "SIZEOF("#t")=%d", sizeof(t) )
@@ -512,7 +460,7 @@ static int ControlLockedGetWakeup( es_out_t *p_out, mtime_t *pi_wakeup )
 
     if( p_sys->b_delayed )
     {
-        assert( !input_priv(p_sys->p_input)->b_can_pace_control );
+        assert( !p_sys->p_input->p->b_can_pace_control );
         *pi_wakeup = 0;
     }
     else
@@ -545,7 +493,7 @@ static int ControlLockedSetPauseState( es_out_t *p_out, bool b_source_paused, bo
     else
     {
         i_ret = VLC_EGENERIC;
-        if( !input_priv(p_sys->p_input)->b_can_pace_control )
+        if( !p_sys->p_input->p->b_can_pace_control )
         {
             if( !p_sys->b_delayed )
                 TsStart( p_out );
@@ -554,7 +502,7 @@ static int ControlLockedSetPauseState( es_out_t *p_out, bool b_source_paused, bo
         }
         else
         {
-            /* XXX we may do it BUT it would be better to finish the clock clean up+improvements
+            /* XXX we may do it BUT it would be better to finish the clock clean up+improvments
              * and so be able to advertize correctly pace control property in access
              * module */
             msg_Err( p_sys->p_input, "EsOutTimeshift does not work with streams that have pace control" );
@@ -580,7 +528,7 @@ static int ControlLockedSetRate( es_out_t *p_out, int i_src_rate, int i_rate )
     else
     {
         i_ret = VLC_EGENERIC;
-        if( !input_priv(p_sys->p_input)->b_can_pace_control )
+        if( !p_sys->p_input->p->b_can_pace_control )
         {
             if( !p_sys->b_delayed )
                 TsStart( p_out );
@@ -589,7 +537,7 @@ static int ControlLockedSetRate( es_out_t *p_out, int i_src_rate, int i_rate )
         }
         else
         {
-            /* XXX we may do it BUT it would be better to finish the clock clean up+improvements
+            /* XXX we may do it BUT it would be better to finish the clock clean up+improvments
              * and so be able to advertize correctly pace control property in access
              * module */
             msg_Err( p_sys->p_input, "EsOutTimeshift does not work with streams that have pace control" );
@@ -628,6 +576,16 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
 
     switch( i_query )
     {
+    /* Invalid query for this es_out level */
+    case ES_OUT_SET_ES_BY_ID:
+    case ES_OUT_RESTART_ES_BY_ID:
+    case ES_OUT_SET_ES_DEFAULT_BY_ID:
+    case ES_OUT_GET_ES_OBJECTS_BY_ID:
+    case ES_OUT_SET_DELAY:
+    case ES_OUT_SET_RECORD_STATE:
+        assert(0);
+        return VLC_EGENERIC;
+
     /* Pass-through control */
     case ES_OUT_SET_MODE:
     case ES_OUT_SET_GROUP:
@@ -637,17 +595,13 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
     case ES_OUT_SET_NEXT_DISPLAY_TIME:
     case ES_OUT_SET_GROUP_META:
     case ES_OUT_SET_GROUP_EPG:
-    case ES_OUT_SET_GROUP_EPG_EVENT:
-    case ES_OUT_SET_EPG_TIME:
     case ES_OUT_SET_ES_SCRAMBLED_STATE:
     case ES_OUT_DEL_GROUP:
     case ES_OUT_SET_META:
     case ES_OUT_SET_ES:
     case ES_OUT_RESTART_ES:
-    case ES_OUT_RESTART_ALL_ES:
     case ES_OUT_SET_ES_DEFAULT:
     case ES_OUT_SET_ES_STATE:
-    case ES_OUT_SET_ES_CAT_POLICY:
     case ES_OUT_SET_ES_FMT:
     case ES_OUT_SET_TIMES:
     case ES_OUT_SET_JITTER:
@@ -718,15 +672,15 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
     {
         return ControlLockedSetFrameNext( p_out );
     }
-
     case ES_OUT_GET_PCR_SYSTEM:
+    {
         if( p_sys->b_delayed )
             return VLC_EGENERIC;
-        /* fall through */
-    case ES_OUT_GET_GROUP_FORCED:
-    case ES_OUT_POST_SUBNODE:
-        return es_out_vaControl( p_sys->p_out, i_query, args );
 
+        mtime_t *pi_system = (mtime_t*)va_arg( args, mtime_t * );
+        mtime_t *pi_delay  = (mtime_t*)va_arg( args, mtime_t * );
+        return es_out_ControlGetPcrSystem( p_sys->p_out, pi_system, pi_delay );
+    }
     case ES_OUT_MODIFY_PCR_SYSTEM:
     {
         const bool    b_absolute = va_arg( args, int );
@@ -737,16 +691,16 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
 
         return es_out_ControlModifyPcrSystem( p_sys->p_out, b_absolute, i_system );
     }
+    case ES_OUT_GET_GROUP_FORCED:
+    {
+        int *pi_group = va_arg( args, int * );
+        return es_out_Control( p_sys->p_out, ES_OUT_GET_GROUP_FORCED, pi_group );
+    }
 
-    /* Invalid queries for this es_out level */
-    case ES_OUT_SET_ES_BY_ID:
-    case ES_OUT_RESTART_ES_BY_ID:
-    case ES_OUT_SET_ES_DEFAULT_BY_ID:
-    case ES_OUT_GET_ES_OBJECTS_BY_ID:
-    case ES_OUT_SET_DELAY:
-    case ES_OUT_SET_RECORD_STATE:
+
     default:
-        vlc_assert_unreachable();
+        msg_Err( p_sys->p_input, "Unknown es_out_Control query !" );
+        assert(0);
         return VLC_EGENERIC;
     }
 }
@@ -1057,8 +1011,7 @@ static void *TsRun( void *p_data )
         }
         i_deadline = cmd.i_date + p_ts->i_cmd_delay + p_ts->i_rate_delay + p_ts->i_buffering_delay;
 
-        vlc_cleanup_pop();
-        vlc_mutex_unlock( &p_ts->lock );
+        vlc_cleanup_run();
 
         /* Regulate the speed of command processing to the same one than
          * reading  */
@@ -1088,7 +1041,7 @@ static void *TsRun( void *p_data )
             CmdExecuteDel( p_ts->p_out, &cmd );
             break;
         default:
-            vlc_assert_unreachable();
+            assert(0);
             break;
         }
         vlc_restorecancel( canc );
@@ -1102,65 +1055,34 @@ static void *TsRun( void *p_data )
  *****************************************************************************/
 static ts_storage_t *TsStorageNew( const char *psz_tmp_path, int64_t i_tmp_size_max )
 {
-    ts_storage_t *p_storage = malloc( sizeof (*p_storage) );
-    if( unlikely(p_storage == NULL) )
+    ts_storage_t *p_storage = calloc( 1, sizeof(ts_storage_t) );
+    if( !p_storage )
         return NULL;
 
-    char *psz_file;
-    int fd = GetTmpFile( &psz_file, psz_tmp_path );
-    if( fd == -1 )
-    {
-        free( p_storage );
-        return NULL;
-    }
-
-    p_storage->p_filew = fdopen( fd, "w+b" );
-    if( p_storage->p_filew == NULL )
-    {
-        vlc_close( fd );
-        vlc_unlink( psz_file );
-        goto error;
-    }
-
-    p_storage->p_filer = vlc_fopen( psz_file, "rb" );
-    if( p_storage->p_filer == NULL )
-    {
-        fclose( p_storage->p_filew );
-        vlc_unlink( psz_file );
-        goto error;
-    }
-
-#ifndef _WIN32
-    vlc_unlink( psz_file );
-    free( psz_file );
-#else
-    p_storage->psz_file = psz_file;
-#endif
+    /* */
     p_storage->p_next = NULL;
 
     /* */
     p_storage->i_file_max = i_tmp_size_max;
     p_storage->i_file_size = 0;
+    p_storage->p_filew = GetTmpFile( &p_storage->psz_file, psz_tmp_path );
+    if( p_storage->psz_file )
+        p_storage->p_filer = vlc_fopen( p_storage->psz_file, "rb" );
 
     /* */
     p_storage->i_cmd_w = 0;
     p_storage->i_cmd_r = 0;
     p_storage->i_cmd_max = 30000;
-    p_storage->p_cmd = vlc_alloc( p_storage->i_cmd_max, sizeof(*p_storage->p_cmd) );
+    p_storage->p_cmd = malloc( p_storage->i_cmd_max * sizeof(*p_storage->p_cmd) );
     //fprintf( stderr, "\nSTORAGE name=%s size=%d KiB\n", p_storage->psz_file, p_storage->i_cmd_max * sizeof(*p_storage->p_cmd) /1024 );
 
-    if( !p_storage->p_cmd )
+    if( !p_storage->p_cmd || !p_storage->p_filew || !p_storage->p_filer )
     {
         TsStorageDelete( p_storage );
         return NULL;
     }
     return p_storage;
-error:
-    free( psz_file );
-    free( p_storage );
-    return NULL;
 }
-
 static void TsStorageDelete( ts_storage_t *p_storage )
 {
     while( p_storage->i_cmd_r < p_storage->i_cmd_w )
@@ -1173,15 +1095,19 @@ static void TsStorageDelete( ts_storage_t *p_storage )
     }
     free( p_storage->p_cmd );
 
-    fclose( p_storage->p_filer );
-    fclose( p_storage->p_filew );
-#ifdef _WIN32
-    vlc_unlink( p_storage->psz_file );
-    free( p_storage->psz_file );
-#endif
+    if( p_storage->p_filer )
+        fclose( p_storage->p_filer );
+    if( p_storage->p_filew )
+        fclose( p_storage->p_filew );
+
+    if( p_storage->psz_file )
+    {
+        vlc_unlink( p_storage->psz_file );
+        free( p_storage->psz_file );
+    }
+
     free( p_storage );
 }
-
 static void TsStoragePack( ts_storage_t *p_storage )
 {
     /* Try to release a bit of memory */
@@ -1296,7 +1222,7 @@ static void CmdClean( ts_cmd_t *p_cmd )
     case C_DEL:
         break;
     default:
-        vlc_assert_unreachable();
+        assert(0);
         break;
     }
 }
@@ -1402,7 +1328,6 @@ static int CmdInitControl( ts_cmd_t *p_cmd, int i_query, va_list args, bool b_co
 
     case ES_OUT_RESET_PCR:           /* no arg */
     case ES_OUT_SET_EOS:
-    case ES_OUT_RESTART_ALL_ES:
         break;
 
     case ES_OUT_SET_META:        /* arg1=const vlc_meta_t* */
@@ -1434,9 +1359,21 @@ static int CmdInitControl( ts_cmd_t *p_cmd, int i_query, va_list args, bool b_co
 
         if( b_copy )
         {
-            p_cmd->u.control.u.int_epg.p_epg = vlc_epg_Duplicate( p_epg );
+            p_cmd->u.control.u.int_epg.p_epg = vlc_epg_New( p_epg->psz_name );
             if( !p_cmd->u.control.u.int_epg.p_epg )
                 return VLC_EGENERIC;
+            for( int i = 0; i < p_epg->i_event; i++ )
+            {
+                vlc_epg_event_t *p_evt = p_epg->pp_event[i];
+
+                vlc_epg_AddEvent( p_cmd->u.control.u.int_epg.p_epg,
+                                  p_evt->i_start, p_evt->i_duration,
+                                  p_evt->psz_name,
+                                  p_evt->psz_short_description,
+                                  p_evt->psz_description, 0 );
+            }
+            vlc_epg_SetCurrent( p_cmd->u.control.u.int_epg.p_epg,
+                                p_epg->p_current ? p_epg->p_current->i_start : -1 );
         }
         else
         {
@@ -1445,38 +1382,12 @@ static int CmdInitControl( ts_cmd_t *p_cmd, int i_query, va_list args, bool b_co
         }
         break;
     }
-    case ES_OUT_SET_GROUP_EPG_EVENT:   /* arg1=int i_group arg2=const vlc_epg_event_t* */
-    {
-        p_cmd->u.control.u.int_epg_evt.i_int = (int)va_arg( args, int );
-        const vlc_epg_event_t *p_evt = va_arg( args, const vlc_epg_event_t * );
-
-        if( b_copy )
-        {
-            p_cmd->u.control.u.int_epg_evt.p_evt = vlc_epg_event_Duplicate( p_evt );
-            if( !p_cmd->u.control.u.int_epg_evt.p_evt )
-                return VLC_EGENERIC;
-        }
-        else
-        {
-            /* The cast is only needed to avoid warning */
-            p_cmd->u.control.u.int_epg_evt.p_evt = (vlc_epg_event_t*)p_evt;
-        }
-        break;
-    }
-    case ES_OUT_SET_EPG_TIME: /* arg1=int64_t (seconds) */
-        p_cmd->u.control.u.i_i64 = (int64_t)va_arg( args, int64_t );
-        break;
 
     /* Modified control */
     case ES_OUT_SET_ES:      /* arg1= es_out_id_t*                   */
     case ES_OUT_RESTART_ES:  /* arg1= es_out_id_t*                   */
     case ES_OUT_SET_ES_DEFAULT: /* arg1= es_out_id_t*                */
         p_cmd->u.control.u.p_es = (es_out_id_t*)va_arg( args, es_out_id_t * );
-        break;
-
-    case ES_OUT_SET_ES_CAT_POLICY:
-        p_cmd->u.control.u.es_policy.i_cat = (int) va_arg( args, int );
-        p_cmd->u.control.u.es_policy.i_policy = (int) va_arg( args, int );
         break;
 
     case ES_OUT_SET_ES_STATE:/* arg1= es_out_id_t* arg2=bool   */
@@ -1526,7 +1437,7 @@ static int CmdInitControl( ts_cmd_t *p_cmd, int i_query, va_list args, bool b_co
     }
 
     default:
-        vlc_assert_unreachable();
+        assert(0);
         return VLC_EGENERIC;
     }
 
@@ -1554,7 +1465,6 @@ static int CmdExecuteControl( es_out_t *p_out, ts_cmd_t *p_cmd )
 
     case ES_OUT_RESET_PCR:           /* no arg */
     case ES_OUT_SET_EOS:
-    case ES_OUT_RESTART_ALL_ES:
         return es_out_Control( p_out, i_query );
 
     case ES_OUT_SET_GROUP_META:  /* arg1=int i_group arg2=const vlc_meta_t* */
@@ -1564,13 +1474,6 @@ static int CmdExecuteControl( es_out_t *p_out, ts_cmd_t *p_cmd )
     case ES_OUT_SET_GROUP_EPG:   /* arg1=int i_group arg2=const vlc_epg_t* */
         return es_out_Control( p_out, i_query, p_cmd->u.control.u.int_epg.i_int,
                                                p_cmd->u.control.u.int_epg.p_epg );
-
-    case ES_OUT_SET_GROUP_EPG_EVENT: /* arg1=int i_group arg2=const vlc_epg_event_t* */
-        return es_out_Control( p_out, i_query, p_cmd->u.control.u.int_epg_evt.i_int,
-                                               p_cmd->u.control.u.int_epg_evt.p_evt );
-
-    case ES_OUT_SET_EPG_TIME: /* arg1=int64_t */
-        return es_out_Control( p_out, i_query, p_cmd->u.control.u.i_i64 );
 
     case ES_OUT_SET_ES_SCRAMBLED_STATE: /* arg1=int es_out_id_t* arg2=bool */
         return es_out_Control( p_out, i_query, p_cmd->u.control.u.es_bool.p_es->p_es,
@@ -1583,16 +1486,11 @@ static int CmdExecuteControl( es_out_t *p_out, ts_cmd_t *p_cmd )
     case ES_OUT_SET_ES:      /* arg1= es_out_id_t*                   */
     case ES_OUT_RESTART_ES:  /* arg1= es_out_id_t*                   */
     case ES_OUT_SET_ES_DEFAULT: /* arg1= es_out_id_t*                */
-        return es_out_Control( p_out, i_query, !p_cmd->u.control.u.p_es ? NULL :
-                                               p_cmd->u.control.u.p_es->p_es );
+        return es_out_Control( p_out, i_query, p_cmd->u.control.u.p_es->p_es );
 
     case ES_OUT_SET_ES_STATE:/* arg1= es_out_id_t* arg2=bool   */
         return es_out_Control( p_out, i_query, p_cmd->u.control.u.es_bool.p_es->p_es,
                                                p_cmd->u.control.u.es_bool.b_bool );
-
-    case ES_OUT_SET_ES_CAT_POLICY:
-        return es_out_Control( p_out, i_query, p_cmd->u.control.u.es_policy.i_cat,
-                                               p_cmd->u.control.u.es_policy.i_policy );
 
     case ES_OUT_SET_ES_FMT:     /* arg1= es_out_id_t* arg2=es_format_t* */
         return es_out_Control( p_out, i_query, p_cmd->u.control.u.es_fmt.p_es->p_es,
@@ -1608,60 +1506,109 @@ static int CmdExecuteControl( es_out_t *p_out, ts_cmd_t *p_cmd )
                                                p_cmd->u.control.u.jitter.i_cr_average );
 
     default:
-        vlc_assert_unreachable();
+        assert(0);
         return VLC_EGENERIC;
     }
 }
 static void CmdCleanControl( ts_cmd_t *p_cmd )
 {
-    switch( p_cmd->u.control.i_query )
+    if( ( p_cmd->u.control.i_query == ES_OUT_SET_GROUP_META ||
+          p_cmd->u.control.i_query == ES_OUT_SET_META ) &&
+        p_cmd->u.control.u.int_meta.p_meta )
     {
-    case ES_OUT_SET_GROUP_META:
-    case ES_OUT_SET_META:
-        if( p_cmd->u.control.u.int_meta.p_meta )
-            vlc_meta_Delete( p_cmd->u.control.u.int_meta.p_meta );
-        break;
-    case ES_OUT_SET_GROUP_EPG:
-        if( p_cmd->u.control.u.int_epg.p_epg )
-            vlc_epg_Delete( p_cmd->u.control.u.int_epg.p_epg );
-        break;
-    case ES_OUT_SET_GROUP_EPG_EVENT:
-        if( p_cmd->u.control.u.int_epg_evt.p_evt )
-            vlc_epg_event_Delete( p_cmd->u.control.u.int_epg_evt.p_evt );
-        break;
-    case ES_OUT_SET_ES_FMT:
-        if( p_cmd->u.control.u.es_fmt.p_fmt )
-        {
-            es_format_Clean( p_cmd->u.control.u.es_fmt.p_fmt );
-            free( p_cmd->u.control.u.es_fmt.p_fmt );
-        }
-        break;
+        vlc_meta_Delete( p_cmd->u.control.u.int_meta.p_meta );
+    }
+    else if( p_cmd->u.control.i_query == ES_OUT_SET_GROUP_EPG &&
+             p_cmd->u.control.u.int_epg.p_epg )
+    {
+        vlc_epg_Delete( p_cmd->u.control.u.int_epg.p_epg );
+    }
+    else if( p_cmd->u.control.i_query == ES_OUT_SET_ES_FMT &&
+             p_cmd->u.control.u.es_fmt.p_fmt )
+    {
+        es_format_Clean( p_cmd->u.control.u.es_fmt.p_fmt );
+        free( p_cmd->u.control.u.es_fmt.p_fmt );
     }
 }
 
-static int GetTmpFile( char **filename, const char *dirname )
+
+/*****************************************************************************
+ * GetTmpFile/Path:
+ *****************************************************************************/
+static char *GetTmpPath( char *psz_path )
 {
-    if( dirname != NULL
-     && asprintf( filename, "%s"DIR_SEP PACKAGE_NAME"-timeshift.XXXXXX",
-                  dirname ) >= 0 )
+    if( psz_path && *psz_path )
     {
-        vlc_mkdir( dirname, 0700 );
+        /* Make sure that the path exists and is a directory */
+        struct stat s;
+        const int i_ret = vlc_stat( psz_path, &s );
 
-        int fd = vlc_mkstemp( *filename );
-        if( fd != -1 )
-            return fd;
+        if( i_ret < 0 && !vlc_mkdir( psz_path, 0600 ) )
+            return psz_path;
+        else if( i_ret == 0 && ( s.st_mode & S_IFDIR ) )
+            return psz_path;
+    }
+    free( psz_path );
 
-        free( *filename );
+    /* Create a suitable path */
+#if defined (_WIN32) && !VLC_WINSTORE_APP
+    const DWORD dwCount = GetTempPathW( 0, NULL );
+    wchar_t *psw_path = calloc( dwCount + 1, sizeof(wchar_t) );
+    if( psw_path )
+    {
+        if( GetTempPathW( dwCount + 1, psw_path ) <= 0 )
+        {
+            free( psw_path );
+
+            psw_path = _wgetcwd( NULL, 0 );
+        }
     }
 
-    *filename = strdup( DIR_SEP"tmp"DIR_SEP PACKAGE_NAME"-timeshift.XXXXXX" );
-    if( unlikely(*filename == NULL) )
-        return -1;
+    psz_path = NULL;
+    if( psw_path )
+    {
+        psz_path = FromWide( psw_path );
+        while( psz_path && *psz_path && psz_path[strlen( psz_path ) - 1] == '\\' )
+            psz_path[strlen( psz_path ) - 1] = '\0';
 
-    int fd = vlc_mkstemp( *filename );
-    if( fd != -1 )
-        return fd;
+        free( psw_path );
+    }
 
-    free( *filename );
-    return -1;
+    if( !psz_path || *psz_path == '\0' )
+    {
+        free( psz_path );
+        return strdup( "C:" );
+    }
+#else
+    psz_path = strdup( DIR_SEP"tmp" );
+#endif
+
+    return psz_path;
 }
+
+static FILE *GetTmpFile( char **ppsz_file, const char *psz_path )
+{
+    char *psz_name;
+    int fd;
+    FILE *f;
+
+    /* */
+    *ppsz_file = NULL;
+    if( asprintf( &psz_name, "%s"DIR_SEP"vlc-timeshift.XXXXXX", psz_path ) < 0 )
+        return NULL;
+
+    /* */
+    fd = vlc_mkstemp( psz_name );
+    *ppsz_file = psz_name;
+
+    if( fd < 0 )
+        return NULL;
+
+    /* */
+    f = fdopen( fd, "w+b" );
+    if( !f )
+        close( fd );
+
+    return f;
+}
+

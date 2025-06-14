@@ -39,7 +39,7 @@ class vlc_stream_io_callback: public IOCallback
     virtual ~vlc_stream_io_callback()
     {
         if( b_owner )
-            vlc_stream_Delete( s );
+            stream_Delete( s );
     }
 
     virtual uint32   read            ( void *p_buffer, size_t i_size);

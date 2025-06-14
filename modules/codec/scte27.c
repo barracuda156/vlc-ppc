@@ -41,7 +41,7 @@ static void Close(vlc_object_t *);
 vlc_module_begin ()
     set_description(N_("SCTE-27 decoder"))
     set_shortname(N_("SCTE-27"))
-    set_capability( "spu decoder", 51)
+    set_capability( "decoder", 51)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_SCODEC)
     set_callbacks(Open, Close)
@@ -142,7 +142,7 @@ static subpicture_region_t *DecodeSimpleBitmap(decoder_t *dec,
     int bitmap_h = bottom_h - top_h;
     int bitmap_v = bottom_v - top_v;
     int bitmap_size = bitmap_h * bitmap_v;
-    bool *bitmap = vlc_alloc(bitmap_size, sizeof(*bitmap));
+    bool *bitmap = malloc(bitmap_size * sizeof(*bitmap));
     if (!bitmap)
         return NULL;
     for (int position = 0; position < bitmap_size;) {
@@ -405,14 +405,18 @@ error:
     return NULL;
 }
 
-static int Decode(decoder_t *dec, block_t *b)
+static subpicture_t *Decode(decoder_t *dec, block_t **block)
 {
     decoder_sys_t *sys = dec->p_sys;
 
-    if (b == NULL ) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if (block == NULL || *block == NULL)
+        return NULL;
+    block_t *b = *block; *block = NULL;
 
-    if (b->i_flags & (BLOCK_FLAG_CORRUPTED))
+    subpicture_t *sub_first = NULL;
+    subpicture_t **sub_last = &sub_first;
+
+    if (b->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED))
         goto exit;
 
     while (b->i_buffer > 3) {
@@ -475,8 +479,9 @@ static int Decode(decoder_t *dec, block_t *b)
                                         section_length - 1 - 4,
                                         b->i_pts > VLC_TS_INVALID ? b->i_pts : b->i_dts);
         }
-        if (sub != NULL)
-            decoder_QueueSub(dec, sub);
+        *sub_last = sub;
+        if (*sub_last)
+            sub_last = &(*sub_last)->p_next;
 
         b->i_buffer -= 3 + section_length;
         b->p_buffer += 3 + section_length;
@@ -485,7 +490,7 @@ static int Decode(decoder_t *dec, block_t *b)
 
 exit:
     block_Release(b);
-    return VLCDEC_SUCCESS;
+    return sub_first;
 }
 
 static int Open(vlc_object_t *object)
@@ -502,8 +507,9 @@ static int Open(vlc_object_t *object)
     sys->segment_size = 0;
     sys->segment_buffer = NULL;
 
-    dec->pf_decode = Decode;
-    dec->fmt_out.i_codec = VLC_CODEC_YUVP;
+    dec->pf_decode_sub = Decode;
+    es_format_Init(&dec->fmt_out, SPU_ES, VLC_CODEC_SPU);
+    dec->fmt_out.video.i_chroma = VLC_CODEC_YUVP;
 
     return VLC_SUCCESS;
 }

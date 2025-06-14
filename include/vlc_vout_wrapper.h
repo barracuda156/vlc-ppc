@@ -62,35 +62,37 @@ static inline void vout_display_Display(vout_display_t *vd,
  */
 typedef struct {
     vout_display_cfg_t cfg;
-#if defined(_WIN32) || defined(__OS2__)
     unsigned wm_state;
-#endif
-    vlc_rational_t sar;
+    struct {
+        int num;
+        int den;
+    } sar;
 } vout_display_state_t;
 
 /**
  * It creates a vout managed display.
  */
-vout_display_t *vout_NewDisplay( vout_thread_t *, const video_format_t *,
-    const vout_display_state_t *, const char *module,
-    mtime_t double_click_timeout, mtime_t hide_timeout );
+VLC_API vout_display_t * vout_NewDisplay( vout_thread_t *, const video_format_t *, const vout_display_state_t *, const char *psz_module, mtime_t i_double_click_timeout, mtime_t i_hide_timeout );
 /**
  * It destroy a vout managed display.
  */
-void vout_DeleteDisplay(vout_display_t *, vout_display_state_t *);
-bool vout_IsDisplayFiltered(vout_display_t *);
-picture_t * vout_FilterDisplay(vout_display_t *, picture_t *);
-void vout_FilterFlush(vout_display_t *);
-bool vout_AreDisplayPicturesInvalid(vout_display_t *);
+VLC_API void vout_DeleteDisplay(vout_display_t *, vout_display_state_t *);
 
-bool vout_ManageDisplay(vout_display_t *, bool allow_reset_pictures);
+VLC_API bool vout_IsDisplayFiltered(vout_display_t *);
+VLC_API picture_t * vout_FilterDisplay(vout_display_t *, picture_t *);
+VLC_API bool vout_AreDisplayPicturesInvalid(vout_display_t *);
 
-void vout_SetDisplayFilled(vout_display_t *, bool is_filled);
-void vout_SetDisplayZoom(vout_display_t *, unsigned num, unsigned den);
-void vout_SetDisplayAspect(vout_display_t *, unsigned num, unsigned den);
-void vout_SetDisplayCrop(vout_display_t *, unsigned num, unsigned den,
-                         unsigned left, unsigned top, int right, int bottom);
-void vout_SetDisplayViewpoint(vout_display_t *, const vlc_viewpoint_t *);
+VLC_API bool vout_ManageDisplay(vout_display_t *, bool allow_reset_pictures);
+
+VLC_API void vout_SetDisplayFullscreen(vout_display_t *, bool is_fullscreen);
+VLC_API void vout_SetDisplayFilled(vout_display_t *, bool is_filled);
+VLC_API void vout_SetDisplayZoom(vout_display_t *, unsigned num, unsigned den);
+VLC_API void vout_SetWindowState(vout_display_t *, unsigned state);
+VLC_API void vout_SetDisplayAspect(vout_display_t *, unsigned dar_num, unsigned dar_den);
+VLC_API void vout_SetDisplayCrop(vout_display_t *, unsigned crop_num, unsigned crop_den, unsigned left, unsigned top, int right, int bottom);
+
+struct vlc_gl_t;
+VLC_API struct vlc_gl_t * vout_GetDisplayOpengl(vout_display_t *);
 
 #endif /* VLC_VOUT_WRAPPER_H */
 

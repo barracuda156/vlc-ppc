@@ -51,7 +51,7 @@
  *                      header in bytes.
  */
 static inline int PESHeader( uint8_t *p_hdr, mtime_t i_pts, mtime_t i_dts,
-                             int i_es_size, const es_format_t *p_fmt,
+                             int i_es_size, es_format_t *p_fmt,
                              int i_stream_id, bool b_mpeg2,
                              bool b_data_alignment, int i_header_size )
 {
@@ -316,13 +316,13 @@ static inline int PESHeader( uint8_t *p_hdr, mtime_t i_pts, mtime_t i_dts,
  *                       To allow unbounded PES packets in transport stream
  *                       VIDEO_ES, set to INT_MAX.
  */
-void EStoPES ( block_t **pp_pes,
-                   const es_format_t *p_fmt, int i_stream_id,
+int  EStoPES ( block_t **pp_pes, block_t *p_es,
+                   es_format_t *p_fmt, int i_stream_id,
                    int b_mpeg2, int b_data_alignment, int i_header_size,
-                   int i_max_pes_size, mtime_t ts_offset )
+                   int i_max_pes_size )
 {
-    block_t *p_es = *pp_pes;
-    block_t *p_pes = NULL;
+    block_t *p_pes;
+    mtime_t i_pts, i_dts, i_length;
 
     uint8_t *p_data;
     int     i_size;
@@ -367,7 +367,7 @@ void EStoPES ( block_t **pp_pes,
             offset++;
         }
         offset++;
-        if( offset+4 <= p_es->i_buffer &&
+        if( offset <= p_es->i_buffer-4 &&
             ((p_es->p_buffer[offset] & 0x1f) != 9) ) /* Not AUD */
         {
             /* Make similar AUD as libavformat does */
@@ -376,21 +376,19 @@ void EStoPES ( block_t **pp_pes,
             p_es->p_buffer[1] = 0x00;
             p_es->p_buffer[2] = 0x00;
             p_es->p_buffer[3] = 0x01;
-            p_es->p_buffer[4] = 0x09; /* FIXME: primary_pic_type from SPS/PPS */
-            p_es->p_buffer[5] = 0xf0;
+            p_es->p_buffer[4] = 0x09;
+            p_es->p_buffer[5] = 0xe0;
         }
 
     }
 
-    mtime_t i_dts = 0;
-    mtime_t i_pts = 0;
-    if (p_es->i_pts > VLC_TS_INVALID)
-        i_pts = (p_es->i_pts - ts_offset) * 9 / 100;
-    if (p_es->i_dts > VLC_TS_INVALID)
-        i_dts = (p_es->i_dts - ts_offset) * 9 / 100;
+    i_pts = p_es->i_pts <= 0 ? 0 : p_es->i_pts * 9 / 100; // 90000 units clock
+    i_dts = p_es->i_dts <= 0 ? 0 : p_es->i_dts * 9 / 100; // 90000 units clock
 
     i_size = p_es->i_buffer;
     p_data = p_es->p_buffer;
+
+    *pp_pes = p_pes = NULL;
 
     do
     {
@@ -436,15 +434,15 @@ void EStoPES ( block_t **pp_pes,
     } while( i_size > 0 );
 
     /* Now redate all pes */
-    p_pes = *pp_pes;
-    i_dts    = p_pes->i_dts;
-    mtime_t i_length = p_pes->i_length / i_pes_count;
-    while( p_pes )
+    i_dts    = (*pp_pes)->i_dts;
+    i_length = (*pp_pes)->i_length / i_pes_count;
+    for( p_pes = *pp_pes; p_pes != NULL; p_pes = p_pes->p_next )
     {
         p_pes->i_dts = i_dts;
         p_pes->i_length = i_length;
 
         i_dts += i_length;
-        p_pes = p_pes->p_next;
     }
+
+    return 0;
 }

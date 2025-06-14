@@ -33,12 +33,10 @@
 #include <assert.h>
 #include <unistd.h>
 
-#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
 #include <vlc_playlist.h>
-#include <vlc_input.h>
 #include <vlc_vout.h>
 
 #include "motionlib.h"
@@ -80,7 +78,7 @@ vlc_module_end ()
 /*****************************************************************************
  * OpenIntf: initialise interface
  *****************************************************************************/
-static int Open ( vlc_object_t *p_this )
+int Open ( vlc_object_t *p_this )
 {
     intf_thread_t *p_intf = (intf_thread_t *)p_this;
     intf_sys_t *p_sys = malloc( sizeof( *p_sys ) );
@@ -109,7 +107,7 @@ error:
 /*****************************************************************************
  * CloseIntf: destroy interface
  *****************************************************************************/
-static void Close ( vlc_object_t *p_this )
+void Close ( vlc_object_t *p_this )
 {
     intf_thread_t *p_intf = (intf_thread_t *)p_this;
     intf_sys_t *p_sys = p_intf->p_sys;
@@ -189,7 +187,7 @@ static void *RunIntf( void *data )
 
         vlc_restorecancel( canc );
     }
-    vlc_assert_unreachable();
+    assert(0);
 }
 #undef LOW_THRESHOLD
 #undef HIGH_THRESHOLD

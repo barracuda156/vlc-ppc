@@ -1,8 +1,11 @@
 /*****************************************************************************
- * preparser.c
+ * preparser.c: Preparser thread.
  *****************************************************************************
- * Copyright © 2017-2017 VLC authors and VideoLAN
+ * Copyright © 1999-2009 VLC authors and VideoLAN
  * $Id$
+ *
+ * Authors: Samuel Hocevar <sam@zoy.org>
+ *          Clément Stenac <zorglub@videolan.org>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -18,191 +21,210 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
 #include <vlc_common.h>
 
-#include "misc/background_worker.h"
-#include "input/input_interface.h"
-#include "input/input_internal.h"
-#include "preparser.h"
 #include "fetcher.h"
+#include "preparser.h"
+#include "input/input_interface.h"
 
+/*****************************************************************************
+ * Structures/definitions
+ *****************************************************************************/
 struct playlist_preparser_t
 {
-    vlc_object_t* owner;
-    playlist_fetcher_t* fetcher;
-    struct background_worker* worker;
-    atomic_bool deactivated;
+    vlc_object_t        *object;
+    playlist_fetcher_t  *p_fetcher;
+
+    vlc_mutex_t     lock;
+    vlc_cond_t      wait;
+    bool            b_live;
+    input_item_t  **pp_waiting;
+    int             i_waiting;
 };
 
-static int InputEvent( vlc_object_t* obj, const char* varname,
-    vlc_value_t old, vlc_value_t cur, void* worker )
+static void *Thread( void * );
+
+/*****************************************************************************
+ * Public functions
+ *****************************************************************************/
+playlist_preparser_t *playlist_preparser_New( vlc_object_t *parent )
 {
-    VLC_UNUSED( obj ); VLC_UNUSED( varname ); VLC_UNUSED( old );
-
-    if( cur.i_int == INPUT_EVENT_DEAD )
-        background_worker_RequestProbe( worker );
-
-    return VLC_SUCCESS;
-}
-
-static int PreparserOpenInput( void* preparser_, void* item_, void** out )
-{
-    playlist_preparser_t* preparser = preparser_;
-
-    input_thread_t* input = input_CreatePreparser( preparser->owner, item_ );
-    if( !input )
-    {
-        input_item_SignalPreparseEnded( item_, ITEM_PREPARSE_FAILED );
-        return VLC_EGENERIC;
-    }
-
-    var_AddCallback( input, "intf-event", InputEvent, preparser->worker );
-    if( input_Start( input ) )
-    {
-        input_Close( input );
-        var_DelCallback( input, "intf-event", InputEvent, preparser->worker );
-        input_item_SignalPreparseEnded( item_, ITEM_PREPARSE_FAILED );
-        return VLC_EGENERIC;
-    }
-
-    *out = input;
-    return VLC_SUCCESS;
-}
-
-static int PreparserProbeInput( void* preparser_, void* input_ )
-{
-    int state = input_GetState( input_ );
-    return state == END_S || state == ERROR_S;
-    VLC_UNUSED( preparser_ );
-}
-
-static void PreparserCloseInput( void* preparser_, void* input_ )
-{
-    playlist_preparser_t* preparser = preparser_;
-    input_thread_t* input = input_;
-    input_item_t* item = input_priv(input)->p_item;
-
-    var_DelCallback( input, "intf-event", InputEvent, preparser->worker );
-
-    int status;
-    switch( input_GetState( input ) )
-    {
-        case END_S:
-            status = ITEM_PREPARSE_DONE;
-            break;
-        case ERROR_S:
-            status = ITEM_PREPARSE_FAILED;
-            break;
-        default:
-            status = ITEM_PREPARSE_TIMEOUT;
-    }
-
-    input_Stop( input );
-    input_Close( input );
-
-    if( preparser->fetcher )
-    {
-        if( !playlist_fetcher_Push( preparser->fetcher, item, 0, status ) )
-            return;
-    }
-
-    input_item_SetPreparsed( item, true );
-    input_item_SignalPreparseEnded( item, status );
-}
-
-static void InputItemRelease( void* item ) { input_item_Release( item ); }
-static void InputItemHold( void* item ) { input_item_Hold( item ); }
-
-playlist_preparser_t* playlist_preparser_New( vlc_object_t *parent )
-{
-    playlist_preparser_t* preparser = malloc( sizeof *preparser );
-
-    struct background_worker_config conf = {
-        .default_timeout = var_InheritInteger( parent, "preparse-timeout" ),
-        .pf_start = PreparserOpenInput,
-        .pf_probe = PreparserProbeInput,
-        .pf_stop = PreparserCloseInput,
-        .pf_release = InputItemRelease,
-        .pf_hold = InputItemHold };
-
-
-    if( likely( preparser ) )
-        preparser->worker = background_worker_New( preparser, &conf );
-
-    if( unlikely( !preparser || !preparser->worker ) )
-    {
-        free( preparser );
+    playlist_preparser_t *p_preparser = malloc( sizeof(*p_preparser) );
+    if( !p_preparser )
         return NULL;
-    }
 
-    preparser->owner = parent;
-    preparser->fetcher = playlist_fetcher_New( parent );
-    atomic_init( &preparser->deactivated, false );
+    p_preparser->object = parent;
+    p_preparser->p_fetcher = playlist_fetcher_New( parent );
+    if( unlikely(p_preparser->p_fetcher == NULL) )
+        msg_Err( parent, "cannot create fetcher" );
 
-    if( unlikely( !preparser->fetcher ) )
-        msg_Warn( parent, "unable to create art fetcher" );
+    vlc_mutex_init( &p_preparser->lock );
+    vlc_cond_init( &p_preparser->wait );
+    p_preparser->b_live = false;
+    p_preparser->i_waiting = 0;
+    p_preparser->pp_waiting = NULL;
 
-    return preparser;
+    return p_preparser;
 }
 
-void playlist_preparser_Push( playlist_preparser_t *preparser,
-    input_item_t *item, input_item_meta_request_option_t i_options,
-    int timeout, void *id )
+void playlist_preparser_Push( playlist_preparser_t *p_preparser, input_item_t *p_item,
+                              input_item_meta_request_option_t i_options )
 {
-    if( atomic_load( &preparser->deactivated ) )
-        return;
+    vlc_gc_incref( p_item );
+    VLC_UNUSED( i_options );
 
-    vlc_mutex_lock( &item->lock );
-    int i_type = item->i_type;
-    int b_net = item->b_net;
-    vlc_mutex_unlock( &item->lock );
-
-    switch( i_type )
+    vlc_mutex_lock( &p_preparser->lock );
+    INSERT_ELEM( p_preparser->pp_waiting, p_preparser->i_waiting,
+                 p_preparser->i_waiting, p_item );
+    if( !p_preparser->b_live )
     {
-        case ITEM_TYPE_NODE:
-        case ITEM_TYPE_FILE:
-        case ITEM_TYPE_DIRECTORY:
-        case ITEM_TYPE_PLAYLIST:
-            if( !b_net || i_options & META_REQUEST_OPTION_SCOPE_NETWORK )
-                break;
-        default:
-            input_item_SignalPreparseEnded( item, ITEM_PREPARSE_SKIPPED );
-            return;
+        if( vlc_clone_detach( NULL, Thread, p_preparser,
+                              VLC_THREAD_PRIORITY_LOW ) )
+            msg_Warn( p_preparser->object, "cannot spawn pre-parser thread" );
+        else
+            p_preparser->b_live = true;
+    }
+    vlc_mutex_unlock( &p_preparser->lock );
+}
+
+void playlist_preparser_fetcher_Push( playlist_preparser_t *p_preparser,
+             input_item_t *p_item, input_item_meta_request_option_t i_options )
+{
+    if( p_preparser->p_fetcher != NULL )
+        playlist_fetcher_Push( p_preparser->p_fetcher, p_item, i_options );
+}
+
+void playlist_preparser_Delete( playlist_preparser_t *p_preparser )
+{
+    vlc_mutex_lock( &p_preparser->lock );
+    /* Remove pending item to speed up preparser thread exit */
+    while( p_preparser->i_waiting > 0 )
+    {
+        vlc_gc_decref( p_preparser->pp_waiting[0] );
+        REMOVE_ELEM( p_preparser->pp_waiting, p_preparser->i_waiting, 0 );
     }
 
-    if( background_worker_Push( preparser->worker, item, id, timeout ) )
-        input_item_SignalPreparseEnded( item, ITEM_PREPARSE_FAILED );
+    while( p_preparser->b_live )
+        vlc_cond_wait( &p_preparser->wait, &p_preparser->lock );
+    vlc_mutex_unlock( &p_preparser->lock );
+
+    /* Destroy the item preparser */
+    vlc_cond_destroy( &p_preparser->wait );
+    vlc_mutex_destroy( &p_preparser->lock );
+
+    if( p_preparser->p_fetcher != NULL )
+        playlist_fetcher_Delete( p_preparser->p_fetcher );
+    free( p_preparser );
 }
 
-void playlist_preparser_fetcher_Push( playlist_preparser_t *preparser,
-    input_item_t *item, input_item_meta_request_option_t options )
+/*****************************************************************************
+ * Privates functions
+ *****************************************************************************/
+/**
+ * This function preparses an item when needed.
+ */
+static void Preparse( vlc_object_t *obj, input_item_t *p_item )
 {
-    if( preparser->fetcher )
-        playlist_fetcher_Push( preparser->fetcher, item, options, -1 );
+    vlc_mutex_lock( &p_item->lock );
+    int i_type = p_item->i_type;
+    vlc_mutex_unlock( &p_item->lock );
+
+    if( i_type != ITEM_TYPE_FILE )
+    {
+        input_item_SetPreparsed( p_item, true );
+        return;
+    }
+
+    /* Do not preparse if it is already done (like by playing it) */
+    if( !input_item_IsPreparsed( p_item ) )
+    {
+        input_Preparse( obj, p_item );
+        input_item_SetPreparsed( p_item, true );
+
+        var_SetAddress( obj, "item-change", p_item );
+    }
 }
 
-void playlist_preparser_Cancel( playlist_preparser_t *preparser, void *id )
+/**
+ * This function ask the fetcher object to fetch the art when needed
+ */
+static void Art( playlist_preparser_t *p_preparser, input_item_t *p_item )
 {
-    background_worker_Cancel( preparser->worker, id );
+    vlc_object_t *obj = p_preparser->object;
+    playlist_fetcher_t *p_fetcher = p_preparser->p_fetcher;
+
+    bool b_fetch = false;
+    /* If we haven't retrieved enough meta, add to secondary queue
+     * which will run the "meta fetchers".
+     * This only checks for meta, not for art
+     * \todo don't do this for things we won't get meta for, like vids
+     */
+
+    vlc_mutex_lock( &p_item->lock );
+    if( p_item->p_meta )
+    {
+        const char *psz_arturl = vlc_meta_Get( p_item->p_meta, vlc_meta_ArtworkURL );
+        const char *psz_name = vlc_meta_Get( p_item->p_meta, vlc_meta_Title );
+
+        if( !psz_arturl || ( strncasecmp( psz_arturl, "file://", 7 ) &&
+                             strncasecmp( psz_arturl, "attachment://", 13 ) ) )
+        {
+            msg_Dbg( obj, "meta ok for %s, need to fetch art",
+                     psz_name ? psz_name : "(null)" );
+            b_fetch = true;
+        }
+        else
+        {
+            msg_Dbg( obj, "no fetch required for %s (art currently %s)",
+                     psz_name ? psz_name : "(null)",
+                     psz_arturl ? psz_arturl : "(null)" );
+        }
+    }
+    vlc_mutex_unlock( &p_item->lock );
+
+    if( b_fetch && p_fetcher )
+        playlist_fetcher_Push( p_fetcher, p_item, 0 );
 }
 
-void playlist_preparser_Deactivate( playlist_preparser_t* preparser )
+/**
+ * This function does the preparsing and issues the art fetching requests
+ */
+static void *Thread( void *data )
 {
-    atomic_store( &preparser->deactivated, true );
-    background_worker_Cancel( preparser->worker, NULL );
+    playlist_preparser_t *p_preparser = data;
+    vlc_object_t *obj = p_preparser->object;
+
+    for( ;; )
+    {
+        input_item_t *p_current;
+
+        /* */
+        vlc_mutex_lock( &p_preparser->lock );
+        if( p_preparser->i_waiting > 0 )
+        {
+            p_current = p_preparser->pp_waiting[0];
+            REMOVE_ELEM( p_preparser->pp_waiting, p_preparser->i_waiting, 0 );
+        }
+        else
+        {
+            p_current = NULL;
+            p_preparser->b_live = false;
+            vlc_cond_signal( &p_preparser->wait );
+        }
+        vlc_mutex_unlock( &p_preparser->lock );
+
+        if( !p_current )
+            break;
+
+        Preparse( obj, p_current );
+
+        Art( p_preparser, p_current );
+        vlc_gc_decref(p_current);
+    }
+    return NULL;
 }
 
-void playlist_preparser_Delete( playlist_preparser_t *preparser )
-{
-    background_worker_Delete( preparser->worker );
-
-    if( preparser->fetcher )
-        playlist_fetcher_Delete( preparser->fetcher );
-
-    free( preparser );
-}

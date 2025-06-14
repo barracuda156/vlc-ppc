@@ -48,7 +48,7 @@ static void DecoderClose  ( vlc_object_t * );
 
 vlc_module_begin ()
     set_description( N_("CVD subtitle decoder") )
-    set_capability( "spu decoder", 50 )
+    set_capability( "decoder", 50 )
     set_callbacks( DecoderOpen, DecoderClose )
 
     add_submodule ()
@@ -60,7 +60,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int Decode( decoder_t *, block_t * );
+static subpicture_t *Decode( decoder_t *, block_t ** );
 static block_t *Packetize  ( decoder_t *, block_t ** );
 static block_t *Reassemble ( decoder_t *, block_t * );
 static void ParseMetaInfo  ( decoder_t *, block_t * );
@@ -122,9 +122,10 @@ static int DecoderOpen( vlc_object_t *p_this )
     p_sys->i_state = SUBTITLE_BLOCK_EMPTY;
     p_sys->p_spu   = NULL;
 
-    p_dec->pf_decode     = Decode;
+    p_dec->pf_decode_sub = Decode;
     p_dec->pf_packetize  = Packetize;
 
+    p_dec->fmt_out.i_cat = SPU_ES;
     p_dec->fmt_out.i_codec = VLC_CODEC_YUVP;
 
     return VLC_SUCCESS;
@@ -139,7 +140,6 @@ static int PacketizerOpen( vlc_object_t *p_this )
 
     if( DecoderOpen( p_this ) != VLC_SUCCESS ) return VLC_EGENERIC;
 
-    p_dec->fmt_out.i_codec = VLC_CODEC_CVD;
     p_dec->p_sys->b_packetizer = true;
 
     return VLC_SUCCESS;
@@ -160,28 +160,19 @@ void DecoderClose( vlc_object_t *p_this )
 /*****************************************************************************
  * Decode:
  *****************************************************************************/
-static int Decode( decoder_t *p_dec, block_t *p_block )
+static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
 {
-    block_t *p_data;
+    block_t *p_block, *p_spu;
 
-    if( p_block == NULL ) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if( pp_block == NULL || *pp_block == NULL ) return NULL;
 
-    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
-    {
-        block_Release( p_block );
-        return VLCDEC_SUCCESS;
-    }
+    p_block = *pp_block;
+    *pp_block = NULL;
 
-    if( !(p_data = Reassemble( p_dec, p_block )) )
-        return VLCDEC_SUCCESS;
+    if( !(p_spu = Reassemble( p_dec, p_block )) ) return NULL;
 
     /* Parse and decode */
-    subpicture_t *p_spu = DecodePacket( p_dec, p_data );
-    block_Release( p_data );
-    if( p_spu != NULL )
-        decoder_QueueSub( p_dec, p_spu );
-    return VLCDEC_SUCCESS;
+    return DecodePacket( p_dec, p_spu );
 }
 
 /*****************************************************************************
@@ -514,7 +505,8 @@ static subpicture_t *DecodePacket( decoder_t *p_dec, block_t *p_data )
     p_spu->b_ephemer = true;
 
     /* Create new SPU region */
-    video_format_Init( &fmt, VLC_CODEC_YUVP );
+    memset( &fmt, 0, sizeof(video_format_t) );
+    fmt.i_chroma = VLC_CODEC_YUVP;
     fmt.i_sar_num = 1;
     fmt.i_sar_den = 1;
     fmt.i_width = fmt.i_visible_width = p_sys->i_width;
@@ -534,7 +526,7 @@ static subpicture_t *DecodePacket( decoder_t *p_dec, block_t *p_data )
     if( !p_region )
     {
         msg_Err( p_dec, "cannot allocate SPU region" );
-        subpicture_Delete( p_spu );
+        decoder_DeleteSubpicture( p_dec, p_spu );
         return NULL;
     }
 

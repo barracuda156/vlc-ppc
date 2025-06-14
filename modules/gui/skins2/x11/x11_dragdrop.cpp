@@ -51,7 +51,7 @@ void X11DragDrop::dndEnter( ldata_t data )
     m_xPos = m_yPos = -1;
 
     // Retrieve available data types
-    std::list<std::string> dataTypes;
+    list<string> dataTypes;
     if( data[1] & 1 )   // More than 3 data types ?
     {
         Atom type;
@@ -64,7 +64,7 @@ void X11DragDrop::dndEnter( ldata_t data )
                             (unsigned char**)&dataList );
         for( unsigned long i=0; i<nitems; i++ )
         {
-            std::string dataType = XGetAtomName( XDISPLAY, dataList[i] );
+            string dataType = XGetAtomName( XDISPLAY, dataList[i] );
             dataTypes.push_back( dataType );
         }
         XFree( (void*)dataList );
@@ -75,7 +75,7 @@ void X11DragDrop::dndEnter( ldata_t data )
         {
             if( data[i] != None )
             {
-                std::string dataType = XGetAtomName( XDISPLAY, data[i] );
+                string dataType = XGetAtomName( XDISPLAY, data[i] );
                 dataTypes.push_back( dataType );
             }
         }
@@ -83,7 +83,7 @@ void X11DragDrop::dndEnter( ldata_t data )
 
     // Find the right target
     m_target = None;
-    std::list<std::string>::iterator it;
+    list<string>::iterator it;
     for( it = dataTypes.begin(); it != dataTypes.end(); ++it )
     {
         if( *it == "text/uri-list" ||
@@ -157,7 +157,7 @@ void X11DragDrop::dndLeave( ldata_t data )
 
 void X11DragDrop::dndDrop( ldata_t data )
 {
-    std::list<std::string> files;
+    list<string> files;
 
     Window src = data[0];
     Time time = data[2];

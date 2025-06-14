@@ -63,17 +63,18 @@ struct frontend_t
 #define FRONTEND_LOCK_TIMEOUT 10000000 /* 10 s */
 
 /* Local prototypes */
-static int FrontendInfo( vlc_object_t *, dvb_sys_t * );
-static int FrontendSetQPSK( vlc_object_t *, dvb_sys_t * );
-static int FrontendSetQAM( vlc_object_t *, dvb_sys_t * );
-static int FrontendSetOFDM( vlc_object_t *, dvb_sys_t * );
-static int FrontendSetATSC( vlc_object_t *, dvb_sys_t * );
+static int FrontendInfo( access_t * );
+static int FrontendSetQPSK( access_t * );
+static int FrontendSetQAM( access_t * );
+static int FrontendSetOFDM( access_t * );
+static int FrontendSetATSC( access_t * );
 
 /*****************************************************************************
  * FrontendOpen : Determine frontend device information and capabilities
  *****************************************************************************/
-int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_access )
+int FrontendOpen( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t * p_frontend;
     unsigned int i_adapter, i_device;
     bool b_probe;
@@ -107,9 +108,9 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
         const char * psz_expected = NULL;
         const char * psz_real;
 
-        if( FrontendInfo( p_access, p_sys ) < 0 )
+        if( FrontendInfo( p_access ) < 0 )
         {
-            vlc_close( p_sys->i_frontend_handle );
+            close( p_sys->i_frontend_handle );
             free( p_frontend );
             return VLC_EGENERIC;
         }
@@ -133,28 +134,28 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
         }
 
         /* Sanity checks */
-        if( (!strncmp( psz_access, "qpsk", 4 ) ||
-             !strncmp( psz_access, "dvb-s", 5 ) ||
-             !strncmp( psz_access, "satellite", 9 ) ) &&
+        if( (!strncmp( p_access->psz_access, "qpsk", 4 ) ||
+             !strncmp( p_access->psz_access, "dvb-s", 5 ) ||
+             !strncmp( p_access->psz_access, "satellite", 9 ) ) &&
              (p_frontend->info.type != FE_QPSK) )
         {
             psz_expected = "DVB-S";
         }
-        if( (!strncmp( psz_access, "cable", 5 ) ||
-             !strncmp( psz_access, "dvb-c", 5 ) ) &&
+        if( (!strncmp( p_access->psz_access, "cable", 5 ) ||
+             !strncmp( p_access->psz_access, "dvb-c", 5 ) ) &&
              (p_frontend->info.type != FE_QAM) )
         {
             psz_expected = "DVB-C";
         }
-        if( (!strncmp( psz_access, "terrestrial", 11 ) ||
-             !strncmp( psz_access, "dvb-t", 5 ) ) &&
+        if( (!strncmp( p_access->psz_access, "terrestrial", 11 ) ||
+             !strncmp( p_access->psz_access, "dvb-t", 5 ) ) &&
              (p_frontend->info.type != FE_OFDM) )
         {
             psz_expected = "DVB-T";
         }
 
-        if( (!strncmp( psz_access, "usdigital", 9 ) ||
-             !strncmp( psz_access, "atsc", 4 ) ) &&
+        if( (!strncmp( p_access->psz_access, "usdigital", 9 ) ||
+             !strncmp( p_access->psz_access, "atsc", 4 ) ) &&
              (p_frontend->info.type != FE_ATSC) )
         {
             psz_expected = "ATSC";
@@ -164,7 +165,7 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
         {
             msg_Err( p_access, "requested type %s not supported by %s tuner",
                      psz_expected, psz_real );
-            vlc_close( p_sys->i_frontend_handle );
+            close( p_sys->i_frontend_handle );
             free( p_frontend );
             return VLC_EGENERIC;
         }
@@ -173,19 +174,19 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
     {
         msg_Dbg( p_access, "using default values for frontend info" );
 
-        msg_Dbg( p_access, "method of access is %s", psz_access );
+        msg_Dbg( p_access, "method of access is %s", p_access->psz_access );
         p_frontend->info.type = FE_QPSK;
-        if( !strncmp( psz_access, "qpsk", 4 ) ||
-            !strncmp( psz_access, "dvb-s", 5 ) )
+        if( !strncmp( p_access->psz_access, "qpsk", 4 ) ||
+            !strncmp( p_access->psz_access, "dvb-s", 5 ) )
             p_frontend->info.type = FE_QPSK;
-        else if( !strncmp( psz_access, "cable", 5 ) ||
-                 !strncmp( psz_access, "dvb-c", 5 ) )
+        else if( !strncmp( p_access->psz_access, "cable", 5 ) ||
+                 !strncmp( p_access->psz_access, "dvb-c", 5 ) )
             p_frontend->info.type = FE_QAM;
-        else if( !strncmp( psz_access, "terrestrial", 11 ) ||
-                 !strncmp( psz_access, "dvb-t", 5 ) )
+        else if( !strncmp( p_access->psz_access, "terrestrial", 11 ) ||
+                 !strncmp( p_access->psz_access, "dvb-t", 5 ) )
             p_frontend->info.type = FE_OFDM;
-        else if( !strncmp( psz_access, "usdigital", 9 ) ||
-                 !strncmp( psz_access, "atsc", 4 ) )
+        else if( !strncmp( p_access->psz_access, "usdigital", 9 ) ||
+                 !strncmp( p_access->psz_access, "atsc", 4 ) )
             p_frontend->info.type = FE_ATSC;
     }
 
@@ -195,12 +196,13 @@ int FrontendOpen( vlc_object_t *p_access, dvb_sys_t *p_sys, const char *psz_acce
 /*****************************************************************************
  * FrontendClose : Close the frontend
  *****************************************************************************/
-void FrontendClose( vlc_object_t *p_access, dvb_sys_t *p_sys )
+void FrontendClose( access_t *p_access )
 {
-    VLC_UNUSED(p_access);
+    access_sys_t *p_sys = p_access->p_sys;
+
     if( p_sys->p_frontend )
     {
-        vlc_close( p_sys->i_frontend_handle );
+        close( p_sys->i_frontend_handle );
         free( p_sys->p_frontend );
 
         p_sys->p_frontend = NULL;
@@ -210,13 +212,15 @@ void FrontendClose( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * FrontendSet : Tune !
  *****************************************************************************/
-int FrontendSet( vlc_object_t *p_access, dvb_sys_t *p_sys )
+int FrontendSet( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
+
     switch( p_sys->p_frontend->info.type )
     {
     /* DVB-S */
     case FE_QPSK:
-        if( FrontendSetQPSK( p_access, p_sys ) )
+        if( FrontendSetQPSK( p_access ) )
         {
             msg_Err( p_access, "DVB-S tuning error" );
             return VLC_EGENERIC;
@@ -225,7 +229,7 @@ int FrontendSet( vlc_object_t *p_access, dvb_sys_t *p_sys )
 
     /* DVB-C */
     case FE_QAM:
-        if( FrontendSetQAM( p_access, p_sys ) )
+        if( FrontendSetQAM( p_access ) )
         {
             msg_Err( p_access, "DVB-C tuning error" );
             return VLC_EGENERIC;
@@ -234,7 +238,7 @@ int FrontendSet( vlc_object_t *p_access, dvb_sys_t *p_sys )
 
     /* DVB-T */
     case FE_OFDM:
-        if( FrontendSetOFDM( p_access, p_sys ) )
+        if( FrontendSetOFDM( p_access ) )
         {
             msg_Err( p_access, "DVB-T tuning error" );
             return VLC_EGENERIC;
@@ -243,7 +247,7 @@ int FrontendSet( vlc_object_t *p_access, dvb_sys_t *p_sys )
 
     /* ATSC */
     case FE_ATSC:
-        if( FrontendSetATSC( p_access, p_sys ) )
+        if( FrontendSetATSC( p_access ) )
         {
             msg_Err( p_access, "ATSC tuning error" );
             return VLC_EGENERIC;
@@ -256,14 +260,16 @@ int FrontendSet( vlc_object_t *p_access, dvb_sys_t *p_sys )
         return VLC_EGENERIC;
     }
     p_sys->p_frontend->i_last_status = 0;
+    p_sys->i_frontend_timeout = mdate() + FRONTEND_LOCK_TIMEOUT;
     return VLC_SUCCESS;
 }
 
 /*****************************************************************************
  * FrontendPoll : Poll for frontend events
  *****************************************************************************/
-void FrontendPoll( vlc_object_t *p_access, dvb_sys_t *p_sys )
+void FrontendPoll( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t * p_frontend = p_sys->p_frontend;
     struct dvb_frontend_event event;
     fe_status_t i_status, i_diff;
@@ -314,9 +320,10 @@ void FrontendPoll( vlc_object_t *p_access, dvb_sys_t *p_sys )
                 frontend_statistic_t stat;
 
                 msg_Dbg( p_access, "frontend has acquired lock" );
+                p_sys->i_frontend_timeout = 0;
 
                 /* Read some statistics */
-                if( !FrontendGetStatistic( p_sys, &stat ) )
+                if( !FrontendGetStatistic( p_access, &stat ) )
                 {
                     if( stat.i_ber >= 0 )
                         msg_Dbg( p_access, "- Bit error rate: %d", stat.i_ber );
@@ -329,21 +336,23 @@ void FrontendPoll( vlc_object_t *p_access, dvb_sys_t *p_sys )
             else
             {
                 msg_Dbg( p_access, "frontend has lost lock" );
+                p_sys->i_frontend_timeout = mdate() + FRONTEND_LOCK_TIMEOUT;
             }
 
             IF_UP( FE_REINIT )
             {
                 /* The frontend was reinited. */
                 msg_Warn( p_access, "reiniting frontend");
-                FrontendSet( p_access, p_sys );
+                FrontendSet( p_access );
             }
         }
 #undef IF_UP
     }
 }
 
-int FrontendGetStatistic( dvb_sys_t *p_sys, frontend_statistic_t *p_stat )
+int FrontendGetStatistic( access_t *p_access, frontend_statistic_t *p_stat )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t * p_frontend = p_sys->p_frontend;
 
     if( (p_frontend->i_last_status & FE_HAS_LOCK) == 0 )
@@ -360,8 +369,9 @@ int FrontendGetStatistic( dvb_sys_t *p_sys, frontend_statistic_t *p_stat )
     return VLC_SUCCESS;
 }
 
-void FrontendGetStatus( dvb_sys_t *p_sys, frontend_status_t *p_status )
+void FrontendGetStatus( access_t *p_access, frontend_status_t *p_status )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t * p_frontend = p_sys->p_frontend;
 
     p_status->b_has_signal = (p_frontend->i_last_status & FE_HAS_SIGNAL) != 0;
@@ -369,82 +379,94 @@ void FrontendGetStatus( dvb_sys_t *p_sys, frontend_status_t *p_status )
     p_status->b_has_lock = (p_frontend->i_last_status & FE_HAS_LOCK) != 0;
 }
 
-static int ScanParametersDvbS( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_parameter_t *p_scan )
+static int ScanParametersDvbS( access_t *p_access, scan_parameter_t *p_scan )
 {
-    const frontend_t *p_frontend = p_sys->p_frontend;
+    const frontend_t *p_frontend = p_access->p_sys->p_frontend;
 
+    memset( p_scan, 0, sizeof(*p_scan) );
     p_scan->type = SCAN_DVB_S;
 
     p_scan->frequency.i_min = p_frontend->info.frequency_min;
     p_scan->frequency.i_max = p_frontend->info.frequency_max;
     /* set satellite config file path */
-    char *psz_name = var_InheritString( p_access, "dvb-satellite" );
-    if( psz_name )
-    {
-        char *data_dir = config_GetDataDir();
-        if( !data_dir || -1 ==  asprintf( &p_scan->psz_scanlist_file,
-            "%s" DIR_SEP "dvb" DIR_SEP "dvb-s" DIR_SEP "%s", data_dir, psz_name ) )
-        {
-            p_scan->psz_scanlist_file = NULL;
-        }
-        p_scan->scanlist_format = FORMAT_DVBv3;
-        free( data_dir );
-        free( psz_name );
-    }
+    p_scan->sat_info.psz_name = var_InheritString( p_access, "dvb-satellite" );
 
     return VLC_SUCCESS;
 }
 
-static int ScanParametersDvbC( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_parameter_t *p_scan )
+static int ScanParametersDvbC( access_t *p_access, scan_parameter_t *p_scan )
 {
-    const frontend_t *p_frontend = p_sys->p_frontend;
+    const frontend_t *p_frontend = p_access->p_sys->p_frontend;
 
+    memset( p_scan, 0, sizeof(*p_scan) );
     p_scan->type = SCAN_DVB_C;
     p_scan->b_exhaustive = false;
 
     /* */
     p_scan->frequency.i_min = p_frontend->info.frequency_min;
     p_scan->frequency.i_max = p_frontend->info.frequency_max;
-    p_scan->frequency.i_step = p_frontend->info.frequency_stepsize;
+    p_scan->frequency.i_step = p_frontend->info.frequency_stepsize
+        ? p_frontend->info.frequency_stepsize : 166667;
+    p_scan->frequency.i_count = (p_scan->frequency.i_max-p_scan->frequency.i_min)/p_scan->frequency.i_step;
 
     /* if frontend can do auto, don't scan them */
-    p_scan->b_modulation_set = ( p_frontend->info.caps & FE_CAN_QAM_AUTO );
-    /* our scanning code flips modulation from 16..256 automaticly*/
+    if( p_frontend->info.caps & FE_CAN_QAM_AUTO )
+    {
+        p_scan->b_modulation_set = true;
+    } else {
+        p_scan->b_modulation_set = false;
+        /* our scanning code flips modulation from 16..256 automaticly*/
+        p_scan->i_modulation = 0;
+    }
 
     /* if user supplies symbolrate, don't scan those */
-    p_scan->i_symbolrate = var_GetInteger( p_access, "dvb-srate" );
+    if( var_GetInteger( p_access, "dvb-srate" ) )
+        p_scan->b_symbolrate_set = true;
+    else
+        p_scan->b_symbolrate_set = false;
 
+    /* */
+    p_scan->bandwidth.i_min  = 6;
+    p_scan->bandwidth.i_max  = 8;
+    p_scan->bandwidth.i_step = 1;
+    p_scan->bandwidth.i_count = 3;
     return VLC_SUCCESS;
 }
 
-static int ScanParametersDvbT( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_parameter_t *p_scan )
+static int ScanParametersDvbT( access_t *p_access, scan_parameter_t *p_scan )
 {
-    const frontend_t *p_frontend = p_sys->p_frontend;
+    const frontend_t *p_frontend = p_access->p_sys->p_frontend;
 
+    memset( p_scan, 0, sizeof(*p_scan) );
     p_scan->type = SCAN_DVB_T;
     p_scan->b_exhaustive = false;
-
-    p_scan->psz_scanlist_file = var_InheritString( p_access, "dvb-scanlist" );
-    p_scan->scanlist_format = FORMAT_DVBv5;
 
     /* */
     p_scan->frequency.i_min = p_frontend->info.frequency_min;
     p_scan->frequency.i_max = p_frontend->info.frequency_max;
-    p_scan->frequency.i_step = p_frontend->info.frequency_stepsize;
+    p_scan->frequency.i_step = p_frontend->info.frequency_stepsize
+        ? p_frontend->info.frequency_stepsize : 166667;
+    p_scan->frequency.i_count = (p_scan->frequency.i_max-p_scan->frequency.i_min)/p_scan->frequency.i_step;
 
+    /* */
+    p_scan->bandwidth.i_min  = 6;
+    p_scan->bandwidth.i_max  = 8;
+    p_scan->bandwidth.i_step = 1;
+    p_scan->bandwidth.i_count = 3;
     return VLC_SUCCESS;
 }
 
-int FrontendFillScanParameter( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_parameter_t *p_scan )
+int  FrontendGetScanParameter( access_t *p_access, scan_parameter_t *p_scan )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     const frontend_t *p_frontend = p_sys->p_frontend;
 
     if( p_frontend->info.type == FE_OFDM )              /* DVB-T */
-        return ScanParametersDvbT( p_access, p_sys, p_scan );
+        return ScanParametersDvbT( p_access, p_scan );
     else if( p_frontend->info.type == FE_QAM )          /* DVB-C */
-        return ScanParametersDvbC( p_access, p_sys, p_scan );
+        return ScanParametersDvbC( p_access, p_scan );
     else if( p_frontend->info.type == FE_QPSK )
-        return ScanParametersDvbS( p_access, p_sys, p_scan );  /* DVB-S */
+        return ScanParametersDvbS( p_access, p_scan );  /* DVB-S */
 
     msg_Err( p_access, "frontend scanning not supported" );
     return VLC_EGENERIC;
@@ -453,8 +475,9 @@ int FrontendFillScanParameter( vlc_object_t *p_access, dvb_sys_t *p_sys, scan_pa
 /*****************************************************************************
  * FrontendInfo : Return information about given frontend
  *****************************************************************************/
-static int FrontendInfo( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int FrontendInfo( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t *p_frontend = p_sys->p_frontend;
 
     /* Determine type of frontend */
@@ -484,10 +507,10 @@ static int FrontendInfo( vlc_object_t *p_access, dvb_sys_t *p_sys )
             break;
 #if 0 /* DVB_API_VERSION == 3 */
         case FE_MEMORY:
-            msg_Dbg( p_access, "  type = MEMORY" );
+            msg_Dbg(p_access, "  type = MEMORY" );
             break;
         case FE_NET:
-            msg_Dbg( p_access, "  type = NETWORK" );
+            msg_Dbg(p_access, "  type = NETWORK" );
             break;
 #endif
         default:
@@ -586,7 +609,7 @@ static int FrontendInfo( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * Decoding the DVB parameters (common)
  *****************************************************************************/
-static fe_spectral_inversion_t DecodeInversion( vlc_object_t *p_access )
+static fe_spectral_inversion_t DecodeInversion( access_t *p_access )
 {
     int i_val;
     fe_spectral_inversion_t fe_inversion = 0;
@@ -610,7 +633,7 @@ static fe_spectral_inversion_t DecodeInversion( vlc_object_t *p_access )
 /*****************************************************************************
  * FrontendSetQPSK : controls the FE device
  *****************************************************************************/
-static fe_sec_voltage_t DecodeVoltage( vlc_object_t *p_access )
+static fe_sec_voltage_t DecodeVoltage( access_t *p_access )
 {
     switch( var_GetInteger( p_access, "dvb-voltage" ) )
     {
@@ -621,7 +644,7 @@ static fe_sec_voltage_t DecodeVoltage( vlc_object_t *p_access )
     }
 }
 
-static fe_sec_tone_mode_t DecodeTone( vlc_object_t *p_access )
+static fe_sec_tone_mode_t DecodeTone( access_t *p_access )
 {
     switch( var_GetInteger( p_access, "dvb-tone" ) )
     {
@@ -637,8 +660,9 @@ struct diseqc_cmd_t
     uint32_t wait;
 };
 
-static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int DoDiseqc( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     int i_val;
     bool b_val;
     int i_frequency, i_lnb_slof;
@@ -739,8 +763,9 @@ static int DoDiseqc( vlc_object_t *p_access, dvb_sys_t *p_sys )
     return 0;
 }
 
-static int FrontendSetQPSK( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int FrontendSetQPSK( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     struct dvb_frontend_parameters fep;
     int i_val;
     int i_frequency, i_lnb_slof = 0, i_lnb_lof1, i_lnb_lof2 = 0;
@@ -817,7 +842,7 @@ static int FrontendSetQPSK( vlc_object_t *p_access, dvb_sys_t *p_sys )
 
     fep.u.qpsk.fec_inner = FEC_NONE;
 
-    if( DoDiseqc( p_access, p_sys ) < 0 )
+    if( DoDiseqc( p_access ) < 0 )
     {
         return VLC_EGENERIC;
     }
@@ -844,8 +869,9 @@ static int FrontendSetQPSK( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * FrontendSetQAM : controls the FE device
  *****************************************************************************/
-static int FrontendSetQAM( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int FrontendSetQAM( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     frontend_t *p_frontend = p_sys->p_frontend;
     struct dvb_frontend_parameters fep;
     unsigned int i_val;
@@ -891,7 +917,7 @@ static int FrontendSetQAM( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * FrontendSetOFDM : controls the FE device
  *****************************************************************************/
-static fe_bandwidth_t DecodeBandwidth( vlc_object_t *p_access )
+static fe_bandwidth_t DecodeBandwidth( access_t *p_access )
 {
     fe_bandwidth_t      fe_bandwidth = 0;
     int i_bandwidth = var_GetInteger( p_access, "dvb-bandwidth" );
@@ -912,7 +938,7 @@ static fe_bandwidth_t DecodeBandwidth( vlc_object_t *p_access )
     return fe_bandwidth;
 }
 
-static fe_transmit_mode_t DecodeTransmission( vlc_object_t *p_access )
+static fe_transmit_mode_t DecodeTransmission( access_t *p_access )
 {
     fe_transmit_mode_t  fe_transmission = 0;
     int i_transmission = var_GetInteger( p_access, "dvb-transmission" );
@@ -932,7 +958,7 @@ static fe_transmit_mode_t DecodeTransmission( vlc_object_t *p_access )
     return fe_transmission;
 }
 
-static fe_hierarchy_t DecodeHierarchy( vlc_object_t *p_access )
+static fe_hierarchy_t DecodeHierarchy( access_t *p_access )
 {
     fe_hierarchy_t      fe_hierarchy = 0;
     int i_hierarchy = var_GetInteger( p_access, "dvb-hierarchy" );
@@ -954,8 +980,9 @@ static fe_hierarchy_t DecodeHierarchy( vlc_object_t *p_access )
     return fe_hierarchy;
 }
 
-static int FrontendSetOFDM( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int FrontendSetOFDM( access_t * p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     struct dvb_frontend_parameters fep;
 
     /* Prepare the fep structure */
@@ -994,8 +1021,9 @@ static int FrontendSetOFDM( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * FrontendSetATSC : controls the FE device
  *****************************************************************************/
-static int FrontendSetATSC( vlc_object_t *p_access, dvb_sys_t *p_sys )
+static int FrontendSetATSC( access_t *p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     struct dvb_frontend_parameters fep;
 
     /* Prepare the fep structure */
@@ -1030,7 +1058,7 @@ static int FrontendSetATSC( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * DMXSetFilter : controls the demux to add a filter
  *****************************************************************************/
-int DMXSetFilter( vlc_object_t *p_access, int i_pid, int * pi_fd, int i_type )
+int DMXSetFilter( access_t * p_access, int i_pid, int * pi_fd, int i_type )
 {
     struct dmx_pes_filter_params s_filter_params;
     unsigned int i_adapter, i_device;
@@ -1166,7 +1194,7 @@ int DMXSetFilter( vlc_object_t *p_access, int i_pid, int * pi_fd, int i_type )
 /*****************************************************************************
  * DMXUnsetFilter : removes a filter
  *****************************************************************************/
-int DMXUnsetFilter( vlc_object_t *p_access, int i_fd )
+int DMXUnsetFilter( access_t * p_access, int i_fd )
 {
     if( ioctl( i_fd, DMX_STOP ) < 0 )
     {
@@ -1176,7 +1204,7 @@ int DMXUnsetFilter( vlc_object_t *p_access, int i_fd )
     }
 
     msg_Dbg( p_access, "DMXUnsetFilter: closing demux %d", i_fd );
-    vlc_close( i_fd );
+    close( i_fd );
     return VLC_SUCCESS;
 }
 
@@ -1188,8 +1216,9 @@ int DMXUnsetFilter( vlc_object_t *p_access, int i_fd )
 /*****************************************************************************
  * DVROpen :
  *****************************************************************************/
-int DVROpen( vlc_object_t *p_access, dvb_sys_t *p_sys )
+int DVROpen( access_t * p_access )
 {
+    access_sys_t *p_sys = p_access->p_sys;
     unsigned int i_adapter, i_device;
     char dvr[128];
 
@@ -1223,8 +1252,9 @@ int DVROpen( vlc_object_t *p_access, dvb_sys_t *p_sys )
 /*****************************************************************************
  * DVRClose :
  *****************************************************************************/
-void DVRClose( vlc_object_t *p_access, dvb_sys_t *p_sys )
+void DVRClose( access_t * p_access )
 {
-    VLC_UNUSED(p_access);
-    vlc_close( p_sys->i_handle );
+    access_sys_t *p_sys = p_access->p_sys;
+
+    close( p_sys->i_handle );
 }

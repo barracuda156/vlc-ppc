@@ -29,7 +29,7 @@
 #include <vlc_dialog.h>
 
 #include <unistd.h>
-#if defined( _POSIX_VERSION ) && !defined(__ANDROID__)
+#ifdef _POSIX_VERSION
 # include <glob.h>
 #endif
 
@@ -38,11 +38,7 @@
 # define FLUIDSYNTH_NOT_A_DLL
 #endif
 
-#ifndef HAVE_FLUIDLITE_H
 #include <fluidsynth.h>
-#else
-#include <fluidlite.h>
-#endif
 
 #define SOUNDFONT_TEXT N_("Sound fonts")
 #define SOUNDFONT_LONGTEXT N_( \
@@ -68,7 +64,7 @@ static void Close (vlc_object_t *);
 
 vlc_module_begin ()
     set_description (N_("FluidSynth MIDI synthesizer"))
-    set_capability ("audio decoder", 100)
+    set_capability ("decoder", 100)
     set_shortname (N_("FluidSynth"))
     set_category (CAT_INPUT)
     set_subcategory (SUBCAT_INPUT_ACODEC)
@@ -97,8 +93,8 @@ struct decoder_sys_t
 };
 
 
-static int  DecodeBlock (decoder_t *p_dec, block_t *p_block);
-static void Flush (decoder_t *);
+static block_t *DecodeBlock (decoder_t *p_dec, block_t **pp_block);
+
 
 static int Open (vlc_object_t *p_this)
 {
@@ -124,7 +120,7 @@ static int Open (vlc_object_t *p_this)
             msg_Err (p_this, "cannot load sound fonts file %s", font_path);
         free (font_path);
     }
-#if defined( _POSIX_VERSION ) && !defined(__ANDROID__)
+#ifdef _POSIX_VERSION
     else
     {
         glob_t gl;
@@ -147,7 +143,7 @@ static int Open (vlc_object_t *p_this)
     if (p_sys->soundfont == -1)
     {
         msg_Err (p_this, "sound font file required for synthesis");
-        vlc_dialog_display_error (p_this, _("MIDI synthesis not set up"),
+        dialog_Fatal (p_this, _("MIDI synthesis not set up"),
             _("A sound font file (.SF2) is required for MIDI synthesis.\n"
               "Please install a sound font and configure it "
               "from the VLC preferences "
@@ -167,19 +163,21 @@ static int Open (vlc_object_t *p_this)
     fluid_synth_set_reverb_on (p_sys->synth,
                                var_InheritBool (p_this, "synth-reverb"));
 
+    p_dec->fmt_out.i_cat = AUDIO_ES;
     p_dec->fmt_out.audio.i_rate =
         var_InheritInteger (p_this, "synth-sample-rate");;
     fluid_synth_set_sample_rate (p_sys->synth, p_dec->fmt_out.audio.i_rate);
     p_dec->fmt_out.audio.i_channels = 2;
-    p_dec->fmt_out.audio.i_physical_channels = AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
+    p_dec->fmt_out.audio.i_original_channels =
+    p_dec->fmt_out.audio.i_physical_channels =
+        AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT;
     p_dec->fmt_out.i_codec = VLC_CODEC_FL32;
     p_dec->fmt_out.audio.i_bitspersample = 32;
     date_Init (&p_sys->end_date, p_dec->fmt_out.audio.i_rate, 1);
     date_Set (&p_sys->end_date, 0);
 
     p_dec->p_sys = p_sys;
-    p_dec->pf_decode = DecodeBlock;
-    p_dec->pf_flush  = Flush;
+    p_dec->pf_decode_audio = DecodeBlock;
     return VLC_SUCCESS;
 }
 
@@ -194,34 +192,28 @@ static void Close (vlc_object_t *p_this)
     free (p_sys);
 }
 
-static void Flush (decoder_t *p_dec)
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
 
-    date_Set (&p_sys->end_date, VLC_TS_INVALID);
-    //fluid_synth_system_reset (p_sys->synth);
-    fluid_synth_program_reset (p_sys->synth);
-    for (unsigned channel = 0; channel < 16; channel++)
-        for (unsigned note = 0; note < 128; note++)
-            fluid_synth_noteoff (p_sys->synth, channel, note);
-}
-
-static int DecodeBlock (decoder_t *p_dec, block_t *p_block)
+static block_t *DecodeBlock (decoder_t *p_dec, block_t **pp_block)
 {
+    block_t *p_block;
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t *p_out = NULL;
 
-    if (p_block == NULL) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if (pp_block == NULL)
+        return NULL;
+    p_block = *pp_block;
+    if (p_block == NULL)
+        return NULL;
+    *pp_block = NULL;
 
     if (p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED))
     {
-        Flush (p_dec);
-        if (p_block->i_flags & BLOCK_FLAG_CORRUPTED)
-        {
-            block_Release(p_block);
-            return VLCDEC_SUCCESS;
-        }
+        date_Set (&p_sys->end_date, 0);
+        //fluid_synth_system_reset (p_sys->synth);
+        fluid_synth_program_reset (p_sys->synth);
+        for (unsigned channel = 0; channel < 16; channel++)
+            for (unsigned note = 0; note < 128; note++)
+                fluid_synth_noteoff (p_sys->synth, channel, note);
     }
 
     if (p_block->i_pts > VLC_TS_INVALID && !date_Get (&p_sys->end_date))
@@ -289,8 +281,6 @@ static int DecodeBlock (decoder_t *p_dec, block_t *p_block)
     if (samples == 0)
         goto drop;
 
-    if (decoder_UpdateAudioFormat (p_dec))
-        goto drop;
     p_out = decoder_NewAudioBuffer (p_dec, samples);
     if (p_out == NULL)
         goto drop;
@@ -302,7 +292,5 @@ static int DecodeBlock (decoder_t *p_dec, block_t *p_block)
                              p_out->p_buffer, 1, 2);
 drop:
     block_Release (p_block);
-    if (p_out != NULL)
-        decoder_QueueAudio (p_dec, p_out);
-    return VLCDEC_SUCCESS;
+    return p_out;
 }

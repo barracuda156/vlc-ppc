@@ -29,8 +29,8 @@
 # include "config.h"
 #endif
 
+#include <vlc/libvlc_structures.h>
 #include <vlc/libvlc.h>
-#include <vlc/libvlc_dialog.h>
 #include <vlc/libvlc_media.h>
 #include <vlc/libvlc_events.h>
 
@@ -53,14 +53,23 @@ VLC_API void libvlc_InternalPlay( libvlc_int_t * );
 VLC_API void libvlc_InternalWait( libvlc_int_t * );
 VLC_API void libvlc_SetExitHandler( libvlc_int_t *, void (*) (void *), void * );
 
+typedef void (*libvlc_vlm_release_func_t)( libvlc_instance_t * ) ;
+
 /***************************************************************************
  * Opaque structures for libvlc API
  ***************************************************************************/
 
+typedef struct libvlc_vlm_t
+{
+    vlm_t                  *p_vlm;
+    libvlc_event_manager_t *p_event_manager;
+    libvlc_vlm_release_func_t pf_release;
+} libvlc_vlm_t;
+
 struct libvlc_instance_t
 {
     libvlc_int_t *p_libvlc_int;
-    struct libvlc_vlm_t *vlm;
+    libvlc_vlm_t  libvlc_vlm;
     unsigned      ref_count;
     vlc_mutex_t   instance_lock;
     struct libvlc_callback_entry_list_t *p_callback_list;
@@ -69,19 +78,8 @@ struct libvlc_instance_t
         void (*cb) (void *, int, const libvlc_log_t *, const char *, va_list);
         void *data;
     } log;
-    struct
-    {
-        libvlc_dialog_cbs cbs;
-        void *data;
-    } dialog;
 };
 
-struct libvlc_event_manager_t
-{
-    void * p_obj;
-    vlc_array_t listeners;
-    vlc_mutex_t lock;
-};
 
 /***************************************************************************
  * Other internal functions
@@ -92,12 +90,24 @@ void libvlc_threads_init (void);
 void libvlc_threads_deinit (void);
 
 /* Events */
-void libvlc_event_manager_init(libvlc_event_manager_t *, void *);
-void libvlc_event_manager_destroy(libvlc_event_manager_t *);
+libvlc_event_manager_t * libvlc_event_manager_new(
+        void * p_obj, libvlc_instance_t * p_libvlc_inst );
+
+void libvlc_event_manager_release(
+        libvlc_event_manager_t * p_em );
+
+void libvlc_event_manager_register_event_type(
+        libvlc_event_manager_t * p_em,
+        libvlc_event_type_t event_type );
 
 void libvlc_event_send(
         libvlc_event_manager_t * p_em,
         libvlc_event_t * p_event );
+
+void libvlc_event_attach_async( libvlc_event_manager_t * p_event_manager,
+                               libvlc_event_type_t event_type,
+                               libvlc_callback_t pf_callback,
+                               void *p_user_data );
 
 static inline libvlc_time_t from_mtime(mtime_t time)
 {

@@ -45,9 +45,6 @@
 #else
 # undef HAVE_VMSPLICE
 #endif
-#include <vlc_interrupt.h>
-
-#include <signal.h>
 
 static int  OpenGzip (vlc_object_t *);
 static int  OpenBzip2 (vlc_object_t *);
@@ -65,7 +62,7 @@ vlc_module_begin ()
     add_submodule ()
     set_description (N_("Burrows-Wheeler decompression"))
     set_callbacks (OpenBzip2, Close)
-    /* TODO: access shortnames for vlc_stream_NewURL() */
+    /* TODO: access shortnames for stream_UrlNew() */
 
     add_submodule ()
     set_description (N_("gzip decompression"))
@@ -85,6 +82,9 @@ struct stream_sys_t
     /* Caller data */
     vlc_thread_t thread;
     pid_t        pid;
+
+    uint64_t     offset;
+    block_t      *peeked;
 
     int          read_fd;
     bool         can_pace;
@@ -111,11 +111,6 @@ static void *Thread (void *data)
 #endif
     int fd = p_sys->write_fd;
     bool error = false;
-    sigset_t set;
-
-    sigemptyset(&set);
-    sigaddset(&set, SIGPIPE);
-    pthread_sigmask(SIG_BLOCK, &set, NULL);
 
     do
     {
@@ -137,7 +132,7 @@ static void *Thread (void *data)
         vlc_mutex_lock (&p_sys->lock);
         while (p_sys->paused) /* practically always false, but... */
             vlc_cond_wait (&p_sys->wait, &p_sys->lock);
-        len = vlc_stream_Read (stream->p_source, buf, bufsize);
+        len = stream_Read (stream->p_source, buf, bufsize);
         vlc_mutex_unlock (&p_sys->lock);
 
         vlc_restorecancel (canc);
@@ -150,10 +145,7 @@ static void *Thread (void *data)
                 j = write (fd, buf + i, len - i);
             else
             {
-                struct iovec iov = {
-                    .iov_base = buf + i,
-                    .iov_len = (len - i) & ~page_mask };
-
+                struct iovec iov = { buf + i, (len - i) & ~page_mask, };
                 j = vmsplice (fd, &iov, 1, SPLICE_F_GIFT);
             }
             if (j == -1 && errno == ENOSYS) /* vmsplice() not supported */
@@ -169,22 +161,19 @@ static void *Thread (void *data)
                 break;
             }
         }
-        vlc_cleanup_pop ();
-#ifdef HAVE_VMSPLICE
-        munmap (buf, bufsize);
-#else
-        free (buf);
-#endif
+        vlc_cleanup_run (); /* free (buf) */
     }
     while (!error);
 
     msg_Dbg (stream, "compressed stream at EOF");
     /* Let child process know about EOF */
     p_sys->write_fd = -1;
-    vlc_close (fd);
+    close (fd);
     return NULL;
 }
 
+
+static int Peek (stream_t *, const uint8_t **, unsigned int);
 
 #define MIN_BLOCK (1 << 10)
 #define MAX_BLOCK (1 << 20)
@@ -192,11 +181,88 @@ static void *Thread (void *data)
  * Reads decompressed from the decompression program
  * @return -1 for EAGAIN, 0 for EOF, byte count otherwise.
  */
-static ssize_t Read (stream_t *stream, void *buf, size_t buflen)
+static int Read (stream_t *stream, void *buf, unsigned int buflen)
 {
     stream_sys_t *sys = stream->p_sys;
-    ssize_t val = vlc_read_i11e (sys->read_fd, buf, buflen);
-    return (val >= 0) ? val : 0;
+    unsigned ret = 0;
+
+    if (buf == NULL) /* caller skips data, get big enough peek buffer */
+        buflen = Peek (stream, &(const uint8_t *){ NULL }, buflen);
+
+    block_t *peeked = sys->peeked;
+    if (peeked != NULL)
+    {   /* dequeue peeked data */
+        size_t length = peeked->i_buffer;
+        if (length > buflen)
+            length = buflen;
+
+        if (buf != NULL)
+        {
+            memcpy (buf, peeked->p_buffer, length);
+            buf = ((char *)buf) + length;
+        }
+        buflen -= length;
+        peeked->p_buffer += length;
+        peeked->i_buffer -= length;
+
+        if (peeked->i_buffer == 0)
+        {
+            block_Release (peeked);
+            sys->peeked = NULL;
+        }
+
+        sys->offset += length;
+        ret += length;
+    }
+    assert ((buf != NULL) || (buflen == 0));
+
+    ssize_t val = net_Read (stream, sys->read_fd, NULL, buf, buflen, false);
+    if (val > 0)
+    {
+        sys->offset += val;
+        ret += val;
+    }
+    return ret;
+}
+
+/**
+ *
+ */
+static int Peek (stream_t *stream, const uint8_t **pbuf, unsigned int len)
+{
+    stream_sys_t *sys = stream->p_sys;
+    block_t *peeked = sys->peeked;
+    size_t curlen;
+
+    if (peeked != NULL)
+    {
+        curlen = peeked->i_buffer;
+        if (curlen < len)
+           peeked = block_Realloc (peeked, 0, len);
+    }
+    else
+    {
+        curlen = 0;
+        peeked = block_Alloc (len);
+    }
+
+    sys->peeked = peeked;
+    if (unlikely(peeked == NULL))
+        return 0;
+
+    while (curlen < len)
+    {
+        ssize_t val;
+
+        val = net_Read (stream, sys->read_fd, NULL,
+                        peeked->p_buffer + curlen, len - curlen, false);
+        if (val <= 0)
+            break;
+        curlen += val;
+        peeked->i_buffer = curlen;
+    }
+    *pbuf = peeked->p_buffer;
+    return curlen;
 }
 
 /**
@@ -218,6 +284,9 @@ static int Control (stream_t *stream, int query, va_list args)
         case STREAM_CAN_CONTROL_PACE:
             *(va_arg (args, bool *)) = p_sys->can_pace;
             break;
+        case STREAM_GET_POSITION:
+            *(va_arg (args, uint64_t *)) = p_sys->offset;
+            break;
         case STREAM_GET_SIZE:
             *(va_arg (args, uint64_t *)) = 0;
             break;
@@ -229,8 +298,7 @@ static int Control (stream_t *stream, int query, va_list args)
             bool paused = va_arg (args, unsigned);
 
             vlc_mutex_lock (&p_sys->lock);
-            vlc_stream_Control(stream->p_source, STREAM_SET_PAUSE_STATE,
-                               paused);
+            stream_Control (stream->p_source, STREAM_SET_PAUSE_STATE, paused);
             p_sys->paused = paused;
             vlc_cond_signal (&p_sys->wait);
             vlc_mutex_unlock (&p_sys->lock);
@@ -253,15 +321,20 @@ static int Open (stream_t *stream, const char *path)
     if (p_sys == NULL)
         return VLC_ENOMEM;
 
+    stream->pf_read = Read;
+    stream->pf_peek = Peek;
+    stream->pf_control = Control;
+
     vlc_cond_init (&p_sys->wait);
     vlc_mutex_init (&p_sys->lock);
     p_sys->paused = false;
     p_sys->pid = -1;
-    vlc_stream_Control(stream->p_source, STREAM_CAN_PAUSE, &p_sys->can_pause);
-    vlc_stream_Control(stream->p_source, STREAM_CAN_CONTROL_PACE,
-                       &p_sys->can_pace);
-    vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
-                       &p_sys->pts_delay);
+    p_sys->offset = 0;
+    p_sys->peeked = NULL;
+    stream_Control (stream->p_source, STREAM_CAN_PAUSE, &p_sys->can_pause);
+    stream_Control (stream->p_source, STREAM_CAN_CONTROL_PACE,
+                    &p_sys->can_pace);
+    stream_Control (stream->p_source, STREAM_GET_PTS_DELAY, &p_sys->pts_delay);
 
     /* I am not a big fan of the pyramid style, but I cannot think of anything
      * better here. There are too many failure cases. */
@@ -310,7 +383,7 @@ static int Open (stream_t *stream, const char *path)
                 case 0:
                     dup2 (comp[0], 0);
                     dup2 (uncomp[1], 1);
-                    execlp (path, path, (const char *)NULL);
+                    execlp (path, path, (char *)NULL);
                     exit (1); /* if we get, execlp() failed! */
                 default:
                     if (vlc_clone (&p_sys->thread, Thread, stream,
@@ -318,29 +391,24 @@ static int Open (stream_t *stream, const char *path)
                         ret = VLC_SUCCESS;
             }
 #endif /* _POSIX_SPAWN < 0 */
-            vlc_close (uncomp[1]);
+            close (uncomp[1]);
             if (ret != VLC_SUCCESS)
-                vlc_close (uncomp[0]);
+                close (uncomp[0]);
         }
-        vlc_close (comp[0]);
+        close (comp[0]);
         if (ret != VLC_SUCCESS)
-            vlc_close (comp[1]);
+            close (comp[1]);
     }
 
-    if (ret != VLC_SUCCESS)
-    {
-        if (p_sys->pid != -1)
-            while (waitpid (p_sys->pid, &(int){ 0 }, 0) == -1);
-        vlc_mutex_destroy (&p_sys->lock);
-        vlc_cond_destroy (&p_sys->wait);
-        free (p_sys);
-        return ret;
-    }
+    if (ret == VLC_SUCCESS)
+        return VLC_SUCCESS;
 
-    stream->pf_read = Read;
-    stream->pf_seek = NULL;
-    stream->pf_control = Control;
-    return VLC_SUCCESS;
+    if (p_sys->pid != -1)
+        while (waitpid (p_sys->pid, &(int){ 0 }, 0) == -1);
+    vlc_mutex_destroy (&p_sys->lock);
+    vlc_cond_destroy (&p_sys->wait);
+    free (p_sys);
+    return ret;
 }
 
 
@@ -354,16 +422,18 @@ static void Close (vlc_object_t *obj)
     int status;
 
     vlc_cancel (p_sys->thread);
-    vlc_close (p_sys->read_fd);
+    close (p_sys->read_fd);
     vlc_join (p_sys->thread, NULL);
     if (p_sys->write_fd != -1)
         /* Killed before EOF? */
-        vlc_close (p_sys->write_fd);
+        close (p_sys->write_fd);
 
     msg_Dbg (obj, "waiting for PID %u", (unsigned)p_sys->pid);
     while (waitpid (p_sys->pid, &status, 0) == -1);
     msg_Dbg (obj, "exit status %d", status);
 
+    if (p_sys->peeked)
+        block_Release (p_sys->peeked);
     vlc_mutex_destroy (&p_sys->lock);
     vlc_cond_destroy (&p_sys->wait);
     free (p_sys);
@@ -378,7 +448,7 @@ static int OpenGzip (vlc_object_t *obj)
     stream_t      *stream = (stream_t *)obj;
     const uint8_t *peek;
 
-    if (vlc_stream_Peek (stream->p_source, &peek, 3) < 3)
+    if (stream_Peek (stream->p_source, &peek, 3) < 3)
         return VLC_EGENERIC;
 
     if (memcmp (peek, "\x1f\x8b\x08", 3))
@@ -398,7 +468,7 @@ static int OpenBzip2 (vlc_object_t *obj)
     const uint8_t *peek;
 
     /* (Try to) parse the bzip2 header */
-    if (vlc_stream_Peek (stream->p_source, &peek, 10) < 10)
+    if (stream_Peek (stream->p_source, &peek, 10) < 10)
         return VLC_EGENERIC;
 
     if (memcmp (peek, "BZh", 3) || (peek[3] < '1') || (peek[3] > '9')
@@ -418,7 +488,7 @@ static int OpenXZ (vlc_object_t *obj)
     const uint8_t *peek;
 
     /* (Try to) parse the xz stream header */
-    if (vlc_stream_Peek (stream->p_source, &peek, 8) < 8)
+    if (stream_Peek (stream->p_source, &peek, 8) < 8)
         return VLC_EGENERIC;
 
     if (memcmp (peek, "\xfd\x37\x7a\x58\x5a", 6))

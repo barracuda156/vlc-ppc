@@ -38,6 +38,20 @@
 #include "../codec/avcodec/avcommon.h"
 
 #include "avparser.h"
+
+#if !LIBAVCODEC_VERSION_CHECK( 55, 52, 0, 63, 100 )
+#include <libavutil/mem.h>
+static inline void avcodec_free_context( AVCodecContext **ctx )
+{
+    if( !*ctx )
+        return;
+
+    av_free( (*ctx)->extradata );
+    av_free( *ctx );
+    *ctx = NULL;
+}
+#endif
+
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
@@ -58,22 +72,6 @@ struct decoder_sys_t
 };
 
 static block_t * Packetize( decoder_t *, block_t ** );
-static block_t * PacketizeClosed( decoder_t *, block_t ** );
-
-/*****************************************************************************
- * FlushPacketizer: reopen as there's no clean way to flush avparser
- *****************************************************************************/
-static void FlushPacketizer( decoder_t *p_dec )
-{
-    ClosePacketizer( VLC_OBJECT( p_dec ) );
-    p_dec->p_sys = NULL;
-    int res = OpenPacketizer( VLC_OBJECT( p_dec ) );
-    if ( res != VLC_SUCCESS )
-    {
-        msg_Err( p_dec, "failed to flush with error %d", res );
-        p_dec->pf_packetize = PacketizeClosed;
-    }
-}
 
 /*****************************************************************************
  * OpenPacketizer: probe the packetizer and return score
@@ -92,8 +90,7 @@ int OpenPacketizer( vlc_object_t *p_this )
 
     unsigned i_avcodec_id;
 
-    if( !GetFfmpegCodec( p_dec->fmt_in.i_cat, p_dec->fmt_in.i_codec,
-                         &i_avcodec_id, NULL ) )
+    if( !GetFfmpegCodec( p_dec->fmt_in.i_codec, NULL, &i_avcodec_id, NULL ) )
         return VLC_EGENERIC;
 
     /* init avcodec */
@@ -127,7 +124,6 @@ int OpenPacketizer( vlc_object_t *p_this )
         return VLC_ENOMEM;
     }
     p_dec->pf_packetize = Packetize;
-    p_dec->pf_flush = FlushPacketizer;
     p_sys->p_parser_ctx = p_ctx;
     p_sys->p_codec_ctx = p_codec_ctx;
     p_sys->i_offset = 0;
@@ -142,12 +138,10 @@ int OpenPacketizer( vlc_object_t *p_this )
 void ClosePacketizer( vlc_object_t *p_this )
 {
     decoder_t     *p_dec = (decoder_t*)p_this;
-    if (likely( p_dec->p_sys != NULL ))
-    {
-        avcodec_free_context( &p_dec->p_sys->p_codec_ctx );
-        av_parser_close( p_dec->p_sys->p_parser_ctx );
-        free( p_dec->p_sys );
-    }
+    avcodec_free_context( &p_dec->p_sys->p_codec_ctx );
+    av_parser_close( p_dec->p_sys->p_parser_ctx );
+    es_format_Clean( &p_dec->fmt_out );
+    free( p_dec->p_sys );
 }
 
 /*****************************************************************************
@@ -159,7 +153,7 @@ static block_t *Packetize ( decoder_t *p_dec, block_t **pp_block )
 
     if( pp_block == NULL || *pp_block == NULL )
         return NULL;
-    if( (*pp_block)->i_flags&(BLOCK_FLAG_CORRUPTED) )
+    if( (*pp_block)->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
     {
         block_Release( *pp_block );
         return NULL;
@@ -199,17 +193,6 @@ out:
     p_sys->i_offset = 0;
     block_Release( *pp_block );
     *pp_block = NULL;
-    return NULL;
-}
-
-/*****************************************************************************
- * PacketizeClosed: packetizer called after a flush failed
- *****************************************************************************/
-static block_t *PacketizeClosed ( decoder_t *p_dec, block_t **pp_block )
-{
-    (void) p_dec;
-    if( pp_block != NULL && *pp_block != NULL )
-        block_Release( *pp_block );
     return NULL;
 }
 

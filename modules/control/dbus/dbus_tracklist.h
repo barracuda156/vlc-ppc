@@ -24,8 +24,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_DBUS_DBUS_TRACKLIST_H_
-#define VLC_DBUS_DBUS_TRACKLIST_H_
+#ifndef _VLC_DBUS_TRACKLIST_H
+#define _VLC_DBUS_TRACKLIST_H
 
 #include <vlc_common.h>
 #include <vlc_interface.h>
@@ -44,4 +44,4 @@ DBusHandlerResult handle_tracklist ( DBusConnection *p_conn,
 
 int TrackListPropertiesChangedEmit( intf_thread_t *, vlc_dictionary_t * );
 
-#endif /* include-guard */
+#endif //dbus_tracklist.h

@@ -27,6 +27,9 @@
 
 #include "skin_common.hpp"
 #include <string>
+#if defined( HAVE_ZLIB_H )
+#   include "unzip.h"
+#endif
 
 class ThemeLoader: public SkinObject
 {
@@ -35,27 +38,49 @@ public:
     virtual ~ThemeLoader() { }
 
     /// The expected fileName must be an UTF-8 string
-    bool load( const std::string &fileName );
+    bool load( const string &fileName );
 
 private:
+#if defined( HAVE_ZLIB_H )
     /// Extract files from an archive (handles tar.gz and zip)
     /**
      * Expects a string from the current locale.
      */
-    bool extract( const std::string &fileName );
+    bool extract( const string &fileName );
 
-    bool unarchive( const std::string &fileName, const std::string &tempPath );
+    /// Extract files from a tar.gz archive
+    /**
+     * Expects strings from the current locale.
+     */
+    bool extractTarGz( const string &tarFile, const string &rootDir );
 
-    void deleteTempFiles( const std::string &path );
+    /// Extract files from a .zip archive
+    /**
+     * Expects strings from the current locale.
+     */
+    bool extractZip( const string &zipFile, const string &rootDir );
+
+    /// Extract the current file from a .zip archive
+    /**
+     * Expects a string from the current locale.
+     */
+    bool extractFileInZip( unzFile file, const string &rootDir, bool isWsz );
+
+    /// Clean up the temporary files created by the extraction
+    /**
+     * Expects a string from the current locale.
+     */
+    void deleteTempFiles( const string &path );
 
     /// Get a unique temporary directory
-    std::string getTmpDir( );
+    string getTmpDir( );
+#endif
 
     /// Parse the XML file given as a parameter and build the skin
     /**
      * Expects UTF8 strings
      */
-    bool parse( const std::string &path, const std::string &xmlFile );
+    bool parse( const string &path, const string &xmlFile );
 
     /// Recursively look for the XML file from rootDir.
     /**
@@ -65,11 +90,14 @@ private:
      * rootDir and rFilename must both be strings in the current locale,
      * whereas themeFilePath will be in UTF8.
      */
-    bool findFile( const std::string &rootDir, const std::string &rFileName,
-                   std::string &themeFilePath );
+    bool findFile( const string &rootDir, const string &rFileName,
+                   string &themeFilePath );
 
     /// Get the base path of a file
-    std::string getFilePath( const std::string &rFullPath );
+    string getFilePath( const string &rFullPath );
+
+    /// Replace '/' separators by the actual separator of the OS
+    string fixDirSeparators( const string &rPath );
 };
 
 #endif

@@ -34,13 +34,13 @@ static int Open(vlc_object_t *);
 
 vlc_module_begin()
     set_description(N_("XWD image decoder"))
-    set_capability("video decoder", 50)
+    set_capability("decoder", 50)
     set_category(CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_VCODEC)
     set_callbacks(Open, NULL)
 vlc_module_end()
 
-static int Decode(decoder_t *, block_t *);
+static picture_t *Decode(decoder_t *, block_t **);
 
 static int Open(vlc_object_t *obj)
 {
@@ -49,18 +49,24 @@ static int Open(vlc_object_t *obj)
     if (dec->fmt_in.i_codec != VLC_CODEC_XWD)
         return VLC_EGENERIC;
 
-    dec->pf_decode = Decode;
+    dec->pf_decode_video = Decode;
     es_format_Copy(&dec->fmt_out, &dec->fmt_in);
     dec->fmt_out.i_codec = VLC_CODEC_RGB32;
+    dec->fmt_out.i_cat = VIDEO_ES;
     return VLC_SUCCESS;
 }
 
-static int Decode (decoder_t *dec, block_t *block)
+static picture_t *Decode (decoder_t *dec, block_t **pp)
 {
     picture_t *pic = NULL;
 
-    if (block == NULL) /* No Drain */
-        return VLCDEC_SUCCESS;
+    if (pp == NULL)
+        return NULL;
+
+    block_t *block = *pp;
+    if (block == NULL)
+        return NULL;
+    *pp = NULL;
 
     if (block->i_pts <= VLC_TS_INVALID)
         goto drop; /* undated block, should never happen */
@@ -128,8 +134,6 @@ static int Decode (decoder_t *dec, block_t *block)
      || (block->i_buffer / pitch) < dec->fmt_out.video.i_height)
         goto drop;
 
-    if (decoder_UpdateVideoFormat(dec))
-        goto drop;
     pic = decoder_NewPicture(dec);
     if (pic == NULL)
         goto drop;
@@ -147,6 +151,5 @@ static int Decode (decoder_t *dec, block_t *block)
 
 drop:
     block_Release(block);
-    decoder_QueueVideo(dec, pic);
-    return VLCDEC_SUCCESS;
+    return pic;
 }

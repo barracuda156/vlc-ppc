@@ -15,9 +15,6 @@ $(TARBALLS)/taglib-$(TAGLIB_VERSION).tar.gz:
 
 taglib: taglib-$(TAGLIB_VERSION).tar.gz .sum-taglib
 	$(UNPACK)
-ifdef HAVE_WINSTORE
-	$(APPLY) $(SRC)/taglib/unicode.patch
-endif
 	$(MOVE)
 
 .taglib: taglib toolchain.cmake

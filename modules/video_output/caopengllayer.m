@@ -1,7 +1,7 @@
 /*****************************************************************************
  * caopengllayer.m: CAOpenGLLayer (Mac OS X) video output
  *****************************************************************************
- * Copyright (C) 2014-2017 VLC authors and VideoLAN
+ * Copyright (C) 2014 VLC authors and VideoLAN
  * $Id$
  *
  * Authors: David Fuhrmann <david dot fuhrmann at googlemail dot com>
@@ -41,9 +41,7 @@
 #import <OpenGL/OpenGL.h>
 #import <dlfcn.h>               /* dlsym */
 
-#include "opengl/vout_helper.h"
-
-#define OSX_SIERRA_AND_HIGHER (NSAppKitVersionNumber >= 1485)
+#include "opengl.h"
 
 /*****************************************************************************
  * Vout interface
@@ -58,6 +56,7 @@ vlc_module_begin()
     set_subcategory(SUBCAT_VIDEO_VOUT)
     set_callbacks(Open, Close)
 vlc_module_end()
+
 
 static picture_pool_t *Pool (vout_display_t *vd, unsigned requested_count);
 static void PictureRender   (vout_display_t *vd, picture_t *pic, subpicture_t *subpicture);
@@ -75,11 +74,11 @@ static void OpenglSwap         (vlc_gl_t *gl);
 - (CGSize)currentOutputSize;
 @end
 
-@interface VLCCAOpenGLLayer : CAOpenGLLayer
+@interface VLCCAOpenGLLayer : CAOpenGLLayer {
+    vout_display_t *_vd;
+}
 
-@property (nonatomic, readwrite) vout_display_t* voutDisplay;
-@property (nonatomic, readwrite) CGLContextObj glContext;
-
+- (void)setVoutDisplay:(vout_display_t *)aVd;
 @end
 
 
@@ -92,18 +91,14 @@ struct vout_display_sys_t {
     vout_window_t *embed;
     VLCCAOpenGLLayer *cgLayer;
 
-    vlc_gl_t *gl;
+    CGLContextObj glContext;
+
+    vlc_gl_t gl;
     vout_display_opengl_t *vgl;
 
     vout_display_place_t place;
 
     bool  b_frame_available;
-};
-
-struct gl_sys
-{
-    CGLContextObj locked_ctx;
-    VLCCAOpenGLLayer *cgLayer;
 };
 
 /*****************************************************************************
@@ -119,113 +114,104 @@ static int Open (vlc_object_t *p_this)
     if (sys == NULL)
         return VLC_EGENERIC;
 
-    @autoreleasepool {
-        id container = var_CreateGetAddress(vd, "drawable-nsobject");
-        if (container)
-            vout_display_DeleteWindow(vd, NULL);
-        else {
-            sys->embed = vout_display_NewWindow(vd, VOUT_WINDOW_TYPE_NSOBJECT);
-            if (sys->embed)
-                container = sys->embed->handle.nsobject;
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-            if (!container) {
-                msg_Err(vd, "No drawable-nsobject found!");
-                goto bailout;
-            }
-        }
+    id container = var_CreateGetAddress(vd, "drawable-nsobject");
+    if (container)
+        vout_display_DeleteWindow(vd, NULL);
+    else {
+        vout_window_cfg_t wnd_cfg;
 
-        /* store for later, released in Close() */
-        sys->container = [container retain];
+        memset(&wnd_cfg, 0, sizeof(wnd_cfg));
+        wnd_cfg.type = VOUT_WINDOW_TYPE_NSOBJECT;
+        wnd_cfg.x = var_InheritInteger(vd, "video-x");
+        wnd_cfg.y = var_InheritInteger(vd, "video-y");
+        wnd_cfg.height = vd->cfg->display.height;
+        wnd_cfg.width = vd->cfg->display.width;
 
-        [CATransaction begin];
-        sys->cgLayer = [[VLCCAOpenGLLayer alloc] init];
-        [sys->cgLayer setVoutDisplay:vd];
+        sys->embed = vout_display_NewWindow(vd, &wnd_cfg);
+        if (sys->embed)
+            container = sys->embed->handle.nsobject;
 
-        [sys->cgLayer performSelectorOnMainThread:@selector(display)
-                                       withObject:nil
-                                    waitUntilDone:YES];
-
-        if ([container respondsToSelector:@selector(addVoutLayer:)]) {
-            msg_Dbg(vd, "container implements implicit protocol");
-            [container addVoutLayer:sys->cgLayer];
-        } else if ([container respondsToSelector:@selector(addSublayer:)] ||
-                   [container isKindOfClass:[CALayer class]]) {
-            msg_Dbg(vd, "container doesn't implement implicit protocol, fallback mode used");
-            [container addSublayer:sys->cgLayer];
-        } else {
-            msg_Err(vd, "Provided NSObject container isn't compatible");
-            [sys->cgLayer release];
-            sys->cgLayer = nil;
-            [CATransaction commit];
+        if (!container) {
+            msg_Err(vd, "No drawable-nsobject found!");
             goto bailout;
         }
-        [CATransaction commit];
-
-        if (!sys->cgLayer)
-            goto bailout;
-
-        if (![sys->cgLayer glContext])
-            msg_Warn(vd, "we might not have an OpenGL context yet");
-
-        /* Initialize common OpenGL video display */
-        sys->gl = vlc_object_create(vd, sizeof(*sys->gl));
-        if (unlikely(!sys->gl))
-            goto bailout;
-        sys->gl->makeCurrent = OpenglLock;
-        sys->gl->releaseCurrent = OpenglUnlock;
-        sys->gl->swap = OpenglSwap;
-        sys->gl->getProcAddress = OurGetProcAddress;
-
-        struct gl_sys *glsys = sys->gl->sys = malloc(sizeof(*glsys));
-        if (!sys->gl->sys)
-            goto bailout;
-        glsys->locked_ctx = NULL;
-        glsys->cgLayer = sys->cgLayer;
-
-        const vlc_fourcc_t *subpicture_chromas;
-        video_format_t fmt = vd->fmt;
-        if (!OpenglLock(sys->gl)) {
-            sys->vgl = vout_display_opengl_New(&vd->fmt, &subpicture_chromas,
-                                               sys->gl, &vd->cfg->viewpoint);
-            OpenglUnlock(sys->gl);
-        } else
-            sys->vgl = NULL;
-        if (!sys->vgl) {
-            msg_Err(vd, "Error while initializing opengl display.");
-            goto bailout;
-        }
-
-        /* setup vout display */
-        vout_display_info_t info = vd->info;
-        info.subpicture_chromas = subpicture_chromas;
-        vd->info = info;
-
-        vd->pool    = Pool;
-        vd->prepare = PictureRender;
-        vd->display = PictureDisplay;
-        vd->control = Control;
-
-        if (OSX_SIERRA_AND_HIGHER) {
-            /* request our screen's HDR mode (introduced in OS X 10.11, but correctly supported in 10.12 only) */
-            if ([sys->cgLayer respondsToSelector:@selector(setWantsExtendedDynamicRangeContent:)]) {
-                [sys->cgLayer setWantsExtendedDynamicRangeContent:YES];
-            }
-        }
-
-        /* setup initial state */
-        CGSize outputSize;
-        if ([container respondsToSelector:@selector(currentOutputSize)])
-            outputSize = [container currentOutputSize];
-        else
-            outputSize = [sys->container visibleRect].size;
-        vout_display_SendEventDisplaySize(vd, (int)outputSize.width, (int)outputSize.height);
-
-        return VLC_SUCCESS;
-
-    bailout:
-        Close(p_this);
-        return VLC_EGENERIC;
     }
+
+    /* store for later, released in Close() */
+    sys->container = [container retain];
+
+    [CATransaction begin];
+    sys->cgLayer = [[VLCCAOpenGLLayer alloc] init];
+    [sys->cgLayer setVoutDisplay:vd];
+
+    [sys->cgLayer performSelectorOnMainThread:@selector(display) withObject:nil waitUntilDone:YES];
+
+    if ([container respondsToSelector:@selector(addVoutLayer:)]) {
+        msg_Dbg(vd, "container implements implicit protocol");
+        [container addVoutLayer:sys->cgLayer];
+    } else if ([container respondsToSelector:@selector(addSublayer:)] || [container isKindOfClass:[CALayer class]]) {
+        msg_Dbg(vd, "container doesn't implement implicit protocol, fallback mode used");
+        [container addSublayer:sys->cgLayer];
+    } else {
+        msg_Err(vd, "Provided NSObject container isn't compatible");
+        [sys->cgLayer release];
+        sys->cgLayer = nil;
+        [CATransaction commit];
+        goto bailout;
+    }
+    [CATransaction commit];
+
+    if (!sys->cgLayer)
+        goto bailout;
+
+    if (!sys->glContext)
+        msg_Warn(vd, "we might not have an OpenGL context yet");
+
+    /* Initialize common OpenGL video display */
+    sys->gl.lock = OpenglLock;
+    sys->gl.unlock = OpenglUnlock;
+    sys->gl.swap = OpenglSwap;
+    sys->gl.getProcAddress = OurGetProcAddress;
+    sys->gl.sys = sys;
+
+    const vlc_fourcc_t *subpicture_chromas;
+    video_format_t fmt = vd->fmt;
+    sys->vgl = vout_display_opengl_New(&vd->fmt, &subpicture_chromas, &sys->gl);
+    if (!sys->vgl) {
+        msg_Err(vd, "Error while initializing opengl display.");
+        sys->gl.sys = NULL;
+        goto bailout;
+    }
+
+    /* setup vout display */
+    vout_display_info_t info = vd->info;
+    info.subpicture_chromas = subpicture_chromas;
+    info.has_hide_mouse = true;
+    vd->info = info;
+
+    vd->pool    = Pool;
+    vd->prepare = PictureRender;
+    vd->display = PictureDisplay;
+    vd->control = Control;
+
+    /* setup initial state */
+    CGSize outputSize;
+    if ([container respondsToSelector:@selector(currentOutputSize)])
+        outputSize = [container currentOutputSize];
+    else
+        outputSize = [sys->container visibleRect].size;
+    vout_display_SendEventFullscreen(vd, false);
+    vout_display_SendEventDisplaySize(vd, (int)outputSize.width, (int)outputSize.height, false);
+
+    [pool release];
+    return VLC_SUCCESS;
+
+bailout:
+    [pool release];
+    Close(p_this);
+    return VLC_EGENERIC;
 }
 
 static void Close (vlc_object_t *p_this)
@@ -247,23 +233,11 @@ static void Close (vlc_object_t *p_this)
     if (sys->embed)
         vout_display_DeleteWindow(vd, sys->embed);
 
-    if (sys->vgl != NULL && !OpenglLock(sys->gl)) {
+    if (sys->gl.sys != NULL)
         vout_display_opengl_Delete(sys->vgl);
-        OpenglUnlock(sys->gl);
-    }
 
-    if (sys->gl != NULL)
-    {
-        if (sys->gl->sys != NULL)
-        {
-            assert(((struct gl_sys *)sys->gl->sys)->locked_ctx == NULL);
-            free(sys->gl->sys);
-        }
-        vlc_object_release(sys->gl);
-    }
-
-    if ([sys->cgLayer glContext])
-        CGLReleaseContext([sys->cgLayer glContext]);
+    if (sys->glContext)
+        CGLReleaseContext(sys->glContext);
 
     free(sys);
 }
@@ -272,11 +246,9 @@ static picture_pool_t *Pool (vout_display_t *vd, unsigned count)
 {
     vout_display_sys_t *sys = vd->sys;
 
-    if (!sys->pool && !OpenglLock(sys->gl)) {
+    if (!sys->pool)
         sys->pool = vout_display_opengl_GetPool(sys->vgl, count);
-        OpenglUnlock(sys->gl);
-        assert(sys->pool);
-    }
+    assert(sys->pool);
     return sys->pool;
 }
 
@@ -290,10 +262,7 @@ static void PictureRender (vout_display_t *vd, picture_t *pic, subpicture_t *sub
     }
 
     @synchronized (sys->cgLayer) {
-        if (!OpenglLock(sys->gl)) {
-            vout_display_opengl_Prepare(sys->vgl, pic, subpicture);
-            OpenglUnlock(sys->gl);
-        }
+        vout_display_opengl_Prepare(sys->vgl, pic, subpicture);
     }
 }
 
@@ -331,57 +300,53 @@ static int Control (vout_display_t *vd, int query, va_list ap)
         case VOUT_DISPLAY_CHANGE_ZOOM:
         case VOUT_DISPLAY_CHANGE_SOURCE_ASPECT:
         case VOUT_DISPLAY_CHANGE_SOURCE_CROP:
+        case VOUT_DISPLAY_CHANGE_FULLSCREEN:
         {
             const vout_display_cfg_t *cfg;
+            const video_format_t *source;
 
             if (query == VOUT_DISPLAY_CHANGE_SOURCE_ASPECT || query == VOUT_DISPLAY_CHANGE_SOURCE_CROP) {
+                source = (const video_format_t *)va_arg (ap, const video_format_t *);
                 cfg = vd->cfg;
             } else {
+                source = &vd->source;
                 cfg = (const vout_display_cfg_t*)va_arg (ap, const vout_display_cfg_t *);
             }
 
             /* we always use our current frame here */
             vout_display_cfg_t cfg_tmp = *cfg;
             [CATransaction lock];
-            CGRect bounds = [sys->cgLayer visibleRect];
+            CGRect bounds = [sys->cgLayer bounds];
             [CATransaction unlock];
             cfg_tmp.display.width = bounds.size.width;
             cfg_tmp.display.height = bounds.size.height;
 
-            /* Reverse vertical alignment as the GL tex are Y inverted */
-            if (cfg_tmp.align.vertical == VOUT_DISPLAY_ALIGN_TOP)
-                cfg_tmp.align.vertical = VOUT_DISPLAY_ALIGN_BOTTOM;
-            else if (cfg_tmp.align.vertical == VOUT_DISPLAY_ALIGN_BOTTOM)
-                cfg_tmp.align.vertical = VOUT_DISPLAY_ALIGN_TOP;
-
             vout_display_place_t place;
-            vout_display_PlacePicture (&place, &vd->source, &cfg_tmp, false);
-            if (OpenglLock(sys->gl))
-                return VLC_EGENERIC;
-
-            vout_display_opengl_SetWindowAspectRatio(sys->vgl, (float)place.width / place.height);
-            OpenglUnlock(sys->gl);
-
+            vout_display_PlacePicture (&place, source, &cfg_tmp, false);
             sys->place = place;
 
             return VLC_SUCCESS;
         }
 
-        case VOUT_DISPLAY_CHANGE_VIEWPOINT:
+        case VOUT_DISPLAY_HIDE_MOUSE:
         {
-            int ret;
+            [NSCursor setHiddenUntilMouseMoves: YES];
+            return VLC_SUCCESS;
+        }
 
-            if (OpenglLock(sys->gl))
-                return VLC_EGENERIC;
-
-            ret = vout_display_opengl_SetViewpoint(sys->vgl,
-                &va_arg (ap, const vout_display_cfg_t* )->viewpoint);
-            OpenglUnlock(sys->gl);
-            return ret;
+        case VOUT_DISPLAY_GET_OPENGL:
+        {
+            vlc_gl_t **gl = va_arg (ap, vlc_gl_t **);
+            *gl = &sys->gl;
+            return VLC_SUCCESS;
+        }
+        case VOUT_DISPLAY_CHANGE_WINDOW_STATE:
+        {
+            return VLC_SUCCESS;
         }
 
         case VOUT_DISPLAY_RESET_PICTURES:
-            vlc_assert_unreachable ();
+            assert (0);
         default:
             msg_Err (vd, "Unhandled request %d", query);
             return VLC_EGENERIC;
@@ -395,18 +360,15 @@ static int Control (vout_display_t *vd, int query, va_list ap)
 
 static int OpenglLock (vlc_gl_t *gl)
 {
-    struct gl_sys *sys = gl->sys;
-    assert(sys->locked_ctx == NULL);
+    vout_display_sys_t *sys = (vout_display_sys_t *)gl->sys;
 
-    CGLContextObj ctx = [sys->cgLayer glContext];
-    if(!ctx) {
+    if(!sys->glContext) {
         return 1;
     }
 
-    CGLError err = CGLLockContext(ctx);
+    CGLError err = CGLLockContext(sys->glContext);
     if (kCGLNoError == err) {
-        sys->locked_ctx = ctx;
-        CGLSetCurrentContext(ctx);
+        CGLSetCurrentContext(sys->glContext);
         return 0;
     }
     return 1;
@@ -414,9 +376,13 @@ static int OpenglLock (vlc_gl_t *gl)
 
 static void OpenglUnlock (vlc_gl_t *gl)
 {
-    struct gl_sys *sys = gl->sys;
-    CGLUnlockContext(sys->locked_ctx);
-    sys->locked_ctx = NULL;
+    vout_display_sys_t *sys = (vout_display_sys_t *)gl->sys;
+
+    if (!sys->glContext) {
+        return;
+    }
+
+    CGLUnlockContext(sys->glContext);
 }
 
 static void OpenglSwap (vlc_gl_t *gl)
@@ -444,8 +410,7 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
     self = [super init];
     if (self) {
         [CATransaction lock];
-        self.needsDisplayOnBoundsChange = YES;
-        self.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        [self setAutoresizingMask: kCALayerWidthSizable | kCALayerHeightSizable];
         self.asynchronous = NO;
         [CATransaction unlock];
     }
@@ -455,59 +420,51 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
 
 - (void)setVoutDisplay:(vout_display_t *)aVd
 {
-    _voutDisplay = aVd;
+    _vd = aVd;
 }
 
 - (void)resizeWithOldSuperlayerSize:(CGSize)size
 {
     [super resizeWithOldSuperlayerSize: size];
 
-    CGSize boundsSize = self.visibleRect.size;
-
-    if (_voutDisplay)
-        vout_display_SendEventDisplaySize(_voutDisplay, boundsSize.width, boundsSize.height);
+    CGSize boundsSize = self.bounds.size;
+    if (_vd)
+        vout_display_SendEventDisplaySize(_vd, boundsSize.width, boundsSize.height, _vd->cfg->is_fullscreen);
 }
 
 - (BOOL)canDrawInCGLContext:(CGLContextObj)glContext pixelFormat:(CGLPixelFormatObj)pixelFormat forLayerTime:(CFTimeInterval)timeInterval displayTime:(const CVTimeStamp *)timeStamp
 {
     /* Only draw the frame if we have a frame that was previously rendered */
-    if (!_voutDisplay)
+    if (!_vd)
         return false;
 
-    return _voutDisplay->sys->b_frame_available;
+    return _vd->sys->b_frame_available;
 }
 
 - (void)drawInCGLContext:(CGLContextObj)glContext pixelFormat:(CGLPixelFormatObj)pixelFormat forLayerTime:(CFTimeInterval)timeInterval displayTime:(const CVTimeStamp *)timeStamp
 {
-    if (!_voutDisplay)
+    if (!_vd)
         return;
-    vout_display_sys_t *sys = _voutDisplay->sys;
+    vout_display_sys_t *sys = _vd->sys;
 
     if (!sys->vgl)
         return;
 
-    CGRect bounds = [self visibleRect];
-
+    CGRect bounds = [self bounds];
     // x / y are top left corner, but we need the lower left one
     glViewport (sys->place.x, bounds.size.height - (sys->place.y + sys->place.height), sys->place.width, sys->place.height);
 
     // flush is also done by this method, no need to call super
-    vout_display_opengl_Display (sys->vgl, &_voutDisplay->source);
+    vout_display_opengl_Display (sys->vgl, &_vd->source);
     sys->b_frame_available = NO;
-}
-
--(CGLPixelFormatObj)copyCGLPixelFormatForDisplayMask:(uint32_t)mask
-{
-    // The default is fine for this demonstration.
-    return [super copyCGLPixelFormatForDisplayMask:mask];
 }
 
 - (CGLContextObj)copyCGLContextForPixelFormat:(CGLPixelFormatObj)pixelFormat
 {
     // Only one opengl context is allowed for the module lifetime
-    if(_glContext) {
-        msg_Dbg(_voutDisplay, "Return existing context: %p", _glContext);
-        return _glContext;
+    if(_vd->sys->glContext) {
+        msg_Dbg(_vd, "Return existing context: %p", _vd->sys->glContext);
+        return _vd->sys->glContext;
     }
 
     CGLContextObj context = [super copyCGLContextForPixelFormat:pixelFormat];
@@ -521,7 +478,7 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
                      &params );
 
     @synchronized (self) {
-        _glContext = context;
+        _vd->sys->glContext = context;
     }
 
     return context;
@@ -535,13 +492,13 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
 - (void)mouseButtonDown:(int)buttonNumber
 {
     @synchronized (self) {
-        if (_voutDisplay) {
+        if (_vd) {
             if (buttonNumber == 0)
-                vout_display_SendEventMousePressed (_voutDisplay, MOUSE_BUTTON_LEFT);
+                vout_display_SendEventMousePressed (_vd, MOUSE_BUTTON_LEFT);
             else if (buttonNumber == 1)
-                vout_display_SendEventMousePressed (_voutDisplay, MOUSE_BUTTON_RIGHT);
+                vout_display_SendEventMousePressed (_vd, MOUSE_BUTTON_RIGHT);
             else
-                vout_display_SendEventMousePressed (_voutDisplay, MOUSE_BUTTON_CENTER);
+                vout_display_SendEventMousePressed (_vd, MOUSE_BUTTON_CENTER);
         }
     }
 }
@@ -549,13 +506,13 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
 - (void)mouseButtonUp:(int)buttonNumber
 {
     @synchronized (self) {
-        if (_voutDisplay) {
+        if (_vd) {
             if (buttonNumber == 0)
-                vout_display_SendEventMouseReleased (_voutDisplay, MOUSE_BUTTON_LEFT);
+                vout_display_SendEventMouseReleased (_vd, MOUSE_BUTTON_LEFT);
             else if (buttonNumber == 1)
-                vout_display_SendEventMouseReleased (_voutDisplay, MOUSE_BUTTON_RIGHT);
+                vout_display_SendEventMouseReleased (_vd, MOUSE_BUTTON_RIGHT);
             else
-                vout_display_SendEventMouseReleased (_voutDisplay, MOUSE_BUTTON_CENTER);
+                vout_display_SendEventMouseReleased (_vd, MOUSE_BUTTON_CENTER);
         }
     }
 }
@@ -563,12 +520,12 @@ static void *OurGetProcAddress (vlc_gl_t *gl, const char *name)
 - (void)mouseMovedToX:(double)xValue Y:(double)yValue
 {
     @synchronized (self) {
-        if (_voutDisplay) {
-            vout_display_SendMouseMovedDisplayCoordinates (_voutDisplay,
+        if (_vd) {
+            vout_display_SendMouseMovedDisplayCoordinates (_vd,
                                                            ORIENT_NORMAL,
                                                            xValue,
                                                            yValue,
-                                                           &_voutDisplay->sys->place);
+                                                           &_vd->sys->place);
         }
     }
 }

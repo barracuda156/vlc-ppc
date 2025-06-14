@@ -29,16 +29,13 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
-#include <vlc_vout_window.h>
+#include <vlc_vout.h>
+#include <vlc_vout_wrapper.h>
 #include <vlc_opengl.h>
 #include <vlc_filter.h>
 #include <vlc_rand.h>
 
-#ifdef __APPLE__
-# include <OpenGL/gl.h>
-#else
-# include <GL/gl.h>
-#endif
+#include <GL/gl.h>
 
 #include <math.h>
 
@@ -79,6 +76,8 @@ vlc_module_end()
 struct filter_sys_t
 {
     vlc_thread_t thread;
+    vlc_sem_t    ready;
+    bool         b_error;
 
     /* Audio data */
     unsigned i_channels;
@@ -87,10 +86,15 @@ struct filter_sys_t
     int16_t *p_prev_s16_buff;
 
     /* Opengl */
-    vlc_gl_t *gl;
+    vout_thread_t  *p_vout;
+    vout_display_t *p_vd;
 
     float f_rotationAngle;
     float f_rotationIncrement;
+
+    /* Window size */
+    int i_width;
+    int i_height;
 
     /* FFT window parameters */
     window_param wind_param;
@@ -100,10 +104,10 @@ struct filter_sys_t
 static block_t *DoWork(filter_t *, block_t *);
 static void *Thread(void *);
 
-#define SPECTRUM_WIDTH 4.f
+#define SPECTRUM_WIDTH 4.0
 #define NB_BANDS 20
-#define ROTATION_INCREMENT .1f
-#define BAR_DECREMENT .075f
+#define ROTATION_INCREMENT 0.1
+#define BAR_DECREMENT 0.075
 #define ROTATION_MAX 20
 
 const GLfloat lightZeroColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -124,6 +128,10 @@ static int Open(vlc_object_t * p_this)
         return VLC_ENOMEM;
 
     /* Create the object for the thread */
+    vlc_sem_init(&p_sys->ready, 0);
+    p_sys->b_error = false;
+    p_sys->i_width = var_InheritInteger(p_filter, "glspectrum-width");
+    p_sys->i_height = var_InheritInteger(p_filter, "glspectrum-height");
     p_sys->i_channels = aout_FormatNbChannels(&p_filter->fmt_in.audio);
     p_sys->i_prev_nb_samples = 0;
     p_sys->p_prev_s16_buff = NULL;
@@ -139,23 +147,18 @@ static int Open(vlc_object_t * p_this)
     if (p_sys->fifo == NULL)
         goto error;
 
-    /* Create the openGL provider */
-    vout_window_cfg_t cfg = {
-        .width = var_InheritInteger(p_filter, "glspectrum-width"),
-        .height = var_InheritInteger(p_filter, "glspectrum-height"),
-    };
-
-    p_sys->gl = vlc_gl_surface_Create(p_this, &cfg, NULL);
-    if (p_sys->gl == NULL)
-    {
-        block_FifoRelease(p_sys->fifo);
-        goto error;
-    }
-
     /* Create the thread */
     if (vlc_clone(&p_sys->thread, Thread, p_filter,
                   VLC_THREAD_PRIORITY_VIDEO))
         goto error;
+
+    /* Wait for the displaying thread to be ready. */
+    vlc_sem_wait(&p_sys->ready);
+    if (p_sys->b_error)
+    {
+        vlc_join(p_sys->thread, NULL);
+        goto error;
+    }
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
@@ -164,6 +167,7 @@ static int Open(vlc_object_t * p_this)
     return VLC_SUCCESS;
 
 error:
+    vlc_sem_destroy(&p_sys->ready);
     free(p_sys);
     return VLC_EGENERIC;
 }
@@ -183,9 +187,13 @@ static void Close(vlc_object_t *p_this)
     vlc_join(p_sys->thread, NULL);
 
     /* Free the ressources */
-    vlc_gl_surface_Destroy(p_sys->gl);
+    vout_DeleteDisplay(p_sys->p_vd, NULL);
+    vlc_object_release(p_sys->p_vout);
+
     block_FifoRelease(p_sys->fifo);
     free(p_sys->p_prev_s16_buff);
+
+    vlc_sem_destroy(&p_sys->ready);
     free(p_sys);
 }
 
@@ -241,40 +249,40 @@ static void initOpenGLScene(void)
  */
 static void drawBar(void)
 {
-    const float w = SPECTRUM_WIDTH / NB_BANDS - 0.05f;
+    const float w = SPECTRUM_WIDTH / NB_BANDS - 0.05;
 
     const GLfloat vertexCoords[] = {
-        0.f, 0.f, 0.f,     w, 0.f, 0.f,   0.f, 1.f, 0.f,
-        0.f, 1.f, 0.f,     w, 0.f, 0.f,     w, 1.f, 0.f,
+        0.0, 0.0, 0.0,   w, 0.0, 0.0,   0.0, 1.0, 0.0,
+        0.0, 1.0, 0.0,   w, 0.0, 0.0,   w  , 1.0, 0.0,
 
-        0.f, 0.f, -w,    0.f, 0.f, 0.f,   0.f, 1.f,  -w,
-        0.f, 1.f, -w,    0.f, 0.f, 0.f,   0.f, 1.f, 0.f,
+        0.0, 0.0, -w,    0.0, 0.0, 0.0,   0.0, 1.0, -w,
+        0.0, 1.0, -w,    0.0, 0.0, 0.0,   0.0, 1.0, 0.0,
 
-          w, 0.f, 0.f,     w, 0.f,  -w,     w, 1.f, 0.f,
-          w, 1.f, 0.f,     w, 0.f,  -w,     w, 1.f,  -w,
+        w, 0.0, 0.0,     w, 0.0, -w,   w, 1.0, 0.0,
+        w, 1.0, 0.0,     w, 0.0, -w,   w, 1.0, -w,
 
-          w, 0.f,  -w,   0.f, 0.f,  -w,   0.f, 1.f,  -w,
-        0.f, 1.f,  -w,     w, 1.f,  -w,     w, 0.f,  -w,
+        w, 0.0, -w,      0.0, 0.0, -w,  0.0, 1.0, -w,
+        0.0, 1.0, -w,    w, 1.0, -w,    w, 0.0, -w,
 
-        0.f, 1.f, 0.f,     w, 1.f, 0.f,     w, 1.f,  -w,
-        0.f, 1.f, 0.f,     w, 1.f,  -w,   0.f, 1.f,  -w,
+        0.0, 1.0, 0.0,   w, 1.0, 0.0,   w, 1.0, -w,
+        0.0, 1.0, 0.0,   w, 1.0, -w,    0.0, 1.0, -w,
     };
 
     const GLfloat normals[] = {
-        0.f, 0.f, 1.f,   0.f, 0.f, 1.f,   0.f, 0.f, 1.f,
-        0.f, 0.f, 1.f,   0.f, 0.f, 1.f,   0.f, 0.f, 1.f,
+        0.0, 0.0, 1.0,   0.0, 0.0, 1.0,   0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,   0.0, 0.0, 1.0,   0.0, 0.0, 1.0,
 
-        -1.f, 0.f, 0.f,   -1.f, 0.f, 0.f,   -1.f, 0.f, 0.f,
-        -1.f, 0.f, 0.f,   -1.f, 0.f, 0.f,   -1.f, 0.f, 0.f,
+        -1.0, 0.0, 0.0,   -1.0, 0.0, 0.0,   -1.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0,   -1.0, 0.0, 0.0,   -1.0, 0.0, 0.0,
 
-        1.f, 0.f, 0.f,   1.f, 0.f, 0.f,   1.f, 0.f, 0.f,
-        1.f, 0.f, 0.f,   1.f, 0.f, 0.f,   1.f, 0.f, 0.f,
+        1.0, 0.0, 0.0,   1.0, 0.0, 0.0,   1.0, 0.0, 0.0,
+        1.0, 0.0, 0.0,   1.0, 0.0, 0.0,   1.0, 0.0, 0.0,
 
-        0.f, 0.f, -1.f,   0.f, 0.f, -1.f,   0.f, 0.f, -1.f,
-        0.f, 0.f, -1.f,   0.f, 0.f, -1.f,   0.f, 0.f, -1.f,
+        0.0, 0.0, -1.0,   0.0, 0.0, -1.0,   0.0, 0.0, -1.0,
+        0.0, 0.0, -1.0,   0.0, 0.0, -1.0,   0.0, 0.0, -1.0,
 
-        0.f, 1.f, 0.f,   0.f, 1.f, 0.f,   0.f, 1.f, 0.f,
-        0.f, 1.f, 0.f,   0.f, 1.f, 0.f,   0.f, 1.f, 0.f,
+        0.0, 1.0, 0.0,   0.0, 1.0, 0.0,   0.0, 1.0, 0.0,
+        0.0, 1.0, 0.0,   0.0, 1.0, 0.0,   0.0, 1.0, 0.0,
     };
 
     glVertexPointer(3, GL_FLOAT, 0, vertexCoords);
@@ -291,20 +299,20 @@ static void setBarColor(float f_height)
 {
     float r, b;
 
-#define BAR_MAX_HEIGHT 4.2f
-    r = -1.f + 2 / BAR_MAX_HEIGHT * f_height;
-    b = 2.f - 2 / BAR_MAX_HEIGHT * f_height;
+#define BAR_MAX_HEIGHT 4.2
+    r = -1.0 + 2 / BAR_MAX_HEIGHT * f_height;
+    b = 2.0 - 2 / BAR_MAX_HEIGHT * f_height;
 #undef BAR_MAX_HEIGHT
 
     /* Test the ranges. */
-    r = r > 1.f ? 1.f : r;
-    b = b > 1.f ? 1.f : b;
+    r = r > 1.0 ? 1.0 : r;
+    b = b > 1.0 ? 1.0 : b;
 
-    r = r < 0.f ? 0.f : r;
-    b = b < 0.f ? 0.f : b;
+    r = r < 0.0 ? 0.0 : r;
+    b = b < 0.0 ? 0.0 : b;
 
     /* Set the bar color. */
-    glColor4f(r, 0.f, b, 1.f);
+    glColor4f(r, 0.0, b, 1.0);
 }
 
 
@@ -315,7 +323,7 @@ static void setBarColor(float f_height)
 static void drawBars(float heights[])
 {
     glPushMatrix();
-    glTranslatef(-2.f, 0.f, 0.f);
+    glTranslatef(-2.0, 0.0, 0.0);
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_NORMAL_ARRAY);
@@ -324,12 +332,12 @@ static void drawBars(float heights[])
     for (unsigned i = 0; i < NB_BANDS; ++i)
     {
         glPushMatrix();
-        glScalef(1.f, heights[i], 1.f);
+        glScalef(1.0, heights[i], 1.0);
         setBarColor(heights[i]);
         drawBar();
         glPopMatrix();
 
-        glTranslatef(w, 0.f, 0.f);
+        glTranslatef(w, 0.0, 0.0);
     }
 
     glDisableClientState(GL_VERTEX_ARRAY);
@@ -347,13 +355,55 @@ static void *Thread( void *p_data )
 {
     filter_t  *p_filter = (filter_t*)p_data;
     filter_sys_t *p_sys = p_filter->p_sys;
-    vlc_gl_t *gl = p_sys->gl;
 
-    if (vlc_gl_MakeCurrent(gl) != VLC_SUCCESS)
+    video_format_t fmt;
+    vlc_gl_t *gl;
+    unsigned int i_last_width = 0;
+    unsigned int i_last_height = 0;
+
+    /* Create the openGL provider */
+    p_sys->p_vout =
+        (vout_thread_t *)vlc_object_create(p_filter, sizeof(vout_thread_t));
+    if (!p_sys->p_vout)
+        goto error;
+
+    /* Configure the video format for the opengl provider. */
+    video_format_Init(&fmt, 0);
+    video_format_Setup(&fmt, VLC_CODEC_RGB32, p_sys->i_width, p_sys->i_height,
+                       p_sys->i_width, p_sys->i_height, 0, 1 );
+    fmt.i_sar_num = 1;
+    fmt.i_sar_den = 1;
+
+    /* Init vout state. */
+    vout_display_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.cfg.display.sar.num = 1;
+    state.cfg.display.sar.den = 1;
+    state.cfg.is_display_filled = true;
+    state.cfg.zoom.num = 1;
+    state.cfg.zoom.den = 1;
+    state.sar.num = 1;
+    state.sar.den = 1;
+
+    p_sys->p_vd = vout_NewDisplay(p_sys->p_vout, &fmt, &state,
+                                  "opengl", 1000000, 1000000);
+    if (!p_sys->p_vd)
     {
-        msg_Err(p_filter, "Can't attach gl context");
-        return NULL;
+        vlc_object_release(p_sys->p_vout);
+        goto error;
     }
+
+    gl = vout_GetDisplayOpengl(p_sys->p_vd);
+    if (!gl)
+    {
+        vout_DeleteDisplay(p_sys->p_vd, NULL);
+        vlc_object_release(p_sys->p_vout);
+        goto error;
+    }
+
+    vlc_sem_post(&p_sys->ready);
+
+    vlc_gl_MakeCurrent(gl);
     initOpenGLScene();
     vlc_gl_ReleaseCurrent(gl);
 
@@ -364,11 +414,21 @@ static void *Thread( void *p_data )
         block_t *block = block_FifoGet(p_sys->fifo);
 
         int canc = vlc_savecancel();
-        unsigned win_width, win_height;
 
         vlc_gl_MakeCurrent(gl);
-        if (vlc_gl_surface_CheckSize(gl, &win_width, &win_height))
-            glViewport(0, 0, win_width, win_height);
+        /* Manage the events */
+        vout_ManageDisplay(p_sys->p_vd, true);
+        if (p_sys->p_vd->cfg->display.width != i_last_width ||
+            p_sys->p_vd->cfg->display.height != i_last_height)
+        {
+            /* FIXME it is not perfect as we will have black bands */
+            vout_display_place_t place;
+            vout_display_PlacePicture(&place, &p_sys->p_vd->source,
+                                      p_sys->p_vd->cfg, false);
+
+            i_last_width  = p_sys->p_vd->cfg->display.width;
+            i_last_height = p_sys->p_vd->cfg->display.height;
+        }
 
         /* Horizontal scale for 20-band equalizer */
         const unsigned xscale[] = {0,1,2,3,4,5,6,7,8,11,15,20,27,
@@ -411,7 +471,7 @@ static void *Thread( void *p_data )
         {
             union {float f; int32_t i;} u;
 
-            u.f = *p_buffl + 384.f;
+            u.f = *p_buffl + 384.0;
             if (u.i > 0x43c07fff)
                 *p_buffs = 32767;
             else if (u.i < 0x43bf8000)
@@ -465,7 +525,7 @@ static void *Thread( void *p_data )
                      y = p_dest[j];
             }
             /* Calculate the height of the bar */
-            float new_height = y != 0 ? logf(y) * 0.4f : 0;
+            float new_height = y != 0 ? log(y) * 0.4 : 0;
             height[i] = new_height > height[i]
                         ? new_height : height[i];
         }
@@ -487,7 +547,11 @@ static void *Thread( void *p_data )
 
         /* Wait to swapp the frame on time. */
         mwait(block->i_pts + (block->i_length / 2));
-        vlc_gl_Swap(gl);
+        if (!vlc_gl_Lock(gl))
+        {
+            vlc_gl_Swap(gl);
+            vlc_gl_Unlock(gl);
+        }
 
 release:
         window_close(&wind_ctx);
@@ -497,5 +561,10 @@ release:
         vlc_restorecancel(canc);
     }
 
-    vlc_assert_unreachable();
+    assert(0);
+
+error:
+    p_sys->b_error = true;
+    vlc_sem_post(&p_sys->ready);
+    return NULL;
 }

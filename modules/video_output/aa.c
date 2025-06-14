@@ -43,8 +43,6 @@
 # include <vlc_xlib.h>
 #endif
 
-#include "event_thread.h"
-
 /* TODO
  * - what about RGB palette ?
  */
@@ -80,8 +78,8 @@ struct vout_display_sys_t {
     struct aa_context*  aa_context;
     aa_palette          palette;
 
+    vout_display_cfg_t  state;
     picture_pool_t      *pool;
-    vout_display_event_thread_t *et;
 };
 
 /**
@@ -113,8 +111,6 @@ static int Open(vlc_object_t *object)
     }
     vout_display_DeleteWindow(vd, NULL);
 
-    sys->et = VoutDisplayEventCreateThread(vd);
-
     aa_autoinitkbd(sys->aa_context, 0);
     aa_autoinitmouse(sys->aa_context, AA_MOUSEALLMASK);
 
@@ -126,10 +122,13 @@ static int Open(vlc_object_t *object)
     fmt.i_visible_width = fmt.i_width;
     fmt.i_visible_height = fmt.i_height;
 
+    /* */
+    vout_display_info_t info = vd->info;
+    info.has_pictures_invalid = true;
+
     /* Setup vout_display now that everything is fine */
     vd->fmt = fmt;
-    vd->info.has_pictures_invalid = true;
-    vd->info.needs_hide_mouse = true;
+    vd->info = info;
 
     vd->pool    = Pool;
     vd->prepare = Prepare;
@@ -139,7 +138,10 @@ static int Open(vlc_object_t *object)
 
     /* Inspect initial configuration and send correction events
      * FIXME how to handle aspect ratio with aa ? */
-    vout_display_SendEventDisplaySize(vd, fmt.i_width, fmt.i_height);
+    sys->state = *vd->cfg;
+    sys->state.is_fullscreen = false;
+    vout_display_SendEventFullscreen(vd, false);
+    vout_display_SendEventDisplaySize(vd, fmt.i_width, fmt.i_height, false);
 
     return VLC_SUCCESS;
 
@@ -159,8 +161,7 @@ static void Close(vlc_object_t *object)
     vout_display_sys_t *sys = vd->sys;
 
     if (sys->pool)
-        picture_pool_Release(sys->pool);
-    VoutDisplayEventKillThread(sys->et);
+        picture_pool_Delete(sys->pool);
     aa_close(sys->aa_context);
     free(sys);
 }
@@ -243,7 +244,7 @@ static int Control(vout_display_t *vd, int query, va_list args)
 
     case VOUT_DISPLAY_RESET_PICTURES:
         if (sys->pool)
-            picture_pool_Release(sys->pool);
+            picture_pool_Delete(sys->pool);
         sys->pool = NULL;
 
         vd->fmt.i_width  = aa_imgwidth(sys->aa_context);
@@ -298,7 +299,7 @@ static void Manage(vout_display_t *vd)
             aa_resize(sys->aa_context);
             vout_display_SendEventDisplaySize(vd,
                                               aa_imgwidth(sys->aa_context),
-                                              aa_imgheight(sys->aa_context));
+                                              aa_imgheight(sys->aa_context), false);
             break;
 
         /* TODO keys support to complete */

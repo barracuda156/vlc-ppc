@@ -28,44 +28,41 @@
 #import <stdlib.h>
 
 @implementation VLCDialogButton
-
+@synthesize widget;
 @end
 
 
 @implementation VLCDialogPopUpButton
-
+@synthesize widget;
 @end
 
 
 @implementation VLCDialogTextField
-
+@synthesize widget;
 @end
 
 
 @implementation VLCDialogWindow
-
+@synthesize dialog;
+@synthesize has_lock;
 @end
 
 
 @implementation VLCDialogList
+@synthesize widget;
+@synthesize contentArray;
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)aTableView
 {
-    return [self.contentArray count];
+    return [contentArray count];
 }
 
 - (id)tableView:(NSTableView *)aTableView objectValueForTableColumn:(NSTableColumn *)aTableColumn row:(NSInteger)rowIndex
 {
-    return [[self.contentArray objectAtIndex:rowIndex] objectForKey:@"text"];
+    return [[contentArray objectAtIndex:rowIndex] objectForKey:@"text"];
 }
 @end
 
-@interface VLCDialogGridView()
-{
-    NSUInteger _rowCount, _colCount;
-    NSMutableArray *_griddedViews;
-}
-@end
 
 @implementation VLCDialogGridView
 
@@ -83,6 +80,11 @@
     }
 
     return self;
+}
+- (void)dealloc
+{
+    [_griddedViews release];
+    [super dealloc];
 }
 
 - (void)recomputeCount

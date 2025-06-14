@@ -28,8 +28,6 @@
 #include "art_manager.hpp"
 #include <vlc_image.h>
 
-#include <new>
-
 #define MAX_ART_CACHED    2
 
 
@@ -69,14 +67,14 @@ ArtManager::~ArtManager( )
         m_pImageHandler = NULL;
     }
 
-    std::list<ArtBitmap*>::const_iterator it;
+    list<ArtBitmap*>::const_iterator it;
     for( it = m_listBitmap.begin(); it != m_listBitmap.end(); ++it )
         delete *it;
     m_listBitmap.clear();
 }
 
 
-ArtBitmap* ArtManager::getArtBitmap( std::string uriName )
+ArtBitmap* ArtManager::getArtBitmap( string uriName )
 {
     if( !uriName.size() )
         return NULL;
@@ -85,7 +83,7 @@ ArtBitmap* ArtManager::getArtBitmap( std::string uriName )
         return NULL;
 
     // check whether art is already loaded
-    std::list<ArtBitmap*>::const_iterator it;
+    list<ArtBitmap*>::const_iterator it;
     for( it = m_listBitmap.begin(); it != m_listBitmap.end(); ++it )
     {
         if( (*it)->getUriName() == uriName )
@@ -93,7 +91,7 @@ ArtBitmap* ArtManager::getArtBitmap( std::string uriName )
     }
 
     // create and retain a new ArtBitmap since uri is not yet known
-    ArtBitmap* pArt = new (std::nothrow) ArtBitmap( getIntf(), m_pImageHandler, uriName );
+    ArtBitmap* pArt = new ArtBitmap( getIntf(), m_pImageHandler, uriName );
     if( pArt && pArt->getWidth() && pArt->getHeight() )
     {
         if( m_listBitmap.size() == MAX_ART_CACHED )

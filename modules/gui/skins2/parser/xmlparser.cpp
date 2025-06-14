@@ -28,10 +28,9 @@
 #include <sys/stat.h>
 #include <vlc_fs.h>
 
-XMLParser::XMLParser( intf_thread_t *pIntf, const std::string &rFileName )
+XMLParser::XMLParser( intf_thread_t *pIntf, const string &rFileName )
     : SkinObject( pIntf ), m_pXML( NULL ), m_pReader( NULL ), m_pStream( NULL )
 {
-    m_errors = false;
     m_pXML = xml_Create( pIntf );
     if( !m_pXML )
     {
@@ -42,7 +41,7 @@ XMLParser::XMLParser( intf_thread_t *pIntf, const std::string &rFileName )
     LoadCatalog();
 
     char *psz_uri = vlc_path2uri( rFileName.c_str(), NULL );
-    m_pStream = vlc_stream_NewURL( pIntf, psz_uri );
+    m_pStream = stream_UrlNew( pIntf, psz_uri );
     free( psz_uri );
     if( !m_pStream )
     {
@@ -67,7 +66,7 @@ XMLParser::~XMLParser()
 {
     if( m_pReader ) xml_ReaderDelete( m_pReader );
     if( m_pXML ) xml_Delete( m_pXML );
-    if( m_pStream ) vlc_stream_Delete( m_pStream );
+    if( m_pStream ) stream_Delete( m_pStream );
 }
 
 
@@ -75,9 +74,9 @@ void XMLParser::LoadCatalog()
 {
     // Get the resource path and look for the DTD
     OSFactory *pOSFactory = OSFactory::instance( getIntf() );
-    const std::list<std::string> &resPath = pOSFactory->getResourcePath();
-    const std::string &sep = pOSFactory->getDirSeparator();
-    std::list<std::string>::const_iterator it;
+    const list<string> &resPath = pOSFactory->getResourcePath();
+    const string &sep = pOSFactory->getDirSeparator();
+    list<string>::const_iterator it;
 
     struct stat statBuf;
 
@@ -85,7 +84,7 @@ void XMLParser::LoadCatalog()
     // we don't have a default catalog)
     for( it = resPath.begin(); it != resPath.end(); ++it )
     {
-        std::string catalog_path = (*it) + sep + "skin.catalog";
+        string catalog_path = (*it) + sep + "skin.catalog";
         if( !vlc_stat( catalog_path.c_str(), &statBuf ) )
         {
             msg_Dbg( getIntf(), "Using catalog %s", catalog_path.c_str() );
@@ -101,7 +100,7 @@ void XMLParser::LoadCatalog()
 
     for( it = resPath.begin(); it != resPath.end(); ++it )
     {
-        std::string path = (*it) + sep + "skin.dtd";
+        string path = (*it) + sep + "skin.dtd";
         if( !vlc_stat( path.c_str(), &statBuf ) )
         {
             // DTD found
@@ -145,7 +144,7 @@ bool XMLParser::parse()
 
                 handleBeginElement( node, attributes );
 
-                std::map<const char*, const char*, ltstr> ::iterator it =
+                map<const char*, const char*, ltstr> ::iterator it =
                     attributes.begin();
                 while( it != attributes.end() )
                 {

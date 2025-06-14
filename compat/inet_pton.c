@@ -30,7 +30,6 @@
 # include <sys/socket.h>
 #else
 # include <winsock2.h>
-# include <ws2tcpip.h>
 # undef EAFNOSUPPORT
 # define EAFNOSUPPORT WSAEAFNOSUPPORT
 #endif
@@ -49,7 +48,7 @@ int inet_pton (int af, const char *src, void *dst)
     return -1;
 }
 
-const char *inet_ntop (int af, const void *src, char *dst, socklen_t len)
+const char *inet_ntop (int af, const void *src, char *dst, int len)
 {
     const unsigned char *b = src;
 

@@ -111,30 +111,17 @@ struct demux_sys_t
 
 static block_t *Load(demux_t *demux)
 {
-    const unsigned max_size = 4096 * 4096 * 8;
-    uint64_t size;
-
-    if (vlc_stream_GetSize(demux->s, &size) == VLC_SUCCESS) {
-        if (size > max_size) {
-            msg_Err(demux, "image too large (%"PRIu64" > %u), rejected",
-                    size, max_size);
-            return NULL;
-        }
-    } else
-        size = max_size;
-
-    block_t *block = block_Alloc(size);
-    if (block == NULL)
-        return NULL;
-
-    ssize_t val = vlc_stream_Read(demux->s, block->p_buffer, size);
-    if (val < 0) {
-        block_Release(block);
+    const int     max_size = 4096 * 4096 * 8;
+    const int64_t size = stream_Size(demux->s);
+    if (size < 0 || size > max_size) {
+        msg_Err(demux, "Rejecting image based on its size (%"PRId64" > %d)", size, max_size);
         return NULL;
     }
 
-    block->i_buffer = val;
-    return block;
+    if (size > 0)
+        return stream_Block(demux->s, size);
+    /* TODO */
+    return NULL;
 }
 
 static block_t *Decode(demux_t *demux,
@@ -198,7 +185,7 @@ static int Demux(demux_t *demux)
         deadline = mdate();
         const mtime_t max_wait = CLOCK_FREQ / 50;
         if (deadline + max_wait < pts_first) {
-            es_out_SetPCR(demux->out, deadline);
+            es_out_Control(demux->out, ES_OUT_SET_PCR, deadline);
             /* That's ugly, but not yet easily fixable */
             mwait(deadline + max_wait);
             return 1;
@@ -221,7 +208,7 @@ static int Demux(demux_t *demux)
 
         data->i_dts =
         data->i_pts = VLC_TS_0 + pts;
-        es_out_SetPCR(demux->out, data->i_pts);
+        es_out_Control(demux->out, ES_OUT_SET_PCR, data->i_pts);
         es_out_Send(demux->out, sys->es, data);
 
         date_Increment(&sys->pts, 1);
@@ -233,9 +220,6 @@ static int Control(demux_t *demux, int query, va_list args)
     demux_sys_t *sys = demux->p_sys;
 
     switch (query) {
-    case DEMUX_CAN_SEEK:
-        *va_arg(args, bool *) = sys->duration >= 0 && !sys->is_realtime;
-        return VLC_SUCCESS;
     case DEMUX_GET_POSITION: {
         double *position = va_arg(args, double *);
         if (sys->duration > 0)
@@ -291,7 +275,7 @@ static int Control(demux_t *demux, int query, va_list args)
 static bool IsBmp(stream_t *s)
 {
     const uint8_t *header;
-    if (vlc_stream_Peek(s, &header, 18) < 18)
+    if (stream_Peek(s, &header, 18) < 18)
         return false;
     if (memcmp(header, "BM", 2) &&
         memcmp(header, "BA", 2) &&
@@ -316,7 +300,7 @@ static bool IsBmp(stream_t *s)
 static bool IsPcx(stream_t *s)
 {
     const uint8_t *header;
-    if (vlc_stream_Peek(s, &header, 66) < 66)
+    if (stream_Peek(s, &header, 66) < 66)
         return false;
     if (header[0] != 0x0A ||                        /* marker */
         (header[1] != 0x00 && header[1] != 0x02 &&
@@ -336,7 +320,7 @@ static bool IsPcx(stream_t *s)
 static bool IsLbm(stream_t *s)
 {
     const uint8_t *header;
-    if (vlc_stream_Peek(s, &header, 12) < 12)
+    if (stream_Peek(s, &header, 12) < 12)
         return false;
     if (memcmp(&header[0], "FORM", 4) ||
         GetDWBE(&header[4]) <= 4 ||
@@ -351,7 +335,7 @@ static bool IsPnmBlank(uint8_t v)
 static bool IsPnm(stream_t *s)
 {
     const uint8_t *header;
-    int size = vlc_stream_Peek(s, &header, 256);
+    int size = stream_Peek(s, &header, 256);
     if (size < 3)
         return false;
     if (header[0] != 'P' ||
@@ -392,7 +376,7 @@ static uint8_t FindJpegMarker(int *position, const uint8_t *data, int size)
 static bool IsJfif(stream_t *s)
 {
     const uint8_t *header;
-    int size = vlc_stream_Peek(s, &header, 256);
+    int size = stream_Peek(s, &header, 256);
     int position = 0;
 
     if (FindJpegMarker(&position, header, size) != 0xd8)
@@ -410,7 +394,7 @@ static bool IsJfif(stream_t *s)
 static bool IsSpiff(stream_t *s)
 {
     const uint8_t *header;
-    if (vlc_stream_Peek(s, &header, 36) < 36) /* SPIFF header size */
+    if (stream_Peek(s, &header, 36) < 36) /* SPIFF header size */
         return false;
     if (header[0] != 0xff || header[1] != 0xd8 ||
         header[2] != 0xff || header[3] != 0xe8)
@@ -423,9 +407,7 @@ static bool IsSpiff(stream_t *s)
 static bool IsExif(stream_t *s)
 {
     const uint8_t *header;
-    ssize_t size = vlc_stream_Peek(s, &header, 256);
-    if (size == -1)
-        return false;
+    int size = stream_Peek(s, &header, 256);
     int position = 0;
 
     if (FindJpegMarker(&position, header, size) != 0xd8)
@@ -455,16 +437,11 @@ static bool FindSVGmarker(int *position, const uint8_t *data, const int size, co
 
 static bool IsSVG(stream_t *s)
 {
-    if (s->psz_url == NULL)
-        return false;
-
-    char *ext = strstr(s->psz_url, ".svg");
+    char *ext = strstr(s->psz_path, ".svg");
     if (!ext) return false;
 
     const uint8_t *header;
-    ssize_t size = vlc_stream_Peek(s, &header, 4096);
-    if (size == -1)
-        return false;
+    int size = stream_Peek(s, &header, 4096);
     int position = 0;
 
     const char xml[] = "<?xml version=\"";
@@ -498,7 +475,7 @@ static bool IsTarga(stream_t *s)
      * to have a look at the footer. But doing so can be slow. So
      * try to avoid it when possible */
     const uint8_t *header;
-    if (vlc_stream_Peek(s, &header, 18) < 18)   /* Targa fixed header */
+    if (stream_Peek(s, &header, 18) < 18)   /* Targa fixed header */
         return false;
     if (header[1] > 1)                      /* Color Map Type */
         return false;
@@ -523,23 +500,23 @@ static bool IsTarga(stream_t *s)
     if (size <= 18 + 26)
         return false;
     bool can_seek;
-    if (vlc_stream_Control(s, STREAM_CAN_SEEK, &can_seek) || !can_seek)
+    if (stream_Control(s, STREAM_CAN_SEEK, &can_seek) || !can_seek)
         return false;
 
-    const int64_t position = vlc_stream_Tell(s);
-    if (vlc_stream_Seek(s, size - 26))
+    const int64_t position = stream_Tell(s);
+    if (stream_Seek(s, size - 26))
         return false;
 
     const uint8_t *footer;
-    bool is_targa = vlc_stream_Peek(s, &footer, 26) >= 26 &&
+    bool is_targa = stream_Peek(s, &footer, 26) >= 26 &&
                     !memcmp(&footer[8], "TRUEVISION-XFILE.\x00", 18);
-    vlc_stream_Seek(s, position);
+    stream_Seek(s, position);
     return is_targa;
 }
 
 typedef struct {
     vlc_fourcc_t  codec;
-    size_t        marker_size;
+    int           marker_size;
     const uint8_t marker[14];
     bool          (*detect)(stream_t *s);
 } image_format_t;
@@ -607,10 +584,6 @@ static const image_format_t formats[] = {
     { .codec = VLC_CODEC_JPEG,
       .detect = IsExif,
     },
-    { .codec = VLC_CODEC_BPG,
-      .marker_size = 4,
-      .marker = { 'B', 'P', 'G', 0xFB },
-    },
     { .codec = VLC_CODEC_SVG,
       .detect = IsSVG,
     },
@@ -628,7 +601,7 @@ static int Open(vlc_object_t *object)
     const image_format_t *img;
 
     const uint8_t *peek;
-    ssize_t peek_size = 0;
+    int peek_size = 0;
     for (int i = 0; ; i++) {
         img = &formats[i];
         if (!img->codec)
@@ -637,16 +610,10 @@ static int Open(vlc_object_t *object)
         if (img->detect) {
             if (img->detect(demux->s))
                 break;
-            /* detect callbacks can invalidate the current peek buffer */
-            peek_size = 0;
         } else {
-            if ((size_t) peek_size < img->marker_size)
-            {
-                peek_size = vlc_stream_Peek(demux->s, &peek, img->marker_size);
-                if (peek_size == -1)
-                    return VLC_ENOMEM;
-            }
-            if ((size_t) peek_size >= img->marker_size &&
+            if (peek_size < img->marker_size)
+                peek_size = stream_Peek(demux->s, &peek, img->marker_size);
+            if (peek_size >= img->marker_size &&
                 !memcmp(peek, img->marker, img->marker_size))
                 break;
         }

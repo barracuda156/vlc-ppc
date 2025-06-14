@@ -29,7 +29,7 @@
 #endif
 
 #include <vlc_common.h>
-#include <vlc_access.h>
+#include <vlc_demux.h>
 
 #include "playlist.h"
 #include <vlc_xml.h>
@@ -38,7 +38,7 @@
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static int ReadDir( stream_t *, input_item_node_t * );
+static int Demux( demux_t *p_demux);
 static mtime_t strTimeToMTime( const char *psz );
 
 /*****************************************************************************
@@ -46,59 +46,20 @@ static mtime_t strTimeToMTime( const char *psz );
  *****************************************************************************/
 int Import_podcast( vlc_object_t *p_this )
 {
-    stream_t *p_demux = (stream_t *)p_this;
+    demux_t *p_demux = (demux_t *)p_this;
 
-    CHECK_FILE(p_demux);
-    if( stream_IsMimeType( p_demux->p_source, "text/xml" )
-     || stream_IsMimeType( p_demux->p_source, "application/xml" ) )
-    {
-        /* XML: check if the root node is "rss". Use a specific peeked
-         * probestream in order to not modify the source state while probing.
-         * */
-        uint8_t *p_peek;
-        ssize_t i_peek = vlc_stream_Peek( p_demux->p_source,
-                                          (const uint8_t **) &p_peek, 2048 );
-        if( unlikely( i_peek <= 0 ) )
-            return VLC_EGENERIC;
-
-        stream_t *p_probestream =
-            vlc_stream_MemoryNew( p_demux->p_source, p_peek, i_peek, true );
-        if( unlikely( !p_probestream ) )
-            return VLC_EGENERIC;
-
-        xml_reader_t *p_xml_reader = xml_ReaderCreate( p_demux, p_probestream );
-        if( !p_xml_reader )
-        {
-            vlc_stream_Delete( p_probestream );
-            return VLC_EGENERIC;
-        }
-
-        const char *node;
-        int ret;
-        if( ( ret = xml_ReaderNextNode( p_xml_reader, &node ) ) != XML_READER_STARTELEM
-         || strcmp( node, "rss" ) )
-        {
-            vlc_stream_Delete( p_probestream );
-            xml_ReaderDelete( p_xml_reader );
-            return VLC_EGENERIC;
-        }
-
-        xml_ReaderDelete( p_xml_reader );
-        vlc_stream_Delete( p_probestream );
-        /* SUCCESS: this text/xml is a rss file */
-    }
-    else if( !stream_IsMimeType( p_demux->p_source, "application/rss+xml" ) )
+    if( !demux_IsForced( p_demux, "podcast" ) )
         return VLC_EGENERIC;
 
-    p_demux->pf_readdir = ReadDir;
-    p_demux->pf_control = access_vaDirectoryControlHelper;
+    p_demux->pf_demux = Demux;
+    p_demux->pf_control = Control;
     msg_Dbg( p_demux, "using podcast reader" );
 
     return VLC_SUCCESS;
 }
 
 /* "specs" : http://phobos.apple.com/static/iTunesRSS.html */
-static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
+static int Demux( demux_t *p_demux )
 {
     bool b_item = false;
     bool b_image = false;
@@ -120,10 +81,11 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
     const char *node;
     int i_type;
     input_item_t *p_input;
+    input_item_node_t *p_subitems = NULL;
 
     input_item_t *p_current_input = GetCurrentItem(p_demux);
 
-    p_xml_reader = xml_ReaderCreate( p_demux, p_demux->p_source );
+    p_xml_reader = xml_ReaderCreate( p_demux, p_demux->s );
     if( !p_xml_reader )
         goto error;
 
@@ -141,6 +103,8 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
         goto error;
     }
 
+    p_subitems = input_item_node_Create( p_current_input );
+
     while( (i_type = xml_ReaderNextNode( p_xml_reader, &node )) > 0 )
     {
         switch( i_type )
@@ -149,7 +113,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
             {
                 free( psz_elname );
                 psz_elname = strdup( node );
-                if( unlikely(!psz_elname) )
+                if( unlikely(!node) )
                     goto error;
 
                 if( !strcmp( node, "item" ) )
@@ -246,7 +210,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
                 }
                 else
                 {
-                    if( !strcmp( psz_elname, "url" ) && *node )
+                    if( !strcmp( psz_elname, "url" ) )
                     {
                         free( psz_art_url );
                         psz_art_url = strdup( node );
@@ -287,8 +251,8 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
                         continue;
                     }
 
-                    vlc_xml_decode( psz_item_mrl );
-                    vlc_xml_decode( psz_item_name );
+                    resolve_xml_special_chars( psz_item_mrl );
+                    resolve_xml_special_chars( psz_item_name );
                     p_input = input_item_New( psz_item_mrl, psz_item_name );
                     FREENULL( psz_item_mrl );
                     FREENULL( psz_item_name );
@@ -298,7 +262,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
 
                     /* Set the duration if available */
                     if( psz_item_duration )
-                        p_input->i_duration = strTimeToMTime( psz_item_duration );
+                        input_item_SetDuration( p_input, strTimeToMTime( psz_item_duration ) );
 
 #define ADD_INFO( info, field ) \
     if( field ) { \
@@ -318,7 +282,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
                     /* Add the global art url to this item, if any */
                     if( psz_art_url )
                     {
-                        vlc_xml_decode( psz_art_url );
+                        resolve_xml_special_chars( psz_art_url );
                         input_item_SetArtURL( p_input, psz_art_url );
                     }
 
@@ -332,7 +296,7 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
                         FREENULL( psz_item_size );
                     }
                     input_item_node_AppendItem( p_subitems, p_input );
-                    input_item_Release( p_input );
+                    vlc_gc_decref( p_input );
                     b_item = false;
                 }
                 else if( !strcmp( node, "image" ) )
@@ -353,7 +317,9 @@ static int ReadDir( stream_t *p_demux, input_item_node_t *p_subitems )
     free( psz_elname );
     xml_ReaderDelete( p_xml_reader );
 
-    return VLC_SUCCESS;
+    input_item_node_PostAndDelete( p_subitems );
+    vlc_gc_decref(p_current_input);
+    return 0; /* Needed for correct operation of go back */
 
 error:
     free( psz_item_name );
@@ -372,8 +338,11 @@ error:
 
     if( p_xml_reader )
         xml_ReaderDelete( p_xml_reader );
+    if( p_subitems )
+        input_item_node_Delete( p_subitems );
 
-    return VLC_EGENERIC;
+    vlc_gc_decref(p_current_input);
+    return -1;
 }
 
 static mtime_t strTimeToMTime( const char *psz )
@@ -385,6 +354,7 @@ static mtime_t strTimeToMTime( const char *psz )
         return (mtime_t)( ( h*60 + m )*60 + s ) * 1000000;
     case 2:
         return (mtime_t)( h*60 + m ) * 1000000;
+        break;
     default:
         return -1;
     }

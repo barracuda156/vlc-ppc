@@ -34,7 +34,6 @@
 
 #include <vlc_network.h>
 #include <vlc_url.h>
-#include <vlc_memstream.h>
 
 /*****************************************************************************
  * Module descriptor
@@ -73,6 +72,11 @@
 #define EMAIL_LONGTEXT N_( \
     "This allows you to give a contact mail address for the stream, that will " \
     "be announced in the SDP (Session Descriptor)." )
+#define PHONE_TEXT N_("Session phone number")
+#define PHONE_LONGTEXT N_( \
+    "This allows you to give a contact telephone number for the stream, that will " \
+    "be announced in the SDP (Session Descriptor)." )
+
 
 #define SAP_TEXT N_("SAP announcing")
 #define SAP_LONGTEXT N_("Announce this session with SAP.")
@@ -82,17 +86,11 @@ static void     Close   ( vlc_object_t * );
 
 #define SOUT_CFG_PREFIX "sout-standard-"
 
-#ifdef ENABLE_SRT
-#define SRT_SHORTCUT "srt"
-#else
-#define SRT_SHORTCUT
-#endif
-
 vlc_module_begin ()
     set_shortname( N_("Standard"))
     set_description( N_("Standard stream output") )
     set_capability( "sout stream", 50 )
-    add_shortcut( "standard", "std", "file", "http", "udp", SRT_SHORTCUT )
+    add_shortcut( "standard", "std", "file", "http", "udp" )
     set_category( CAT_SOUT )
     set_subcategory( SUBCAT_SOUT_STREAM )
 
@@ -107,7 +105,7 @@ vlc_module_begin ()
     add_string( SOUT_CFG_PREFIX "description", "", DESC_TEXT, DESC_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "url", "", URL_TEXT, URL_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "email", "", EMAIL_TEXT, EMAIL_LONGTEXT, true )
-    add_obsolete_string( SOUT_CFG_PREFIX "phone" ) /* since 3.0.0 */
+    add_string( SOUT_CFG_PREFIX "phone", "", PHONE_TEXT, PHONE_LONGTEXT, true )
 
     set_callbacks( Open, Close )
 vlc_module_end ()
@@ -118,7 +116,7 @@ vlc_module_end ()
  *****************************************************************************/
 static const char *const ppsz_sout_options[] = {
     "access", "mux", "url", "dst",
-    "sap", "name", "description", "url", "email",
+    "sap", "name", "description", "url", "email", "phone",
     "bind", "path", NULL
 };
 
@@ -130,14 +128,19 @@ struct sout_stream_sys_t
     session_descriptor_t *p_session;
 };
 
-static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, const es_format_t *p_fmt )
+struct sout_stream_id_sys_t
+{
+};
+
+static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, es_format_t *p_fmt )
 {
     return (sout_stream_id_sys_t*)sout_MuxAddStream( p_stream->p_sys->p_mux, p_fmt );
 }
 
-static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
+static int Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 {
     sout_MuxDeleteStream( p_stream->p_sys->p_mux, (sout_input_t*)id );
+    return VLC_SUCCESS;
 }
 
 static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
@@ -145,12 +148,6 @@ static int Send( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
 {
     return sout_MuxSendBuffer( p_stream->p_sys->p_mux, (sout_input_t*)id, p_buffer );
 }
-
-static void Flush( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
-{
-    sout_MuxFlush( p_stream->p_sys->p_mux, (sout_input_t*)id );
-}
-
 static void create_SDP(sout_stream_t *p_stream, sout_access_out_t *p_access)
 {
     sout_stream_sys_t   *p_sys = p_stream->p_sys;
@@ -181,25 +178,29 @@ static void create_SDP(sout_stream_t *p_stream, sout_access_out_t *p_access)
         freeaddrinfo (res);
     }
 
-    struct vlc_memstream sdp;
+    char *head = vlc_sdp_Start (VLC_OBJECT (p_stream), SOUT_CFG_PREFIX,
+            (struct sockaddr *)&src, srclen,
+            (struct sockaddr *)&dst, dstlen);
+    free (shost);
 
-    if (vlc_sdp_Start(&sdp, VLC_OBJECT (p_stream), SOUT_CFG_PREFIX,
-                      (struct sockaddr *)&src, srclen,
-                      (struct sockaddr *)&dst, dstlen) == 0)
+    if (head != NULL)
     {
-        vlc_memstream_printf(&sdp, "m=video %d udp mpeg\r\n", dport);
+        char *psz_sdp = NULL;
+        if (asprintf (&psz_sdp, "%s"
+                    "m=video %d udp mpeg\r\n", head, dport) == -1)
+            psz_sdp = NULL;
+        free (head);
 
         /* Register the SDP with the SAP thread */
-        if (vlc_memstream_close(&sdp) == 0)
+        if (psz_sdp)
         {
-            msg_Dbg(p_stream, "Generated SDP:\n%s", sdp.ptr);
+            msg_Dbg (p_stream, "Generated SDP:\n%s", psz_sdp);
             p_sys->p_session =
-                sout_AnnounceRegisterSDP(p_stream, sdp.ptr, dhost);
-            free(sdp.ptr);
+                sout_AnnounceRegisterSDP (p_stream, psz_sdp, dhost);
+            free( psz_sdp );
         }
     }
-    free(shost);
-    free(dhost);
+    free (dhost);
 }
 
 static const char *getMuxFromAlias( const char *psz_alias )
@@ -291,33 +292,24 @@ static int fixAccessMux( sout_stream_t *p_stream, char **ppsz_mux,
     return 0;
 }
 
-static bool exactMatch( const char *psz_target, const char *psz_string,
-                        size_t i_len )
-{
-    if ( strncmp( psz_target, psz_string, i_len ) )
-        return false;
-    else
-        return ( psz_target[i_len] < 'a' || psz_target[i_len] > 'z' );
-}
-
 static void checkAccessMux( sout_stream_t *p_stream, char *psz_access,
                             char *psz_mux )
 {
-    if( exactMatch( psz_access, "mmsh", 4 ) && !exactMatch( psz_mux, "asfh", 4 ) )
+    if( !strncmp( psz_access, "mmsh", 4 ) && strncmp( psz_mux, "asfh", 4 ) )
         msg_Err( p_stream, "mmsh output is only valid with asfh mux" );
-    else if( !exactMatch( psz_access, "file", 4 ) &&
-             ( exactMatch( psz_mux, "mov", 3 ) || exactMatch( psz_mux, "mp4", 3 ) ) )
+    else if( strncmp( psz_access, "file", 4 ) &&
+            ( !strncmp( psz_mux, "mov", 3 ) || !strncmp( psz_mux, "mp4", 3 ) ) )
         msg_Err( p_stream, "mov and mp4 mux are only valid with file output" );
-    else if( exactMatch( psz_access, "udp", 3 ) )
+    else if( !strncmp( psz_access, "udp", 3 ) )
     {
-        if( exactMatch( psz_mux, "ffmpeg", 6 ) || exactMatch( psz_mux, "avformat", 8 ) )
+        if( !strncmp( psz_mux, "ffmpeg", 6 ) || !strncmp( psz_mux, "avformat", 8 ) )
         {   /* why would you use ffmpeg's ts muxer ? YOU DON'T LOVE VLC ??? */
             char *psz_ffmpeg_mux = var_CreateGetString( p_stream, "sout-avformat-mux" );
             if( !psz_ffmpeg_mux || strncmp( psz_ffmpeg_mux, "mpegts", 6 ) )
                 msg_Err( p_stream, "UDP output is only valid with TS mux" );
             free( psz_ffmpeg_mux );
         }
-        else if( !exactMatch( psz_mux, "ts", 2 ) )
+        else if( strncmp( psz_mux, "ts", 2 ) )
             msg_Err( p_stream, "UDP output is only valid with TS mux" );
     }
 }
@@ -409,7 +401,6 @@ static int Open( vlc_object_t *p_this )
     p_stream->pf_add    = Add;
     p_stream->pf_del    = Del;
     p_stream->pf_send   = Send;
-    p_stream->pf_flush  = Flush;
     if( !sout_AccessOutCanControlPace( p_access ) )
         p_stream->pace_nocontrol = true;
 

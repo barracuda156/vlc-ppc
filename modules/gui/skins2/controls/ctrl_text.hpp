@@ -81,7 +81,7 @@ public:
     void setText( const UString &rText, uint32_t color = 0xFFFFFFFF );
 
     /// Get the type of control (custom RTTI)
-    virtual std::string getType() const { return "text"; }
+    virtual string getType() const { return "text"; }
 
 private:
     /// Finite state machine of the control

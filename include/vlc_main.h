@@ -26,6 +26,8 @@
  * This file defines libvlc_int_t internal libvlc instance
  */
 
+struct hotkey;
+
 /*****************************************************************************
  * libvlc_internal_instance_t
  *****************************************************************************
@@ -34,5 +36,8 @@
 struct libvlc_int_t
 {
     VLC_COMMON_MEMBERS
+
+    /* Structure storing the action name / key associations */
+    const struct hotkey *p_hotkeys;
 };
 

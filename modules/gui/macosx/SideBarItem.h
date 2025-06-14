@@ -28,7 +28,21 @@
 
  */
 
-@interface SideBarItem : NSObject
+@interface SideBarItem : NSObject {
+
+NSString *title;
+
+NSString *identifier;
+    NSString *untranslatedTitle;
+
+NSImage *icon;
+
+NSInteger badgeValue;
+    NSInteger sdtype;
+
+
+NSArray *children;
+}
 
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *identifier;

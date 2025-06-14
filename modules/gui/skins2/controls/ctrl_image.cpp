@@ -51,7 +51,7 @@ CtrlImage::CtrlImage( intf_thread_t *pIntf, GenericBitmap &rBitmap,
         pVlcProc->getStreamArtVar().addObserver( this );
 
         // retrieve initial state of art file
-        std::string str = pVlcProc->getStreamArtVar().get();
+        string str = pVlcProc->getStreamArtVar().get();
         GenericBitmap* pArt = (GenericBitmap*) pArtManager->getArtBitmap( str );
         if( pArt )
         {
@@ -258,7 +258,7 @@ void CtrlImage::onUpdate( Subject<VarString> &rVariable, void* arg )
 
     if( &rVariable == &pVlcProc->getStreamArtVar() )
     {
-        std::string str = ((VarString&)rVariable).get();
+        string str = ((VarString&)rVariable).get();
         ArtManager* pArtManager = ArtManager::instance( getIntf() );
         GenericBitmap* pArt = (GenericBitmap*) pArtManager->getArtBitmap( str );
 

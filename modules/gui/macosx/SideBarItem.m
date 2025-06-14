@@ -15,14 +15,23 @@
 
 @implementation SideBarItem
 
+@synthesize title;
+@synthesize untranslatedTitle;
+@synthesize identifier;
+@synthesize icon;
+@synthesize badgeValue;
+@synthesize children;
+@synthesize sdtype;
+
 #pragma mark -
 #pragma mark Init/Dealloc/Finalize
 
 - (id)init
 {
-    if (self=[super init]) {
-        _badgeValue = -1; //We don't want a badge value by default
-        _sdtype = -1; //no sd type set
+    if(self=[super init])
+    {
+        badgeValue = -1; //We don't want a badge value by default
+        sdtype = -1; //no sd type set
     }
 
     return self;
@@ -40,7 +49,7 @@
 + (id)itemWithTitle:(NSString*)aTitle identifier:(NSString*)anIdentifier icon:(NSImage*)anIcon
 {
 
-    SideBarItem *item = [[SideBarItem alloc] init];
+    SideBarItem *item = [[[SideBarItem alloc] init] autorelease];
 
     [item setTitle:aTitle];
     [item setIdentifier:anIdentifier];
@@ -49,22 +58,42 @@
     return item;
 }
 
+- (void)dealloc
+{
+    [title release];
+    [identifier release];
+    [icon release];
+    [children release];
+
+    [super dealloc];
+}
+
+- (void)finalize
+{
+    title = nil;
+    identifier = nil;
+    icon = nil;
+    children = nil;
+
+    [super finalize];
+}
+
 #pragma mark -
 #pragma mark Custom Accessors
 
 - (BOOL)hasBadge
 {
-    return _badgeValue!=-1;
+    return badgeValue!=-1;
 }
 
 - (BOOL)hasChildren
 {
-    return [_children count]>0;
+    return [children count]>0;
 }
 
 - (BOOL)hasIcon
 {
-    return _icon!=nil;
+    return icon!=nil;
 }
 
 @end

@@ -23,7 +23,7 @@
  *****************************************************************************/
 
 #include "evt_input.hpp"
-#include "vlc_actions.h"
+#include "vlc_keys.h"
 
 const int
     EvtInput::kModNone=0,
@@ -37,7 +37,7 @@ EvtInput::EvtInput( intf_thread_t *pIntf, int mod )
     : EvtGeneric( pIntf), m_mod( mod ) { }
 
 
-void EvtInput::addModifier( std::string &rEvtString ) const
+void EvtInput::addModifier( string &rEvtString ) const
 {
     if( m_mod == kModNone )
     {
@@ -45,7 +45,7 @@ void EvtInput::addModifier( std::string &rEvtString ) const
     }
     else
     {
-        std::string m = ":";
+        string m = ":";
         if( m_mod & kModAlt )
             m += "alt,";
         if( m_mod & kModCtrl )

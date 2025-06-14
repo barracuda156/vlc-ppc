@@ -69,7 +69,11 @@ struct vout_thread_sys_t
     filter_t        *spu_blend;
 
     /* Video output window */
-    vout_window_t   *window;
+    struct {
+        bool              is_unused;
+        vout_window_cfg_t cfg;
+        vout_window_t     *object;
+    } window;
 
     /* Thread & synchronization */
     vlc_thread_t    thread;
@@ -81,6 +85,7 @@ struct vout_thread_sys_t
         char           *title;
         vout_display_t *vd;
         bool           use_dr;
+        picture_t      *filtered;
     } display;
 
     struct {
@@ -109,11 +114,6 @@ struct vout_thread_sys_t
         int         position;
     } title;
 
-    struct {
-        bool        is_interlaced;
-        mtime_t     date;
-    } interlacing;
-
     /* */
     bool            is_late_dropped;
 
@@ -122,15 +122,15 @@ struct vout_thread_sys_t
         vlc_mutex_t     lock;
         char            *configuration;
         video_format_t  format;
-        struct filter_chain_t *chain_static;
-        struct filter_chain_t *chain_interactive;
-        bool            has_deint;
+        filter_chain_t  *chain_static;
+        filter_chain_t  *chain_interactive;
     } filter;
 
     /* */
     vlc_mouse_t     mouse;
 
     /* */
+    vlc_mutex_t     picture_lock;                 /**< picture heap lock */
     picture_pool_t  *private_pool;
     picture_pool_t  *display_pool;
     picture_pool_t  *decoder_pool;
@@ -151,7 +151,6 @@ void vout_ControlChangeFilters(vout_thread_t *, const char *);
 void vout_ControlChangeSubSources(vout_thread_t *, const char *);
 void vout_ControlChangeSubFilters(vout_thread_t *, const char *);
 void vout_ControlChangeSubMargin(vout_thread_t *, int);
-void vout_ControlChangeViewpoint( vout_thread_t *, const vlc_viewpoint_t *);
 
 /* */
 void vout_IntfInit( vout_thread_t * );

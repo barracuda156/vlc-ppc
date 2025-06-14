@@ -30,7 +30,6 @@
 #include <math.h>
 
 #include <vlc/libvlc.h>
-#include <vlc/libvlc_renderer_discoverer.h>
 #include <vlc/libvlc_media.h>
 #include <vlc/libvlc_media_player.h>
 
@@ -280,19 +279,6 @@ void libvlc_audio_output_device_set( libvlc_media_player_t *mp,
     vlc_object_release( aout );
 }
 
-char *libvlc_audio_output_device_get( libvlc_media_player_t *mp )
-{
-    audio_output_t *aout = GetAOut( mp );
-    if( aout == NULL )
-        return NULL;
-
-    char *devid = aout_DeviceGet( aout );
-
-    vlc_object_release( aout );
-
-    return devid;
-}
-
 int libvlc_audio_output_get_device_type( libvlc_media_player_t *mp )
 {
     (void) mp;
@@ -481,7 +467,7 @@ int64_t libvlc_audio_get_delay( libvlc_media_player_t *p_mi )
     int64_t val = 0;
     if( p_input_thread != NULL )
     {
-      val = var_GetInteger( p_input_thread, "audio-delay" );
+      val = var_GetTime( p_input_thread, "audio-delay" );
       vlc_object_release( p_input_thread );
     }
     return val;
@@ -496,7 +482,7 @@ int libvlc_audio_set_delay( libvlc_media_player_t *p_mi, int64_t i_delay )
     int ret = 0;
     if( p_input_thread != NULL )
     {
-      var_SetInteger( p_input_thread, "audio-delay", i_delay );
+      var_SetTime( p_input_thread, "audio-delay", i_delay );
       vlc_object_release( p_input_thread );
     }
     else

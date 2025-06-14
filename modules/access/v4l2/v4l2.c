@@ -46,7 +46,7 @@
 #define VBI_DEVICE_TEXT N_("VBI capture device")
 #define VBI_DEVICE_LONGTEXT N_( \
     "The device node where VBI data can be read "   \
-    " (for closed captions)." )
+    " (for closed captions) " )
 #define STANDARD_TEXT N_( "Standard" )
 #define STANDARD_LONGTEXT N_( \
     "Video standard (Default, SECAM, PAL, or NTSC)." )
@@ -190,7 +190,7 @@ static const char *const colorfx_user[] = { N_("Unspecified"), N_("None"),
     "Set the v4l2 driver controls to the values specified using a comma " \
     "separated list optionally encapsulated by curly braces " \
     "(e.g.: {video_bitrate=6000000,audio_crc=0,stream_type=3} ). " \
-    "To list available controls, increase verbosity (-vv) " \
+    "To list available controls, increase verbosity (-vvv) " \
     "or use the v4l2-ctl application." )
 
 #define ASPECT_TEXT N_("Picture aspect-ratio n:m")

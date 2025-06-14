@@ -30,7 +30,7 @@
 #include "os_window.hpp"
 #include "../events/evt_key.hpp"
 
-#include <vlc_actions.h>
+#include <vlc_keys.h>
 
 
 VoutWindow::VoutWindow( intf_thread_t *pIntf, vout_window_t* pWnd,
@@ -77,7 +77,6 @@ void VoutWindow::setCtrlVideo( CtrlVideo* pCtrlVideo )
         setParent( pCtrlVideo->getWindow(), x, y, w, h );
         m_pParentWindow = pCtrlVideo->getWindow();
 
-        resize( w, h );
         show();
     }
     else
@@ -90,8 +89,6 @@ void VoutWindow::setCtrlVideo( CtrlVideo* pCtrlVideo )
                    0, 0, w, h );
         m_pParentWindow =
                   VoutManager::instance( getIntf() )->getVoutMainWindow();
-
-        resize( w, h );
         show();
     }
 
@@ -99,19 +96,11 @@ void VoutWindow::setCtrlVideo( CtrlVideo* pCtrlVideo )
 }
 
 
-void VoutWindow::resize( int width, int height )
-{
-    GenericWindow::resize( width, height );
-
-    if( m_pWnd )
-        vout_window_ReportSize( m_pWnd, width, height );
-}
-
-
 void VoutWindow::processEvent( EvtKey &rEvtKey )
 {
     // Only do the action when the key is down
     if( rEvtKey.getKeyState() == EvtKey::kDown )
-        getIntf()->p_sys->p_dialogs->sendKey( rEvtKey.getModKey() );
+        var_SetInteger( getIntf()->p_libvlc, "key-pressed",
+                         rEvtKey.getModKey() );
 }
 

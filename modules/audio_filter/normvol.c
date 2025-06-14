@@ -102,10 +102,8 @@ static int Open( vlc_object_t *p_this )
     p_sys = p_filter->p_sys = malloc( sizeof( *p_sys ) );
     if( !p_sys )
         return VLC_ENOMEM;
-    p_sys->i_nb = var_CreateGetInteger( p_filter->obj.parent,
-                                        "norm-buff-size" );
-    p_sys->f_max = var_CreateGetFloat( p_filter->obj.parent,
-                                       "norm-max-level" );
+    p_sys->i_nb = var_CreateGetInteger( p_filter->p_parent, "norm-buff-size" );
+    p_sys->f_max = var_CreateGetFloat( p_filter->p_parent, "norm-max-level" );
 
     if( p_sys->f_max <= 0 ) p_sys->f_max = 0.01;
 
@@ -118,7 +116,6 @@ static int Open( vlc_object_t *p_this )
     }
 
     p_filter->fmt_in.audio.i_format = VLC_CODEC_FL32;
-    aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
 
@@ -146,7 +143,7 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
     if( !pf_sum )
         goto out;
 
-    pf_gain = vlc_alloc( i_channels, sizeof(float) );
+    pf_gain = malloc( sizeof(float) * i_channels );
     if( !pf_gain )
     {
         free( pf_sum );
@@ -187,8 +184,7 @@ static block_t *DoWork( filter_t *p_filter, block_t *p_in_buf )
         f_average = f_average / p_sys->i_nb;
 
         /* Seuil arbitraire */
-        p_sys->f_max = var_GetFloat( p_filter->obj.parent,
-                                     "norm-max-level" );
+        p_sys->f_max = var_GetFloat( p_filter->p_parent, "norm-max-level" );
 
         //fprintf(stderr,"Average %f, max %f\n", f_average, p_sys->f_max );
         if( f_average > p_sys->f_max )

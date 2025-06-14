@@ -45,7 +45,7 @@ public:
 
     virtual float getStep() const { return m_step; }
 
-    virtual std::string getAsStringPercent() const;
+    virtual string getAsStringPercent() const;
 
 private:
     // preferred volume step on [0., 1.]

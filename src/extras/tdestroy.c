@@ -24,7 +24,7 @@
 # include "config.h"
 #endif
 
-#if defined(HAVE_SEARCH_H) && !defined(HAVE_TDESTROY) && defined(HAVE_TFIND)
+#if defined(HAVE_SEARCH_H) && !defined(HAVE_TDESTROY)
 
 #include <stdlib.h>
 #include <assert.h>

@@ -25,12 +25,15 @@
 #define VLC_VOD_H 1
 
 /**
- * \defgroup vod Video on Demand (VoD)
- * \ingroup server
- * Video on Demand (VOD) functionality provided by VLM
- * @{
  * \file
- * VLC VoD module interface
+ * This file defines an interface for VOD server modules in vlc
+ */
+
+/**
+ * \defgroup vod Video On Demand (VOD)
+ * \ingroup server
+ * Video On Demand (VOD) functionality is provided from VLM.
+ * @{
  */
 
 struct vod_t

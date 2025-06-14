@@ -85,7 +85,7 @@ static int vlclua_playlist_play( lua_State * L )
 static int vlclua_playlist_pause( lua_State * L )
 {
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
-    playlist_TogglePause( p_playlist );
+    playlist_Pause( p_playlist );
     return 0;
 }
 
@@ -130,24 +130,27 @@ static int vlclua_playlist_gotoitem( lua_State * L )
     int i_id = luaL_checkint( L, 1 );
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
     PL_LOCK;
-    playlist_ViewPlay( p_playlist, NULL,
-                       playlist_ItemGetById( p_playlist, i_id ) );
+    int i_ret = playlist_Control( p_playlist, PLAYLIST_VIEWPLAY,
+                                  true, NULL,
+                                  playlist_ItemGetById( p_playlist, i_id ) );
     PL_UNLOCK;
-    return vlclua_push_ret( L, VLC_SUCCESS );
+    return vlclua_push_ret( L, i_ret );
 }
 
 static int vlclua_playlist_delete( lua_State * L )
 {
     int i_id = luaL_checkint( L, 1 );
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
-
     PL_LOCK;
     playlist_item_t *p_item = playlist_ItemGetById( p_playlist, i_id );
-    if( p_item != NULL )
-       playlist_NodeDelete( p_playlist, p_item );
+    if( !p_item )
+    {
+       PL_UNLOCK;
+       return vlclua_push_ret( L, -1 );
+    }
+    int i_ret = playlist_DeleteFromInput( p_playlist, p_item -> p_input, true );
     PL_UNLOCK;
-
-    return vlclua_push_ret( L, (p_item != NULL) ? 0 : -1 );
+    return vlclua_push_ret( L, i_ret );
 }
 
 static int vlclua_playlist_move( lua_State * L )
@@ -167,55 +170,31 @@ static int vlclua_playlist_move( lua_State * L )
     if( p_target->i_children != -1 )
         i_ret = playlist_TreeMove( p_playlist, p_item, p_target, 0 );
     else
-        i_ret = playlist_TreeMove( p_playlist, p_item, p_target->p_parent, p_target->i_id - p_target->p_parent->pp_children[0]->i_id + 1 );
+    	i_ret = playlist_TreeMove( p_playlist, p_item, p_target->p_parent, p_target->i_id - p_target->p_parent->pp_children[0]->i_id + 1 );
     PL_UNLOCK;
     return vlclua_push_ret( L, i_ret );
 }
 
-static int vlclua_playlist_add_common(lua_State *L, bool play)
-{
-    vlc_object_t *obj = vlclua_get_this(L);
-    playlist_t *playlist = vlclua_get_playlist_internal(L);
-    int count = 0;
-
-    /* playlist */
-    if (!lua_istable(L, -1))
-    {
-        msg_Warn(obj, "Playlist should be a table.");
-        return 0;
-    }
-
-    lua_pushnil(L);
-
-    /* playlist nil */
-    while (lua_next(L, -2))
-    {
-        input_item_t *item = vlclua_read_input_item(obj, L);
-        if (item != NULL)
-        {
-            /* Play or Enqueue (preparse) */
-            /* FIXME: playlist_AddInput() can fail */
-            playlist_AddInput(playlist, item, play, true);
-            input_item_Release(item);
-            count++;
-        }
-        /* pop the value, keep the key for the next lua_next() call */
-        lua_pop(L, 1);
-    }
-    /* playlist */
-
-    lua_pushinteger(L, count);
-    return 1;
-}
-
 static int vlclua_playlist_add( lua_State *L )
 {
-    return vlclua_playlist_add_common(L, true);
+    int i_count;
+    vlc_object_t *p_this = vlclua_get_this( L );
+    playlist_t *p_playlist = vlclua_get_playlist_internal( L );
+    i_count = vlclua_playlist_add_internal( p_this, L, p_playlist,
+                                            NULL, true );
+    lua_pushinteger( L, i_count );
+    return 1;
 }
 
 static int vlclua_playlist_enqueue( lua_State *L )
 {
-    return vlclua_playlist_add_common(L, false);
+    int i_count;
+    vlc_object_t *p_this = vlclua_get_this( L );
+    playlist_t *p_playlist = vlclua_get_playlist_internal( L );
+    i_count = vlclua_playlist_add_internal( p_this, L, p_playlist,
+                                            NULL, false );
+    lua_pushinteger( L, i_count );
+    return 1;
 }
 
 static void push_playlist_item( lua_State *L, playlist_item_t *p_item )
@@ -233,14 +212,16 @@ static void push_playlist_item( lua_State *L, playlist_item_t *p_item )
         lua_pushboolean( L, 1 ); \
         lua_setfield( L, -2, #label ); \
     }
+    CHECK_AND_SET_FLAG( SAVE, save )
+    CHECK_AND_SET_FLAG( SKIP, skip )
     CHECK_AND_SET_FLAG( DBL, disabled )
     CHECK_AND_SET_FLAG( RO, ro )
+    CHECK_AND_SET_FLAG( REMOVE, remove )
+    CHECK_AND_SET_FLAG( EXPANDED, expanded )
 #undef CHECK_AND_SET_FLAG
     lua_setfield( L, -2, "flags" );
     if( p_input )
     {
-        /* Apart from nb_played, these fields unfortunately duplicate
-           fields already available from the input item */
         char *psz_name = input_item_GetTitleFbName( p_input );
         lua_pushstring( L, psz_name );
         free( psz_name );
@@ -252,9 +233,10 @@ static void push_playlist_item( lua_State *L, playlist_item_t *p_item )
         else
             lua_pushnumber( L, ((double)p_input->i_duration)*1e-6 );
         lua_setfield( L, -2, "duration" );
-        lua_pushinteger( L, p_item->i_nb_played );
+        lua_pushinteger( L, p_input->i_nb_played );
         lua_setfield( L, -2, "nb_played" );
         luaopen_input_item( L, p_input );
+        /* TODO: add (optional) info categories, meta, options, es */
     }
     if( p_item->i_children >= 0 )
     {
@@ -295,11 +277,11 @@ static int vlclua_playlist_get( lua_State *L )
               || !strcasecmp( psz_what, "media library" ) )
             p_item = p_playlist->p_media_library;
         else if( !strcasecmp( psz_what, "root" ) )
-            p_item = &p_playlist->root;
+            p_item = p_playlist->p_root;
         else
         {
             /* currently, psz_what must be SD module's longname! */
-            p_item = playlist_ChildSearchName( &p_playlist->root, psz_what );
+            p_item = playlist_ChildSearchName( p_playlist->p_root, psz_what );
 
             if( !p_item )
             {
@@ -310,7 +292,7 @@ static int vlclua_playlist_get( lua_State *L )
     }
     else
     {
-        p_item = &p_playlist->root;
+        p_item = p_playlist->p_root;
     }
     push_playlist_item( L, p_item );
     PL_UNLOCK;
@@ -322,23 +304,27 @@ static int vlclua_playlist_search( lua_State *L )
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
     const char *psz_string = luaL_optstring( L, 1, "" );
     PL_LOCK;
-    playlist_LiveSearchUpdate( p_playlist, &p_playlist->root, psz_string, true );
-    push_playlist_item( L, &p_playlist->root );
+    playlist_LiveSearchUpdate( p_playlist, p_playlist->p_root, psz_string, true );
     PL_UNLOCK;
+    push_playlist_item( L, p_playlist->p_root );
     return 1;
 }
 
 static int vlclua_playlist_current( lua_State *L )
 {
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
-    playlist_item_t *item;
+    input_thread_t *p_input = playlist_CurrentInput( p_playlist );
     int id = -1;
 
-    PL_LOCK;
-    item = playlist_CurrentPlayingItem( p_playlist );
-    if( item != NULL )
-        id = item->i_id;
-    PL_UNLOCK;
+    if( p_input )
+    {
+        input_item_t *p_item = input_GetItem( p_input );
+        if( p_item )
+            id = p_item->i_id;
+        vlc_object_release( p_input );
+    }
+
+#warning Indexing input items by ID is unsafe,
     lua_pushinteger( L, id );
     return 1;
 }
@@ -388,9 +374,7 @@ static int vlclua_playlist_status( lua_State *L )
 {
     playlist_t *p_playlist = vlclua_get_playlist_internal( L );
     PL_LOCK;
-    int status = playlist_Status( p_playlist );
-    PL_UNLOCK;
-    switch( status )
+    switch( playlist_Status( p_playlist ) )
     {
         case PLAYLIST_STOPPED:
             lua_pushliteral( L, "stopped" );
@@ -405,6 +389,7 @@ static int vlclua_playlist_status( lua_State *L )
             lua_pushliteral( L, "unknown" );
             break;
     }
+    PL_UNLOCK;
     return 1;
 }
 
@@ -423,9 +408,7 @@ static const luaL_Reg vlclua_playlist_reg[] = {
     { "repeat_", vlclua_playlist_repeat }, // ... provide repeat_ too.
     { "loop", vlclua_playlist_loop },
     { "random", vlclua_playlist_random },
-#if LUA_VERSION_NUM < 502
     { "goto", vlclua_playlist_gotoitem },
-#endif
     { "gotoitem", vlclua_playlist_gotoitem },
     { "add", vlclua_playlist_add },
     { "enqueue", vlclua_playlist_enqueue },

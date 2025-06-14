@@ -27,7 +27,6 @@
 # include "config.h"
 #endif
 
-#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_threads.h>
@@ -141,7 +140,7 @@ static int  Open (vlc_object_t *p_this)
     encoder_t     *p_enc = (encoder_t *)p_this;
     encoder_sys_t *p_sys;
 
-    if (p_enc->fmt_out.i_codec != VLC_CODEC_HEVC && !p_enc->obj.force)
+    if (p_enc->fmt_out.i_codec != VLC_CODEC_HEVC && !p_enc->b_force)
         return VLC_EGENERIC;
 
     p_enc->fmt_out.i_cat = VIDEO_ES;

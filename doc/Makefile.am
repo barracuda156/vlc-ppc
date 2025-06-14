@@ -15,7 +15,9 @@ LIBVLC_SAMPLES = \
 nobase_doc_DATA = $(LIBVLC_SAMPLES)
 
 doc_DATA = \
+	bugreport-howto.txt \
 	fortunes.txt \
+	intf-vcd.txt \
 	$(NULL)
 
 CHANGELOGS = \
@@ -48,7 +50,9 @@ EXTRA_DIST = \
 	$(CHANGELOGS) \
 	$(man1_MANS) \
 	$(LIBVLC_SAMPLES) \
+	bugreport-howto.txt \
 	fortunes.txt \
+	intf-vcd.txt \
 	release-howto.txt \
 	Doxyfile.in \
 	lirc/example.lircrc \

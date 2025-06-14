@@ -46,10 +46,10 @@ vlc_module_begin()
     set_description(N_("VDPAU output"))
     set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VOUT)
-    set_capability("vout display", 0)
+    set_capability("vout display", 300)
     set_callbacks(Open, Close)
 
-    add_shortcut("vdpau")
+    add_shortcut("vdpau", "xid")
 vlc_module_end()
 
 struct vout_display_sys_t
@@ -60,6 +60,7 @@ struct vout_display_sys_t
     picture_t *current; /**< Currently visible picture */
 
     xcb_window_t window; /**< target window (owned by VDPAU back-end) */
+    xcb_cursor_t cursor; /**< blank cursor */
     VdpDevice device; /**< VDPAU device handle */
     VdpPresentationQueueTarget target; /**< VDPAU presentation queue target */
     VdpPresentationQueue queue; /**< VDPAU presentation queue */
@@ -152,7 +153,7 @@ static void PoolFree(vout_display_t *vd, picture_pool_t *pool)
 
     if (sys->current != NULL)
         picture_Release(sys->current);
-    picture_pool_Release(pool);
+    picture_pool_Delete(pool);
 }
 
 static picture_pool_t *Pool(vout_display_t *vd, unsigned requested_count)
@@ -308,23 +309,17 @@ static void Wait(vout_display_t *vd, picture_t *pic, subpicture_t *subpicture)
             msg_Err(vd, "presentation queue blocking error: %s",
                     vdp_get_error_string(sys->vdp, err));
             picture_Release(pic);
-            goto out;
+            return;
         }
         picture_Release(current);
     }
 
     sys->current = pic;
-out:
+
     /* We already dealt with the subpicture in the Queue phase, so it's safe to
        delete at this point */
     if (subpicture)
         subpicture_Delete(subpicture);
-
-    /* Drain the event queue. TODO: remove sys->conn completely */
-    xcb_generic_event_t *ev;
-
-    while ((ev = xcb_poll_for_event(sys->conn)) != NULL)
-        free(ev);
 }
 
 static int Control(vout_display_t *vd, int query, va_list ap)
@@ -333,6 +328,10 @@ static int Control(vout_display_t *vd, int query, va_list ap)
 
     switch (query)
     {
+    case VOUT_DISPLAY_HIDE_MOUSE:
+        xcb_change_window_attributes(sys->conn, sys->embed->handle.xid,
+                                    XCB_CW_CURSOR, &(uint32_t){ sys->cursor });
+        break;
     case VOUT_DISPLAY_RESET_PICTURES:
     {
         msg_Dbg(vd, "resetting pictures");
@@ -363,11 +362,28 @@ static int Control(vout_display_t *vd, int query, va_list ap)
                              values);
         break;
     }
+    case VOUT_DISPLAY_CHANGE_FULLSCREEN:
+    {
+        const vout_display_cfg_t *c = va_arg(ap, const vout_display_cfg_t *);
+        return vout_window_SetFullScreen(sys->embed, c->is_fullscreen);
+    }
+    case VOUT_DISPLAY_CHANGE_WINDOW_STATE:
+    {
+        unsigned state = va_arg(ap, unsigned);
+        return vout_window_SetState(sys->embed, state);
+    }
     case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE:
     {
         const vout_display_cfg_t *cfg = va_arg(ap, const vout_display_cfg_t *);
-        vout_display_place_t place;
+        bool forced = va_arg(ap, int);
+        if (forced)
+        {
+            vout_window_SetSize(sys->embed,
+                                cfg->display.width, cfg->display.height);
+            return VLC_EGENERIC; /* Always fail. See x11.c for rationale. */
+        }
 
+        vout_display_place_t place;
         vout_display_PlacePicture(&place, &vd->source, cfg, false);
         if (place.width  != vd->fmt.i_visible_width
          || place.height != vd->fmt.i_visible_height)
@@ -398,6 +414,14 @@ static int Control(vout_display_t *vd, int query, va_list ap)
     return VLC_SUCCESS;
 }
 
+static void Manage(vout_display_t *vd)
+{
+    vout_display_sys_t *sys = vd->sys;
+    bool visible;
+
+    XCB_Manage(vd, sys->conn, &visible);
+}
+
 static int xcb_screen_num(xcb_connection_t *conn, const xcb_screen_t *screen)
 {
     const xcb_setup_t *setup = xcb_get_setup(conn);
@@ -424,7 +448,8 @@ static int Open(vlc_object_t *obj)
         return VLC_ENOMEM;
 
     const xcb_screen_t *screen;
-    sys->embed = vlc_xcb_parent_Create(vd, &sys->conn, &screen);
+    uint16_t width, height;
+    sys->embed = XCB_parent_Create(vd, &sys->conn, &screen, &width, &height);
     if (sys->embed == NULL)
     {
         free(sys);
@@ -456,8 +481,7 @@ static int Open(vlc_object_t *obj)
     video_format_ApplyRotation(&fmt, &vd->fmt);
 
     if (fmt.i_chroma == VLC_CODEC_VDPAU_VIDEO_420
-     || fmt.i_chroma == VLC_CODEC_VDPAU_VIDEO_422
-     || fmt.i_chroma == VLC_CODEC_VDPAU_VIDEO_444)
+     || fmt.i_chroma == VLC_CODEC_VDPAU_VIDEO_422)
         ;
     else
     if (vlc_fourcc_to_vdp_ycc(fmt.i_chroma, &chroma, &format))
@@ -592,7 +616,7 @@ static int Open(vlc_object_t *obj)
                 sys->window, sys->embed->handle.xid, place.x, place.y,
                 place.width, place.height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
                 screen->root_visual, mask, values);
-        if (vlc_xcb_error_Check(vd, sys->conn, "window creation failure", c))
+        if (XCB_error_Check(vd, sys->conn, "window creation failure", c))
             goto error;
         msg_Dbg(vd, "using X11 window 0x%08"PRIx32, sys->window);
         xcb_map_window(sys->conn, sys->window);
@@ -641,11 +665,13 @@ static int Open(vlc_object_t *obj)
         goto error;
     }
 
+    sys->cursor = XCB_cursor_Create(sys->conn, screen);
     sys->pool = NULL;
 
     /* */
     vd->sys = sys;
     vd->info.has_pictures_invalid = true;
+    vd->info.has_event_thread = true;
     vd->info.subpicture_chromas = spu_chromas;
     vd->fmt = fmt;
 
@@ -653,6 +679,14 @@ static int Open(vlc_object_t *obj)
     vd->prepare = Queue;
     vd->display = Wait;
     vd->control = Control;
+    vd->manage = Manage;
+
+    /* */
+    bool is_fullscreen = vd->cfg->is_fullscreen;
+    if (is_fullscreen && vout_window_SetFullScreen(sys->embed, true))
+        is_fullscreen = false;
+    vout_display_SendEventFullscreen(vd, is_fullscreen);
+    vout_display_SendEventDisplaySize(vd, width, height, is_fullscreen);
 
     return VLC_SUCCESS;
 
@@ -668,6 +702,11 @@ static void Close(vlc_object_t *obj)
 {
     vout_display_t *vd = (vout_display_t *)obj;
     vout_display_sys_t *sys = vd->sys;
+
+    /* Restore cursor explicitly (parent window connection will survive) */
+    xcb_change_window_attributes(sys->conn, sys->embed->handle.xid,
+                               XCB_CW_CURSOR, &(uint32_t) { XCB_CURSOR_NONE });
+    xcb_flush(sys->conn);
 
     vdp_presentation_queue_destroy(sys->vdp, sys->queue);
     vdp_presentation_queue_target_destroy(sys->vdp, sys->target);

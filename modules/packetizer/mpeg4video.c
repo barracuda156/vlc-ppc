@@ -40,8 +40,6 @@
 #include <vlc_bits.h>
 #include <vlc_block_helper.h>
 #include "packetizer_helper.h"
-#include "startcode_helper.h"
-#include "hxxx_nal.h" /* colour values/mappings */
 
 /*****************************************************************************
  * Module descriptor
@@ -93,7 +91,6 @@ struct decoder_sys_t
 };
 
 static block_t *Packetize( decoder_t *, block_t ** );
-static void PacketizeFlush( decoder_t * );
 
 static void PacketizeReset( void *p_private, bool b_broken );
 static block_t *PacketizeParse( void *p_private, bool *pb_ts_used, block_t * );
@@ -101,7 +98,6 @@ static int PacketizeValidate( void *p_private, block_t * );
 
 static block_t *ParseMPEGBlock( decoder_t *, block_t * );
 static int ParseVOL( decoder_t *, es_format_t *, uint8_t *, int );
-static int ParseVO( decoder_t *, block_t * );
 static int ParseVOP( decoder_t *, block_t * );
 static int vlc_log2( unsigned int );
 
@@ -110,7 +106,6 @@ static int vlc_log2( unsigned int );
 
 #define VIDEO_OBJECT_START_CODE                 0x100
 #define VIDEO_OBJECT_LAYER_START_CODE           0x120
-#define RESERVED_START_CODE                     0x130
 #define VISUAL_OBJECT_SEQUENCE_START_CODE       0x1b0
 #define VISUAL_OBJECT_SEQUENCE_END_CODE         0x1b1
 #define USER_DATA_START_CODE                    0x1b2
@@ -146,7 +141,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Misc init */
     packetizer_Init( &p_sys->packetizer,
-                     p_mp4v_startcode, sizeof(p_mp4v_startcode), startcode_FindAnnexB,
+                     p_mp4v_startcode, sizeof(p_mp4v_startcode),
                      NULL, 0, 4,
                      PacketizeReset, PacketizeParse, PacketizeValidate, p_dec );
 
@@ -157,17 +152,29 @@ static int Open( vlc_object_t *p_this )
     es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );
     p_dec->fmt_out.i_codec = VLC_CODEC_MP4V;
 
-    if( p_dec->fmt_out.i_extra )
+    free(p_dec->fmt_out.p_extra);
+
+    if( p_dec->fmt_in.i_extra )
     {
         /* We have a vol */
-        msg_Dbg( p_dec, "opening with vol size: %d", p_dec->fmt_out.i_extra );
+        p_dec->fmt_out.i_extra = p_dec->fmt_in.i_extra;
+        p_dec->fmt_out.p_extra = xmalloc( p_dec->fmt_in.i_extra );
+        memcpy( p_dec->fmt_out.p_extra, p_dec->fmt_in.p_extra,
+                p_dec->fmt_in.i_extra );
+
+        msg_Dbg( p_dec, "opening with vol size: %d", p_dec->fmt_in.i_extra );
         ParseVOL( p_dec, &p_dec->fmt_out,
                   p_dec->fmt_out.p_extra, p_dec->fmt_out.i_extra );
+    }
+    else
+    {
+        /* No vol, we'll have to look for one later on */
+        p_dec->fmt_out.i_extra = 0;
+        p_dec->fmt_out.p_extra = 0;
     }
 
     /* Set callback */
     p_dec->pf_packetize = Packetize;
-    p_dec->pf_flush = PacketizeFlush;
 
     return VLC_SUCCESS;
 }
@@ -194,13 +201,6 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     return packetizer_Packetize( &p_sys->packetizer, pp_block );
-}
-
-static void PacketizeFlush( decoder_t *p_dec )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-
-    packetizer_Flush( &p_sys->packetizer );
 }
 
 /*****************************************************************************
@@ -272,13 +272,7 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t *p_pic = NULL;
 
-    if( p_frag->i_buffer < 4 )
-        return p_frag;
-
-    const uint32_t i_startcode = GetDWBE( p_frag->p_buffer );
-    if( i_startcode == VISUAL_OBJECT_SEQUENCE_START_CODE ||
-        i_startcode == VISUAL_OBJECT_SEQUENCE_END_CODE ||
-        i_startcode == USER_DATA_START_CODE )
+    if( p_frag->p_buffer[3] == 0xB0 || p_frag->p_buffer[3] == 0xB1 || p_frag->p_buffer[3] == 0xB2 )
     {   /* VOS and USERDATA */
 #if 0
         /* Remove VOS start/end code from the original stream */
@@ -290,8 +284,7 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
 #endif
         return NULL;
     }
-    else if( i_startcode >= VIDEO_OBJECT_LAYER_START_CODE &&
-             i_startcode < RESERVED_START_CODE )
+    if( p_frag->p_buffer[3] >= 0x20 && p_frag->p_buffer[3] <= 0x2f )
     {
         /* Copy the complete VOL */
         if( (size_t)p_dec->fmt_out.i_extra != p_frag->i_buffer )
@@ -327,12 +320,7 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
         block_ChainLastAppend( &p_sys->pp_last, p_frag );
     }
 
-    if( i_startcode == VISUAL_OBJECT_START_CODE )
-    {
-        ParseVO( p_dec, p_frag );
-    }
-    else
-    if( i_startcode == VOP_START_CODE &&
+    if( p_frag->p_buffer[3] == 0xb6 &&
         ParseVOP( p_dec, p_frag ) == VLC_SUCCESS )
     {
         /* We are dealing with a VOP */
@@ -357,7 +345,7 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
                      uint8_t *p_vol, int i_vol )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    int i_vo_ver_id, i_ar, i_shape;
+    int i_vo_type, i_vo_ver_id, i_ar, i_shape;
     bs_t s;
 
     for( ;; )
@@ -372,7 +360,7 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
     bs_init( &s, &p_vol[4], i_vol - 4 );
 
     bs_skip( &s, 1 );   /* random access */
-    bs_skip( &s, 8 );   /* vo_type */
+    i_vo_type = bs_read( &s, 8 );
     if( bs_read1( &s ) )
     {
         i_vo_ver_id = bs_read( &s, 4 );
@@ -385,14 +373,19 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
     i_ar = bs_read( &s, 4 );
     if( i_ar == 0xf )
     {
-        bs_skip( &s, 8 );  /* ar_width */
-        bs_skip( &s, 8 );  /* ar_height */
+        int i_ar_width, i_ar_height;
+
+        i_ar_width = bs_read( &s, 8 );
+        i_ar_height= bs_read( &s, 8 );
     }
     if( bs_read1( &s ) )
     {
+        int i_chroma_format;
+        int i_low_delay;
+
         /* vol control parameter */
-        bs_skip( &s, 2 ); /* chroma_format */
-        bs_read1( &s ); /* low_delay */
+        i_chroma_format = bs_read( &s, 2 );
+        i_low_delay = bs_read1( &s );
 
         if( bs_read1( &s ) )
         {
@@ -434,45 +427,6 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
         bs_skip( &s, 1 );
         fmt->video.i_height= bs_read( &s, 13 );
         bs_skip( &s, 1 );
-    }
-
-    return VLC_SUCCESS;
-}
-
-static int ParseVO( decoder_t *p_dec, block_t *p_vo )
-{
-    bs_t s;
-    bs_init( &s, &p_vo->p_buffer[4], p_vo->i_buffer - 4 );
-    if( bs_read1( &s ) )
-        bs_skip( &s, 7 );
-
-    const uint8_t visual_object_type = bs_read( &s, 4 );
-    if( visual_object_type == 1 /* video ID */ ||
-        visual_object_type == 2 /* still texture ID */ )
-    {
-        uint8_t colour_primaries = 1;
-        uint8_t colour_xfer = 1;
-        uint8_t colour_matrix_coeff = 1;
-        uint8_t full_range = 0;
-        if( bs_read1( &s ) ) /* video_signal_type */
-        {
-            bs_read( &s, 3 );
-            full_range = bs_read( &s, 1 );
-            if( bs_read( &s, 1 ) ) /* colour description */
-            {
-                colour_primaries = bs_read( &s, 8 );
-                colour_xfer = bs_read( &s, 8 );
-                colour_matrix_coeff = bs_read( &s, 8 );
-            }
-        }
-
-        if( p_dec->fmt_in.video.primaries == COLOR_PRIMARIES_UNDEF )
-        {
-            p_dec->fmt_out.video.primaries = hxxx_colour_primaries_to_vlc( colour_primaries );
-            p_dec->fmt_out.video.transfer = hxxx_transfer_characteristics_to_vlc( colour_xfer );
-            p_dec->fmt_out.video.space = hxxx_matrix_coeffs_to_vlc( colour_matrix_coeff );
-            p_dec->fmt_out.video.b_color_range_full = full_range;
-        }
     }
 
     return VLC_SUCCESS;
@@ -536,13 +490,13 @@ static int ParseVOP( decoder_t *p_dec, block_t *p_vop )
         p_dec->fmt_in.video.i_frame_rate > 0 &&
         p_dec->fmt_in.video.i_frame_rate_base > 0 )
     {
-        p_sys->i_interpolated_pts += CLOCK_FREQ *
+        p_sys->i_interpolated_pts += INT64_C(1000000) *
         p_dec->fmt_in.video.i_frame_rate_base /
         p_dec->fmt_in.video.i_frame_rate;
     }
     else if( p_dec->p_sys->i_fps_num )
         p_sys->i_interpolated_pts +=
-            ( CLOCK_FREQ * (i_time_ref + i_time_increment -
+            ( INT64_C(1000000) * (i_time_ref + i_time_increment -
               p_sys->i_last_time - p_sys->i_last_timeincr) /
               p_dec->p_sys->i_fps_num );
 

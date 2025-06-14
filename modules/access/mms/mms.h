@@ -21,8 +21,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_MMS_MMS_H_
-#define VLC_MMS_MMS_H_
+#ifndef _MMS_H_
+#define _MMS_H_ 1
 
 #define MMS_PROTO_AUTO  0
 #define MMS_PROTO_TCP   1
@@ -30,12 +30,12 @@
 #define MMS_PROTO_HTTP  3
 
 /* mmst and mmsu */
-int   MMSTUOpen   ( stream_t * );
-void  MMSTUClose  ( stream_t * );
+int   MMSTUOpen   ( access_t * );
+void  MMSTUClose  ( access_t * );
 
 /* mmsh */
-int   MMSHOpen   ( stream_t * );
-void  MMSHClose  ( stream_t * );
+int   MMSHOpen   ( access_t * );
+void  MMSHClose  ( access_t * );
 
 #endif
 

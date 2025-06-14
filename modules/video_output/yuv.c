@@ -43,11 +43,12 @@
 
 #define CHROMA_TEXT N_("Chroma used")
 #define CHROMA_LONGTEXT N_(\
-    "Force use of a specific chroma for output.")
+    "Force use of a specific chroma for output. Default is I420.")
 
-#define YUV4MPEG2_TEXT N_("Add a YUV4MPEG2 header")
+#define YUV4MPEG2_TEXT N_("YUV4MPEG2 header (default disabled)")
 #define YUV4MPEG2_LONGTEXT N_("The YUV4MPEG2 header is compatible " \
-    "with mplayer yuv video output and requires YV12/I420 fourcc.")
+    "with mplayer yuv video output and requires YV12/I420 fourcc. By default "\
+    "vlc writes the fourcc of the picture frame into the output destination.")
 
 #define CFG_PREFIX "yuv-"
 
@@ -74,6 +75,9 @@ vlc_module_end()
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
+static const char *const ppsz_vout_options[] = {
+    "file", "chroma", "yuv4mpeg2", NULL
+};
 
 /* */
 static picture_pool_t *Pool  (vout_display_t *, unsigned);
@@ -154,13 +158,19 @@ static int Open(vlc_object_t *object)
     video_format_FixRgb(&fmt);
 
     /* */
+    vout_display_info_t info = vd->info;
+    info.has_hide_mouse = true;
+
+    /* */
     vd->fmt     = fmt;
+    vd->info    = info;
     vd->pool    = Pool;
     vd->prepare = NULL;
     vd->display = Display;
     vd->control = Control;
+    vd->manage  = NULL;
 
-    vout_display_DeleteWindow(vd, NULL);
+    vout_display_SendEventFullscreen(vd, false);
     return VLC_SUCCESS;
 }
 
@@ -171,7 +181,7 @@ static void Close(vlc_object_t *object)
     vout_display_sys_t *sys = vd->sys;
 
     if (sys->pool)
-        picture_pool_Release(sys->pool);
+        picture_pool_Delete(sys->pool);
     fclose(sys->f);
     free(sys);
 }
@@ -271,6 +281,16 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
 
 static int Control(vout_display_t *vd, int query, va_list args)
 {
-    (void) vd; (void) query; (void) args;
-    return VLC_EGENERIC;
+    VLC_UNUSED(vd);
+    switch (query) {
+    case VOUT_DISPLAY_CHANGE_FULLSCREEN: {
+        const vout_display_cfg_t *cfg = va_arg(args, const vout_display_cfg_t *);
+        if (cfg->is_fullscreen)
+            return VLC_EGENERIC;
+        return VLC_SUCCESS;
+    }
+    default:
+        return VLC_EGENERIC;
+    }
 }
+

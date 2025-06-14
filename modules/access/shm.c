@@ -117,6 +117,7 @@ static void CloseFile (demux_sys_t *);
 static void DemuxIPC (void *);
 static void CloseIPC (demux_sys_t *);
 #endif
+static void no_detach (demux_sys_t *);
 
 struct demux_sys_t
 {
@@ -138,9 +139,10 @@ struct demux_sys_t
 static int Open (vlc_object_t *obj)
 {
     demux_t *demux = (demux_t *)obj;
-    demux_sys_t *sys = vlc_obj_alloc(obj, 1, sizeof (*sys));
+    demux_sys_t *sys = malloc (sizeof (*sys));
     if (unlikely(sys == NULL))
         return VLC_ENOMEM;
+    sys->detach = no_detach;
 
     uint32_t chroma;
     uint16_t width = 0, height = 0;
@@ -166,7 +168,7 @@ static int Open (vlc_object_t *obj)
             chroma = VLC_CODEC_XWD; bpp = 0;
             break;
         default:
-            return VLC_EGENERIC;
+            goto error;
     }
     if (bpp != 0)
     {
@@ -185,7 +187,7 @@ static int Open (vlc_object_t *obj)
                      vlc_strerror_c(errno));
         free (path);
         if (sys->fd == -1)
-            return VLC_EGENERIC;
+            goto error;
 
         sys->detach = CloseFile;
         Demux = DemuxFile;
@@ -195,18 +197,18 @@ static int Open (vlc_object_t *obj)
 #ifdef HAVE_SYS_SHM_H
         sys->mem.length = width * height * (bpp >> 3);
         if (sys->mem.length == 0)
-            return VLC_EGENERIC;
+            goto error;
 
         int id = var_InheritInteger (demux, "shm-id");
         if (id == IPC_PRIVATE)
-            return VLC_EGENERIC;
+            goto error;
         void *mem = shmat (id, NULL, SHM_RDONLY);
 
         if (mem == (const void *)(-1))
         {
             msg_Err (demux, "cannot attach segment %d: %s", id,
                      vlc_strerror_c(errno));
-            return VLC_EGENERIC;
+            goto error;
         }
         sys->mem.addr = mem;
         sys->detach = CloseIPC;
@@ -218,7 +220,7 @@ static int Open (vlc_object_t *obj)
 
     /* Initializes format */
     float rate = var_InheritFloat (obj, "shm-fps");
-    if (rate <= 0.f)
+    if (rate <= 0.)
         goto error;
 
     mtime_t interval = llroundf((float)CLOCK_FREQ / rate);
@@ -249,6 +251,7 @@ static int Open (vlc_object_t *obj)
 
 error:
     sys->detach (sys);
+    free (sys);
     return VLC_EGENERIC;
 }
 
@@ -263,6 +266,12 @@ static void Close (vlc_object_t *obj)
 
     vlc_timer_destroy (sys->timer);
     sys->detach (sys);
+    free (sys);
+}
+
+static void no_detach (demux_sys_t *sys)
+{
+    (void) sys;
 }
 
 /**
@@ -320,19 +329,19 @@ static void DemuxFile (void *data)
     demux_sys_t *sys = demux->p_sys;
 
     /* Copy frame */
-    block_t *block = block_File(sys->fd, true);
+    block_t *block = block_File (sys->fd);
     if (block == NULL)
         return;
     block->i_pts = block->i_dts = mdate ();
 
     /* Send block */
-    es_out_SetPCR(demux->out, block->i_pts);
+    es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts);
     es_out_Send (demux->out, sys->es, block);
 }
 
 static void CloseFile (demux_sys_t *sys)
 {
-    vlc_close (sys->fd);
+    close (sys->fd);
 }
 
 #ifdef HAVE_SYS_SHM_H
@@ -349,7 +358,7 @@ static void DemuxIPC (void *data)
     block->i_pts = block->i_dts = mdate ();
 
     /* Send block */
-    es_out_SetPCR(demux->out, block->i_pts);
+    es_out_Control (demux->out, ES_OUT_SET_PCR, block->i_pts);
     es_out_Send (demux->out, sys->es, block);
 }
 

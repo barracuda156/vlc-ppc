@@ -40,5 +40,8 @@
 struct intf_sys_t
 {
     int nothing_for_now;
+
+    vlc_mutex_t lock;
+    vlc_cond_t wait;
 };
 

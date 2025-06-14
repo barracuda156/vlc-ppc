@@ -40,7 +40,7 @@ public:
 
     /// Set the equalizer bands from a configuration string,
     /// e.g. "1 5.2 -3.6 0 0 2.5 0 0 0 0"
-    void set( std::string bands );
+    void set( string bands );
 
     /// Return the variable for a specific band
     VariablePtr getBand( int band );

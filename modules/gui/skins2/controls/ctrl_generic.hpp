@@ -88,7 +88,7 @@ public:
     virtual bool isVisible() const;
 
     /// Get the type of control (custom RTTI)
-    virtual std::string getType() const { return ""; }
+    virtual string getType() const { return ""; }
 
 protected:
     // If pVisible is NULL, the control is always visible

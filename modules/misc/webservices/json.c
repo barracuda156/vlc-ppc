@@ -178,7 +178,6 @@ static int new_value
 
 #define whitespace \
    case '\n': ++ cur_line;  cur_line_begin = i; \
-   /* fall through */ \
    case ' ': case '\t': case '\r'
 
 #define string_add(b)  \
@@ -555,7 +554,6 @@ json_value * json_parse_ex (json_settings * settings, const json_char * json, ch
                         break;
                      }
 
-                     /* fall through */
                   default:
 
                      sprintf (error, "%d:%d: Unexpected `%c` in object", cur_line, e_off, b);

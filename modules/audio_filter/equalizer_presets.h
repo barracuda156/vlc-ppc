@@ -21,8 +21,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_EQUALIZER_PRESETS_H_
-#define VLC_EQUALIZER_PRESETS_H_
+#ifndef _EQUALIZER_PRESETS_H
+#define _EQUALIZER_PRESETS_H 1
 
 /*****************************************************************************
  * Equalizer presets

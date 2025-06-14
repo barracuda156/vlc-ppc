@@ -28,10 +28,10 @@
 # include "config.h"
 #endif
 
+#include <assert.h>
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
-#include <vlc_picture.h>
 #include "filter_picture.h"
 
 /*****************************************************************************
@@ -268,15 +268,9 @@ public:
     CPictureRGBX(const CPicture &cfg) : CPicture(cfg)
     {
         if (has_alpha) {
-            if (fmt->i_chroma == VLC_CODEC_BGRA) {
-                offset_r = 2;
-                offset_g = 1;
-                offset_b = 0;
-            } else {
-                offset_r = 0;
-                offset_g = 1;
-                offset_b = 2;
-            }
+            offset_r = 0;
+            offset_g = 1;
+            offset_b = 2;
             offset_a = 3;
         } else {
 #ifdef WORDS_BIGENDIAN
@@ -409,7 +403,6 @@ typedef CPictureYUVPacked<0, 3, 1> CPictureYVYU;
 typedef CPictureYUVPacked<1, 2, 0> CPictureVYUY;
 
 typedef CPictureRGBX<4, true>  CPictureRGBA;
-typedef CPictureRGBX<4, true>  CPictureBGRA;
 typedef CPictureRGBX<4, false> CPictureRGB32;
 typedef CPictureRGBX<3, false> CPictureRGB24;
 
@@ -572,7 +565,6 @@ static const struct {
     RGB(VLC_CODEC_RGB24,    CPictureRGB24,    convertNone),
     RGB(VLC_CODEC_RGB32,    CPictureRGB32,    convertNone),
     RGB(VLC_CODEC_RGBA,     CPictureRGBA,     convertNone),
-    RGB(VLC_CODEC_BGRA,     CPictureBGRA,     convertNone),
 
     YUV(VLC_CODEC_YV9,      CPictureYV9,      convertNone),
     YUV(VLC_CODEC_I410,     CPictureI410_8,   convertNone),

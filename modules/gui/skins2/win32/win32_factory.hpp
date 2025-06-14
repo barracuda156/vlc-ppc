@@ -91,10 +91,10 @@ public:
     virtual OSPopup *createOSPopup();
 
     /// Get the directory separator
-    virtual const std::string &getDirSeparator() const { return m_dirSep; }
+    virtual const string &getDirSeparator() const { return m_dirSep; }
 
     /// Get the resource path
-    virtual const std::list<std::string> &getResourcePath() const
+    virtual const list<string> &getResourcePath() const
         { return m_resourcePath; }
 
     /// Get the screen size
@@ -119,10 +119,10 @@ public:
     virtual void changeCursor( CursorType_t type ) const;
 
     /// Delete a directory recursively
-    virtual void rmDir( const std::string &rPath );
+    virtual void rmDir( const string &rPath );
 
     /// Map to find the GenericWindow associated with a Win32Window
-    std::map<HWND, GenericWindow*> m_windowMap;
+    map<HWND, GenericWindow*> m_windowMap;
 
     HWND getParentWindow() { return m_hParentWindow; }
 
@@ -145,11 +145,11 @@ private:
     /// Handle on user32.dll (for SetLayeredWindowAttributes)
     HINSTANCE m_hUser32;
     /// Directory separator
-    const std::string m_dirSep;
+    const string m_dirSep;
     /// Resource path
-    std::list<std::string> m_resourcePath;
+    list<string> m_resourcePath;
     /// Monitors detected
-    std::list<HMONITOR> m_monitorList;
+    list<HMONITOR> m_monitorList;
 };
 
 

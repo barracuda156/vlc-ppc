@@ -52,11 +52,11 @@ public:
     virtual ~VarTree();
 
     /// Iterators
-    typedef std::list<VarTree>::iterator Iterator;
-    typedef std::list<VarTree>::const_iterator ConstIterator;
+    typedef list<VarTree>::iterator Iterator;
+    typedef list<VarTree>::const_iterator ConstIterator;
 
     /// Get the variable type
-    virtual const std::string &getType() const { return m_type; }
+    virtual const string &getType() const { return m_type; }
 
     /// Add a pointer on string in the children's list
     virtual Iterator add( int id, const UStringPtr &rcString, bool selected,
@@ -257,7 +257,7 @@ public:
 protected:
 
     /// List of children
-    std::list<VarTree> m_children;
+    list<VarTree> m_children;
 
 private:
 
@@ -285,7 +285,7 @@ private:
     bool m_dontMove;
 
     /// Variable type
-    static const std::string m_type;
+    static const string m_type;
 
     /// Position variable
     VariablePtr m_cPosition;

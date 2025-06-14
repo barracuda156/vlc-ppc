@@ -22,17 +22,10 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#ifndef VLC_MKV_MATROSKA_SEGMENT_HPP_
-#define VLC_MKV_MATROSKA_SEGMENT_HPP_
+#ifndef _MATROSKA_SEGMENT_HPP_
+#define _MATROSKA_SEGMENT_HPP_
 
 #include "mkv.hpp"
-#include "matroska_segment_seeker.hpp"
-#include <vector>
-#include <string>
-
-#include <map>
-#include <set>
-#include <memory>
 
 class EbmlParser;
 
@@ -40,7 +33,8 @@ class chapter_edition_c;
 class chapter_translation_c;
 class chapter_item_c;
 
-class mkv_track_t;
+struct mkv_track_t;
+struct mkv_index_t;
 
 typedef enum
 {
@@ -54,30 +48,30 @@ typedef enum
 class SimpleTag
 {
 public:
-    typedef std::vector<SimpleTag> sub_tags_t;
-    std::string tag_name;
-    std::string lang;
-    std::string value;
-    sub_tags_t sub_tags;
+    SimpleTag():
+        psz_tag_name(NULL), psz_lang(NULL), b_default(true), p_value(NULL){}
+    ~SimpleTag();
+    char *psz_tag_name;
+    char *psz_lang; /* NULL value means "undf" */
+    bool b_default;
+    char * p_value;
+    std::vector<SimpleTag *> sub_tags;
 };
 
 class Tag
 {
 public:
-    typedef std::vector<SimpleTag> simple_tags_t;
     Tag():i_tag_type(WHOLE_SEGMENT),i_target_type(50),i_uid(0){}
+    ~Tag();
     tag_target_type i_tag_type;
     uint64_t        i_target_type;
     uint64_t        i_uid;
-    simple_tags_t   simple_tags;
+    std::vector<SimpleTag*> simple_tags;
 };
 
 class matroska_segment_c
 {
 public:
-    typedef std::map<mkv_track_t::track_id_t, std::unique_ptr<mkv_track_t>> tracks_map_t;
-    typedef std::vector<Tag>            tags_t;
-
     matroska_segment_c( demux_sys_t & demuxer, EbmlStream & estream );
     virtual ~matroska_segment_c();
 
@@ -89,11 +83,10 @@ public:
 
     /* duration of the segment */
     mtime_t                 i_duration;
-    mtime_t                 i_mk_start_time;
+    mtime_t                 i_start_time;
 
     /* all tracks */
-    tracks_map_t tracks;
-    SegmentSeeker::track_ids_t priority_tracks;
+    std::vector<mkv_track_t*> tracks;
 
     /* from seekhead */
     int                     i_seekhead_count;
@@ -102,15 +95,21 @@ public:
     int64_t                 i_tracks_position;
     int64_t                 i_info_position;
     int64_t                 i_chapters_position;
+    int64_t                 i_tags_position;
     int64_t                 i_attachments_position;
 
     KaxCluster              *cluster;
     uint64                  i_block_pos;
+    uint64                  i_cluster_pos;
+    int64_t                 i_start_pos;
     KaxSegmentUID           *p_segment_uid;
     KaxPrevUID              *p_prev_segment_uid;
     KaxNextUID              *p_next_segment_uid;
 
     bool                    b_cues;
+    int                     i_index;
+    int                     i_index_max;
+    mkv_index_t             *p_indexes;
 
     /* info */
     char                    *psz_muxing_application;
@@ -123,11 +122,11 @@ public:
     /* when you remove this variable the compiler issues an atomicity error */
     /* this variable only works when using std::vector<chapter_edition_c> */
     std::vector<chapter_edition_c*> stored_editions;
-    std::vector<chapter_edition_c*>::size_type i_default_edition;
+    int                             i_default_edition;
 
     std::vector<chapter_translation_c*> translations;
     std::vector<KaxSegmentFamily*>  families;
-    tags_t                          tags;
+    std::vector<Tag *>              tags;
 
     demux_sys_t                    & sys;
     EbmlParser                     *ep;
@@ -136,22 +135,17 @@ public:
 
     bool Preload();
     bool PreloadFamily( const matroska_segment_c & segment );
-    bool PreloadClusters( uint64 i_cluster_position );
     void InformationCreate();
-
-    bool FastSeek( demux_t &, mtime_t i_mk_date, mtime_t i_mk_time_offset );
-    bool Seek( demux_t &, mtime_t i_mk_date, mtime_t i_mk_time_offset );
-
+    void Seek( mtime_t i_date, mtime_t i_time_offset, int64_t i_global_position );
     int BlockGet( KaxBlock * &, KaxSimpleBlock * &, bool *, bool *, int64_t *);
 
-    mkv_track_t * FindTrackByBlock(const KaxBlock *, const KaxSimpleBlock * );
+    int BlockFindTrackIndex( size_t *pi_track,
+                             const KaxBlock *, const KaxSimpleBlock * );
 
-    bool ESCreate( );
-    void ESDestroy( );
+    bool Select( mtime_t i_start_time );
+    void UnSelect();
 
     static bool CompareSegmentUIDs( const matroska_segment_c * item_a, const matroska_segment_c * item_b );
-
-    bool SameFamily( const matroska_segment_c & of_segment ) const;
 
 private:
     void LoadCues( KaxCues *cues );
@@ -163,17 +157,12 @@ private:
     void ParseSeekHead( KaxSeekHead *seekhead );
     void ParseTracks( KaxTracks *tracks );
     void ParseChapterAtom( int i_level, KaxChapterAtom *ca, chapter_item_c & chapters );
-    void ParseTrackEntry( const KaxTrackEntry* m );
-    bool ParseCluster( KaxCluster *cluster, bool b_update_start_time = true, ScopeMode read_fully = SCOPE_ALL_DATA );
-    bool ParseSimpleTags( SimpleTag* out, KaxTagSimple *tag, int level = 50 );
+    void ParseTrackEntry( KaxTrackEntry *m );
+    void ParseCluster( bool b_update_start_time = true );
+    SimpleTag * ParseSimpleTags( KaxTagSimple *tag, int level = 50 );
     void IndexAppendCluster( KaxCluster *cluster );
-    bool TrackInit( mkv_track_t * p_tk );
+    int32_t TrackInit( mkv_track_t * p_tk );
     void ComputeTrackPriority();
-    void EnsureDuration();
-
-    SegmentSeeker _seeker;
-
-    friend SegmentSeeker;
 };
 
 

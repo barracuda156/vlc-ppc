@@ -41,7 +41,7 @@ public:
     EvtKey( intf_thread_t *I, int key, ActionType_t actn, int mod = kModNone )
           : EvtInput( I, mod ), m_key( key ), m_action( actn ) { }
     virtual ~EvtKey() { }
-    virtual const std::string getAsString() const;
+    virtual const string getAsString() const;
 
     int getKey() const { return m_key; }
     int getModKey() const { return m_key | getMod(); }
@@ -49,7 +49,7 @@ public:
     ActionType_t getKeyState() const { return m_action; }
 
 private:
-    /// The concerned key, stored according to the '#define's in vlc_actions.h
+    /// The concerned key, stored according to the '#define's in vlc_keys.h
     /// but without the modifiers (which are stored in EvtInput)
     int m_key;
     /// Type of action

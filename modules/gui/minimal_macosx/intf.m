@@ -31,13 +31,11 @@
 #ifdef HAVE_CONFIG_H
 # import "config.h"
 #endif
-#include <unistd.h>
 
-#include <vlc_common.h>
-#include <vlc_playlist.h>
-#include <vlc_vout_window.h>
+#import <vlc_playlist.h>
+#import <vlc_vout_window.h>
 
-#import "VLCMain.h"
+#import "intf.h"
 #import "VLCMinimalVoutWindow.h"
 
 /*****************************************************************************
@@ -51,7 +49,6 @@ static void Run (intf_thread_t *p_intf);
 int OpenIntf (vlc_object_t *p_this)
 {
     intf_thread_t *p_intf = (intf_thread_t*) p_this;
-    msg_Dbg(p_intf, "Using minimal macosx interface");
 
     p_intf->p_sys = malloc(sizeof(intf_sys_t));
     if (p_intf->p_sys == NULL)
@@ -85,20 +82,63 @@ extern OSErr    CPSGetCurrentProcess(CPSProcessSerNum *psn);
 extern OSErr    CPSEnableForegroundOperation(CPSProcessSerNum *psn, UInt32 _arg2, UInt32 _arg3, UInt32 _arg4, UInt32 _arg5);
 extern OSErr    CPSSetFrontProcess(CPSProcessSerNum *psn);
 
+/*****************************************************************************
+ * KillerThread: Thread that kill the application
+ *****************************************************************************/
+static void * KillerThread(void *user_data)
+{
+    NSAutoreleasePool * o_pool = [[NSAutoreleasePool alloc] init];
+
+    intf_thread_t *p_intf = user_data;
+
+    vlc_mutex_init(&p_intf->p_sys->lock);
+    vlc_cond_init(&p_intf->p_sys->wait);
+
+    vlc_mutex_lock (&p_intf->p_sys->lock);
+    while(vlc_object_alive(p_intf))
+        vlc_cond_wait(&p_intf->p_sys->wait, &p_intf->p_sys->lock);
+    vlc_mutex_unlock(&p_intf->p_sys->lock);
+
+    vlc_mutex_destroy(&p_intf->p_sys->lock);
+    vlc_cond_destroy(&p_intf->p_sys->wait);
+
+    /* We are dead, terminate */
+    [NSApp terminate: nil];
+    [o_pool release];
+    return NULL;
+}
 
 /*****************************************************************************
  * Run: main loop
  *****************************************************************************/
 static void Run(intf_thread_t *p_intf)
 {
+    sigset_t set;
+
+    /* Make sure the "force quit" menu item does quit instantly.
+     * VLC overrides SIGTERM which is sent by the "force quit"
+     * menu item to make sure deamon mode quits gracefully, so
+     * we un-override SIGTERM here. */
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+
+    /* Setup a thread that will monitor the module killing */
+    pthread_t killer_thread;
+    pthread_create(&killer_thread, NULL, KillerThread, p_intf);
+
     CPSProcessSerNum PSN;
-    @autoreleasepool {
-        [NSApplication sharedApplication];
-        if (!CPSGetCurrentProcess(&PSN))
-            if (!CPSEnableForegroundOperation(&PSN,0x03,0x3C,0x2C,0x1103))
-                if (!CPSSetFrontProcess(&PSN))
-                    [NSApplication sharedApplication];
-    }
+    NSAutoreleasePool   *pool = [[NSAutoreleasePool alloc] init];
+    [NSApplication sharedApplication];
+    if (!CPSGetCurrentProcess(&PSN))
+        if (!CPSEnableForegroundOperation(&PSN,0x03,0x3C,0x2C,0x1103))
+            if (!CPSSetFrontProcess(&PSN))
+                [NSApplication sharedApplication];
+    [NSApp run];
+
+    pthread_join(killer_thread, NULL);
+
+    [pool release];
 }
 
 /*****************************************************************************
@@ -108,35 +148,35 @@ static int WindowControl(vout_window_t *, int i_query, va_list);
 
 int WindowOpen(vout_window_t *p_wnd, const vout_window_cfg_t *cfg)
 {
-    if (cfg->type != VOUT_WINDOW_TYPE_INVALID
-     && cfg->type != VOUT_WINDOW_TYPE_NSOBJECT)
+    NSAutoreleasePool *o_pool = [[NSAutoreleasePool alloc] init];
+
+    NSRect proposedVideoViewPosition = NSMakeRect(cfg->x, cfg->y, cfg->width, cfg->height);
+
+    VLCMinimalVoutWindow *o_window = [[VLCMinimalVoutWindow alloc] initWithContentRect:proposedVideoViewPosition];
+    [o_window makeKeyAndOrderFront:nil];
+
+    if (!o_window) {
+        msg_Err(p_wnd, "window creation failed");
+        [o_pool release];
         return VLC_EGENERIC;
-
-    @autoreleasepool {
-        NSRect proposedVideoViewPosition = NSMakeRect(cfg->x, cfg->y, cfg->width, cfg->height);
-
-        VLCMinimalVoutWindow *o_window = [[VLCMinimalVoutWindow alloc] initWithContentRect:proposedVideoViewPosition];
-        [o_window makeKeyAndOrderFront:nil];
-
-        if (!o_window) {
-            msg_Err(p_wnd, "window creation failed");
-            return VLC_EGENERIC;
-        }
-
-        msg_Dbg(p_wnd, "returning video window with proposed position x=%i, y=%i, width=%i, height=%i", cfg->x, cfg->y, cfg->width, cfg->height);
-        p_wnd->handle.nsobject = (void *)CFBridgingRetain([o_window contentView]);
-
-        p_wnd->type = VOUT_WINDOW_TYPE_NSOBJECT;
-        p_wnd->control = WindowControl;
     }
 
-    vout_window_SetFullScreen(p_wnd, cfg->is_fullscreen);
+    msg_Dbg(p_wnd, "returning video window with proposed position x=%i, y=%i, width=%i, height=%i", cfg->x, cfg->y, cfg->width, cfg->height);
+    p_wnd->handle.nsobject = [o_window contentView];
+
+    // TODO: find a cleaner way for "start in fullscreen"
+    if (var_GetBool(pl_Get(p_wnd), "fullscreen"))
+        [o_window performSelectorOnMainThread:@selector(enterFullscreen) withObject:nil waitUntilDone:NO];
+
+    p_wnd->control = WindowControl;
+
+    [o_pool release];
     return VLC_SUCCESS;
 }
 
 static int WindowControl(vout_window_t *p_wnd, int i_query, va_list args)
 {
-    NSWindow * o_window = [(__bridge id)p_wnd->handle.nsobject window];
+    NSWindow * o_window = [(id)p_wnd->handle.nsobject window];
     if (!o_window) {
         msg_Err(p_wnd, "failed to recover cocoa window");
         return VLC_EGENERIC;
@@ -153,26 +193,29 @@ static int WindowControl(vout_window_t *p_wnd, int i_query, va_list args)
         }
         case VOUT_WINDOW_SET_SIZE:
         {
-            @autoreleasepool {
-                NSRect theFrame = [o_window frame];
-                unsigned int i_width  = va_arg(args, unsigned int);
-                unsigned int i_height = va_arg(args, unsigned int);
-                theFrame.size.width = i_width;
-                theFrame.size.height = i_height;
-                [o_window setFrame: theFrame display: YES animate: YES];
-            }
+            NSAutoreleasePool *o_pool = [[NSAutoreleasePool alloc] init];
+
+            NSRect theFrame = [o_window frame];
+            unsigned int i_width  = va_arg(args, unsigned int);
+            unsigned int i_height = va_arg(args, unsigned int);
+            theFrame.size.width = i_width;
+            theFrame.size.height = i_height;
+            [o_window setFrame: theFrame display: YES animate: YES];
+
+            [o_pool release];
             return VLC_SUCCESS;
         }
         case VOUT_WINDOW_SET_FULLSCREEN:
         {
-            @autoreleasepool {
-                int i_full = va_arg(args, int);
+            NSAutoreleasePool *o_pool = [[NSAutoreleasePool alloc] init];
+            int i_full = va_arg(args, int);
 
-                if (i_full)
-                    [o_window performSelectorOnMainThread:@selector(enterFullscreen) withObject:nil waitUntilDone:NO];
-                else
-                    [o_window performSelectorOnMainThread:@selector(leaveFullscreen) withObject:nil waitUntilDone:NO];
-            }
+            if (i_full)
+                [o_window performSelectorOnMainThread:@selector(enterFullscreen) withObject:nil waitUntilDone:NO];
+            else
+                [o_window performSelectorOnMainThread:@selector(leaveFullscreen) withObject:nil waitUntilDone:NO];
+
+            [o_pool release];
             return VLC_SUCCESS;
         }
         default:
@@ -183,9 +226,12 @@ static int WindowControl(vout_window_t *p_wnd, int i_query, va_list args)
 
 void WindowClose(vout_window_t *p_wnd)
 {
-    @autoreleasepool {
-        NSWindow * o_window = [(__bridge id)p_wnd->handle.nsobject window];
-        if (o_window)
-            o_window = nil;
-    }
+    NSAutoreleasePool *o_pool = [[NSAutoreleasePool alloc] init];
+
+    NSWindow * o_window = [(id)p_wnd->handle.nsobject window];
+    if (o_window)
+        [o_window release];
+
+    [o_pool release];
 }
+

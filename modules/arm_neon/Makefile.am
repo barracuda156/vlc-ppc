@@ -1,5 +1,11 @@
 neondir = $(pluginsdir)/arm_neon
 
+libsimple_channel_mixer_neon_plugin_la_SOURCES = \
+	arm_neon/simple_channel_mixer.S \
+	arm_neon/simple_channel_mixer.c
+libsimple_channel_mixer_neon_plugin_la_CFLAGS = $(AM_CFLAGS)
+libsimple_channel_mixer_neon_plugin_LIBTOOLFLAGS = --tag=CC
+
 libchroma_yuv_neon_plugin_la_SOURCES = \
 	arm_neon/deinterleave_chroma.S \
 	arm_neon/i420_yuyv.S \
@@ -24,6 +30,7 @@ libyuv_rgb_neon_plugin_LIBTOOLFLAGS = --tag=CC
 
 if HAVE_NEON
 neon_LTLIBRARIES = \
+	libsimple_channel_mixer_neon_plugin.la \
 	libchroma_yuv_neon_plugin.la \
 	libvolume_neon_plugin.la \
 	libyuv_rgb_neon_plugin.la

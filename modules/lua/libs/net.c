@@ -42,7 +42,6 @@
 #include <vlc_network.h>
 #include <vlc_url.h>
 #include <vlc_fs.h>
-#include <vlc_interrupt.h>
 
 #include "../vlc.h"
 #include "../libs.h"
@@ -51,12 +50,6 @@
 static vlclua_dtable_t *vlclua_get_dtable( lua_State *L )
 {
     return vlclua_get_object( L, vlclua_get_dtable );
-}
-
-vlc_interrupt_t *vlclua_set_interrupt( lua_State *L )
-{
-    vlclua_dtable_t *dt = vlclua_get_dtable( L );
-    return vlc_interrupt_set( dt->interrupt );
 }
 
 /** Maps an OS file descriptor to a VLC Lua file descriptor */
@@ -131,7 +124,7 @@ static int vlclua_fd_get_lua( lua_State *L, int fd )
 static void vlclua_fd_unmap( lua_State *L, unsigned idx )
 {
     vlclua_dtable_t *dt = vlclua_get_dtable( L );
-    int fd;
+    int fd = -1;
 
     if( idx < 3u )
         return; /* Never close stdin/stdout/stderr. */
@@ -148,8 +141,6 @@ static void vlclua_fd_unmap( lua_State *L, unsigned idx )
 #ifndef NDEBUG
     for( unsigned i = 0; i < dt->fdc; i++ )
         assert( dt->fdv[i] != fd );
-#else
-    (void) fd;
 #endif
 }
 
@@ -160,6 +151,38 @@ static void vlclua_fd_unmap_safe( lua_State *L, unsigned idx )
     vlclua_fd_unmap( L, idx );
     if( fd != -1 )
         net_Close( fd );
+}
+
+/*****************************************************************************
+ *
+ *****************************************************************************/
+static int vlclua_url_parse( lua_State *L )
+{
+    const char *psz_url = luaL_checkstring( L, 1 );
+    const char *psz_option = luaL_optstring( L, 2, NULL );
+    vlc_url_t url;
+
+    vlc_UrlParse( &url, psz_url, psz_option?*psz_option:0 );
+
+    lua_newtable( L );
+    lua_pushstring( L, url.psz_protocol );
+    lua_setfield( L, -2, "protocol" );
+    lua_pushstring( L, url.psz_username );
+    lua_setfield( L, -2, "username" );
+    lua_pushstring( L, url.psz_password );
+    lua_setfield( L, -2, "password" );
+    lua_pushstring( L, url.psz_host );
+    lua_setfield( L, -2, "host" );
+    lua_pushinteger( L, url.i_port );
+    lua_setfield( L, -2, "port" );
+    lua_pushstring( L, url.psz_path );
+    lua_setfield( L, -2, "path" );
+    lua_pushstring( L, url.psz_option );
+    lua_setfield( L, -2, "option" );
+
+    vlc_UrlClean( &url );
+
+    return 1;
 }
 
 /*****************************************************************************
@@ -252,7 +275,7 @@ static int vlclua_net_connect_tcp( lua_State *L )
     vlc_object_t *p_this = vlclua_get_this( L );
     const char *psz_host = luaL_checkstring( L, 1 );
     int i_port = luaL_checkint( L, 2 );
-    int i_fd = net_ConnectTCP( p_this, psz_host, i_port );
+    int i_fd = net_Connect( p_this, psz_host, i_port, SOCK_STREAM, IPPROTO_TCP );
     lua_pushinteger( L, vlclua_fd_map_safe( L, i_fd ) );
     return 1;
 }
@@ -270,16 +293,15 @@ static int vlclua_net_send( lua_State *L )
     size_t i_len;
     const char *psz_buffer = luaL_checklstring( L, 2, &i_len );
 
-    i_len = (size_t)luaL_optinteger( L, 3, i_len );
-    lua_pushinteger( L,
-        (fd != -1) ? send( fd, psz_buffer, i_len, MSG_NOSIGNAL ) : -1 );
+    i_len = luaL_optint( L, 3, i_len );
+    lua_pushinteger( L, (fd != -1) ? send( fd, psz_buffer, i_len, 0 ) : -1 );
     return 1;
 }
 
 static int vlclua_net_recv( lua_State *L )
 {
     int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
-    size_t i_len = (size_t)luaL_optinteger( L, 2, 1 );
+    size_t i_len = luaL_optint( L, 2, 1 );
     char psz_buffer[i_len];
 
     ssize_t i_ret = (fd != -1) ? recv( fd, psz_buffer, i_len, 0 ) : -1;
@@ -296,9 +318,11 @@ static int vlclua_net_recv( lua_State *L )
 /* Takes a { fd : events } table as first arg and modifies it to { fd : revents } */
 static int vlclua_net_poll( lua_State *L )
 {
+    vlclua_dtable_t *dt = vlclua_get_dtable( L );
+
     luaL_checktype( L, 1, LUA_TTABLE );
 
-    int i_fds = 0;
+    int i_fds = 1;
     lua_pushnil( L );
     while( lua_next( L, 1 ) )
     {
@@ -310,42 +334,40 @@ static int vlclua_net_poll( lua_State *L )
     int *luafds = xmalloc( i_fds * sizeof( *luafds ) );
 
     lua_pushnil( L );
-    for( int i = 0; lua_next( L, 1 ); i++ )
+    int i = 1;
+    p_fds[0].fd = dt->fd[0];
+    p_fds[0].events = POLLIN;
+    while( lua_next( L, 1 ) )
     {
-        luafds[i] = luaL_checkint( L, -2 );
+        luafds[i] = luaL_checkinteger( L, -2 );
         p_fds[i].fd = vlclua_fd_get( L, luafds[i] );
         p_fds[i].events = luaL_checkinteger( L, -1 );
         p_fds[i].events &= POLLIN | POLLOUT | POLLPRI;
         lua_pop( L, 1 );
+        i++;
     }
 
-    vlc_interrupt_t *oint = vlclua_set_interrupt( L );
-    int ret = 1, val = -1;
-
+    int i_ret;
     do
-    {
-        if( vlc_killed() )
-            break;
-        val = vlc_poll_i11e( p_fds, i_fds, -1 );
-    }
-    while( val == -1 && errno == EINTR );
+        i_ret = poll( p_fds, i_fds, -1 );
+    while( i_ret == -1 && errno == EINTR );
 
-    vlc_interrupt_set( oint );
-
-    for( int i = 0; i < i_fds; i++ )
+    for( i = 1; i < i_fds; i++ )
     {
         lua_pushinteger( L, luafds[i] );
-        lua_pushinteger( L, (val >= 0) ? p_fds[i].revents : 0 );
+        lua_pushinteger( L, p_fds[i].revents );
         lua_settable( L, 1 );
     }
-    lua_pushinteger( L, val );
+    lua_pushinteger( L, i_ret );
 
+    if( p_fds[0].revents )
+        i_ret = luaL_error( L, "Interrupted." );
+    else
+        i_ret = 1;
     free( luafds );
     free( p_fds );
 
-    if( val == -1 )
-        return luaL_error( L, "Interrupted." );
-    return ret;
+    return i_ret;
 }
 
 /*****************************************************************************
@@ -364,15 +386,15 @@ static int vlclua_fd_write( lua_State *L )
     size_t i_len;
     const char *psz_buffer = luaL_checklstring( L, 2, &i_len );
 
-    i_len = (size_t)luaL_optinteger( L, 3, i_len );
-    lua_pushinteger( L, (fd != -1) ? vlc_write( fd, psz_buffer, i_len ) : -1 );
+    i_len = luaL_optint( L, 3, i_len );
+    lua_pushinteger( L, (fd != -1) ? write( fd, psz_buffer, i_len ) : -1 );
     return 1;
 }
 
 static int vlclua_fd_read( lua_State *L )
 {
     int fd = vlclua_fd_get( L, luaL_checkint( L, 1 ) );
-    size_t i_len = (size_t)luaL_optinteger( L, 2, 1 );
+    size_t i_len = luaL_optint( L, 2, 1 );
     char psz_buffer[i_len];
 
     ssize_t i_ret = (fd != -1) ? read( fd, psz_buffer, i_len ) : -1;
@@ -477,7 +499,7 @@ static const luaL_Reg vlclua_net_intf_reg[] = {
 #endif
     /* The following functions do not depend on intf_thread_t and do not really
      * belong in net.* but are left here for backward compatibility: */
-    { "url_parse", vlclua_url_parse /* deprecated since 3.0.0 */ },
+    { "url_parse", vlclua_url_parse },
     { "stat", vlclua_stat }, /* Not really "net" */
     { "opendir", vlclua_opendir }, /* Not really "net" */
     { NULL, NULL }
@@ -499,11 +521,41 @@ static void luaopen_net_intf( lua_State *L )
     lua_setfield( L, -2, "net" );
 }
 
+#ifdef _WIN32
+static int vlc_socket_pair( int fds[2] )
+{
+    struct sockaddr_in inaddr;
+    struct sockaddr addr;
+    SOCKET lst = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
+    memset( &inaddr, 0, sizeof( inaddr ) );
+    memset( &addr, 0, sizeof( addr ) );
+    inaddr.sin_family = AF_INET;
+    inaddr.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
+    inaddr.sin_port = 0;
+    int yes = 1;
+    setsockopt( lst, SOL_SOCKET, SO_REUSEADDR, (char*)&yes, sizeof( yes ) );
+    bind( lst, (struct sockaddr *)&inaddr, sizeof( inaddr ) );
+    listen( lst, 1 );
+    int len = sizeof( inaddr );
+    getsockname( lst, &addr, &len );
+    fds[0] = socket( AF_INET, SOCK_STREAM, 0 );
+    connect( fds[0], &addr, len );
+    fds[1] = accept( lst, 0, 0 );
+    closesocket( lst );
+
+    return 0;
+}
+#endif
+
 int vlclua_fd_init( lua_State *L, vlclua_dtable_t *dt )
 {
-    dt->interrupt = vlc_interrupt_create();
-    if( unlikely(dt->interrupt == NULL) )
+#ifndef _WIN32
+    if( vlc_pipe( dt->fd ) )
         return -1;
+#else
+    if( vlc_socket_pair( dt->fd ) )
+        return -1;
+#endif
     dt->fdv = NULL;
     dt->fdc = 0;
     vlclua_set_object( L, vlclua_get_dtable, dt );
@@ -513,7 +565,13 @@ int vlclua_fd_init( lua_State *L, vlclua_dtable_t *dt )
 
 void vlclua_fd_interrupt( vlclua_dtable_t *dt )
 {
-    vlc_interrupt_kill( dt->interrupt );
+#ifndef _WIN32
+    close( dt->fd[1] );
+    dt->fd[1] = -1;
+#else
+    closesocket( dt->fd[0] );
+    dt->fd[0] = -1;
+#endif
 }
 
 /** Releases all (leaked) VLC Lua file descriptors. */
@@ -523,5 +581,12 @@ void vlclua_fd_cleanup( vlclua_dtable_t *dt )
         if( dt->fdv[i] != -1 )
             net_Close( dt->fdv[i] );
     free( dt->fdv );
-    vlc_interrupt_destroy(dt->interrupt);
+#ifndef _WIN32
+    if( dt->fd[1] != -1 )
+        close( dt->fd[1] );
+    close( dt->fd[0] );
+#else
+    if( dt->fd[0] != -1 )
+        closesocket( dt->fd[0] );
+#endif
 }

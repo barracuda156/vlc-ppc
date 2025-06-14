@@ -302,7 +302,7 @@ static void dirac_RecoverTimestamps ( decoder_t *p_dec, size_t i_length )
     block_t *p_block = p_sys->bytestream.p_block;
 
     /* Find the block with first non-flushed data */
-    size_t i_offset = p_sys->bytestream.i_block_offset;
+    size_t i_offset = p_sys->bytestream.i_offset;
     for(; p_block != NULL; p_block = p_block->p_next )
     {
         if( i_offset < p_block->i_buffer )
@@ -481,8 +481,8 @@ static bool dirac_UnpackParseInfo( parse_info_t *p_pi, block_bytestream_t *p_bs,
         return false;
 
     p_pi->i_parse_code = p_d[4];
-    p_pi->u_next_offset = GetDWBE( &p_d[5] );
-    p_pi->u_prev_offset = GetDWBE( &p_d[9] );
+    p_pi->u_next_offset = p_d[5] << 24 | p_d[6] << 16 | p_d[7] << 8 | p_d[8];
+    p_pi->u_prev_offset = p_d[9] << 24 | p_d[10] << 16 | p_d[11] << 8 | p_d[12];
     return true;
 }
 
@@ -677,8 +677,7 @@ static block_t *dirac_DoSync( decoder_t *p_dec )
         case NOT_SYNCED:
         {
             if( VLC_SUCCESS !=
-                block_FindStartcodeFromOffset( &p_sys->bytestream, &p_sys->i_offset,
-                                               p_parsecode, 4, NULL, NULL ) )
+                block_FindStartcodeFromOffset( &p_sys->bytestream, &p_sys->i_offset, p_parsecode, 4 ) )
             {
                 /* p_sys->i_offset will have been set to:
                  *   end of bytestream - amount of prefix found
@@ -913,8 +912,7 @@ static int dirac_InspectDataUnit( decoder_t *p_dec, block_t **pp_block, block_t 
         {
             u_pics_per_sec *= 2;
         }
-        if( u_pics_per_sec &&  p_sys->seq_hdr.u_fps_den )
-            date_Change( &p_sys->dts, u_pics_per_sec, p_sys->seq_hdr.u_fps_den );
+        date_Change( &p_sys->dts, u_pics_per_sec, p_sys->seq_hdr.u_fps_den );
 
         /* TODO: set p_sys->reorder_buf.u_size_max */
         p_sys->i_pts_offset = p_sys->reorder_buf.u_size_max
@@ -1210,26 +1208,6 @@ static void dirac_ReorderDequeueAndReleaseBlock( decoder_t *p_dec, block_t *p_bl
 }
 
 /*****************************************************************************
- * Flush:
- *****************************************************************************/
-static void Flush( decoder_t *p_dec )
-{
-    decoder_sys_t *p_sys = p_dec->p_sys;
-
-    /* pre-emptively insert an EOS at a discontinuity, protects
-     * any decoders from any sudden changes */
-    block_t *p_block = dirac_EmitEOS( p_dec, 0 );
-    if( p_block )
-    {
-        p_block->p_next = dirac_EmitEOS( p_dec, 13 );
-        /* need two EOS to ensure it gets detected by synchro
-         * duplicates get discarded in forming encapsulation unit */
-
-        block_BytestreamPush( &p_sys->bytestream, p_block );
-    }
-}
-
-/*****************************************************************************
  * Packetize: form dated encapsulation units from anything
  *****************************************************************************/
 static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
@@ -1245,9 +1223,16 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
 
         if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
         {
+            /* pre-emptively insert an EOS at a discontinuity, protects
+             * any decoders from any sudden changes */
             block_Release( p_block );
-            p_block = NULL;
-            Flush( p_dec );
+            p_block = dirac_EmitEOS( p_dec, 0 );
+            if( p_block )
+            {
+                p_block->p_next = dirac_EmitEOS( p_dec, 13 );
+                /* need two EOS to ensure it gets detected by synchro
+                 * duplicates get discarded in forming encapsulation unit */
+            }
         }
         else if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
         {
@@ -1374,7 +1359,6 @@ static int Open( vlc_object_t *p_this )
         return VLC_EGENERIC;
 
     p_dec->pf_packetize = Packetize;
-    p_dec->pf_flush     = Flush;
 
     /* Create the output format */
     es_format_Copy( &p_dec->fmt_out, &p_dec->fmt_in );

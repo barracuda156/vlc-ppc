@@ -42,7 +42,7 @@ class CmdDlg##a: public CmdGeneric                              \
         Dialogs *dlg = Dialogs::instance( getIntf() );          \
         if( dlg ) dlg->c;                                       \
     }                                                           \
-    virtual std::string getType() const { return #a" dialog"; }      \
+    virtual string getType() const { return #a" dialog"; }      \
 };
 
 DEFC( ChangeSkin,         showChangeSkin() )
@@ -85,7 +85,7 @@ public:
         if( pDialogs != NULL )
             pDialogs->showInteraction( m_pDialog );
     }
-    virtual std::string getType() const { return "interaction"; }
+    virtual string getType() const { return "interaction"; }
 private:
     interaction_dialog_t *m_pDialog;
 };

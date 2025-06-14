@@ -21,7 +21,6 @@ cddb: libcddb-$(CDDB_VERSION).tar.bz2 .sum-cddb
 	$(APPLY) $(SRC)/cddb/cross.patch
 	$(APPLY) $(SRC)/cddb/getenv-crash.patch
 	$(APPLY) $(SRC)/cddb/cddb-no-alarm.patch
-	$(APPLY) $(SRC)/cddb/fix-header-guards.patch
 ifdef HAVE_WIN32
 	$(APPLY) $(SRC)/cddb/win32-pkg.patch
 endif

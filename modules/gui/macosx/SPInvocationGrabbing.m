@@ -39,17 +39,20 @@
     free(frameStrings);
     self.object = nil;
     self.invocation = nil;
-}
 
+    [super dealloc];
+}
+@synthesize invocation = _invocation, object = _object;
+
+@synthesize backgroundAfterForward, onMainAfterForward, waitUntilDone;
 - (void)runInBackground;
 {
-    @autoreleasepool {
-        @try {
-            [self invoke];
-        }
-        @finally {
-            ;
-        }
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    @try {
+        [self invoke];
+    }
+    @finally {
+        [pool drain];
     }
 }
 
@@ -59,10 +62,10 @@
     anInvocation.target = _object;
     self.invocation = anInvocation;
 
-    if(_backgroundAfterForward)
+    if(backgroundAfterForward)
         [NSThread detachNewThreadSelector:@selector(runInBackground) toTarget:self withObject:nil];
-    else if(_onMainAfterForward)
-        [self performSelectorOnMainThread:@selector(invoke) withObject:nil waitUntilDone:_waitUntilDone];
+    else if(onMainAfterForward)
+        [self performSelectorOnMainThread:@selector(invoke) withObject:nil waitUntilDone:waitUntilDone];
 }
 
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)inSelector {
@@ -109,7 +112,7 @@
 @implementation NSObject (SPInvocationGrabbing)
 -(id)grab;
 {
-    return [[SPInvocationGrabber alloc] initWithObject:self];
+    return [[[SPInvocationGrabber alloc] initWithObject:self] autorelease];
 }
 
 -(id)invokeAfter:(NSTimeInterval)delta;

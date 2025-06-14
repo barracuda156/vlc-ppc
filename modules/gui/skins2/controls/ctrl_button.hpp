@@ -63,7 +63,7 @@ public:
     virtual UString getTooltipText() const { return m_tooltip; }
 
     /// Get the type of control (custom RTTI)
-    virtual std::string getType() const { return "button"; }
+    virtual string getType() const { return "button"; }
 
 private:
     /// Finite state machine of the control

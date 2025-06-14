@@ -60,7 +60,7 @@ void Theme::applyConfig()
 {
     msg_Dbg( getIntf(), "Apply saved configuration");
 
-    std::list<save_t>::const_iterator it;
+    list<save_t>::const_iterator it;
     for( it = m_saved.begin(); it!= m_saved.end(); ++it )
     {
         TopWindow *pWin = (*it).win;
@@ -105,16 +105,16 @@ int Theme::readConfig()
         return VLC_EGENERIC;
     }
 
-    std::istringstream inStream( save );
+    istringstream inStream( save );
     free( save );
 
     char sep;
-    std::string winId, layId;
+    string winId, layId;
     int x, y, width, height, visible;
     bool somethingVisible = false;
     while( !inStream.eof() )
     {
-        std::stringbuf buf, buf2;
+        stringbuf buf, buf2;
 
         inStream >> sep;
         if( sep != '[' )
@@ -134,13 +134,13 @@ int Theme::readConfig()
         layId = buf2.str();
         inStream >> sep;
 
-        inStream >> x >> y >> width >> height >> visible >> sep >> std::ws;
+        inStream >> x >> y >> width >> height >> visible >> sep >> ws;
         if( sep != ']' )
             goto invalid;
 
         // Try to find the window and the layout
-        std::map<std::string, TopWindowPtr>::const_iterator itWin;
-        std::map<std::string, GenericLayoutPtr>::const_iterator itLay;
+        map<string, TopWindowPtr>::const_iterator itWin;
+        map<string, GenericLayoutPtr>::const_iterator itLay;
         itWin = m_windows.find( winId );
         itLay = m_layouts.find( layId );
         if( itWin == m_windows.end() || itLay == m_layouts.end() )
@@ -177,15 +177,15 @@ void Theme::saveConfig()
 {
     msg_Dbg( getIntf(), "saving theme configuration");
 
-    std::map<std::string, TopWindowPtr>::const_iterator itWin;
-    std::map<std::string, GenericLayoutPtr>::const_iterator itLay;
-    std::ostringstream outStream;
+    map<string, TopWindowPtr>::const_iterator itWin;
+    map<string, GenericLayoutPtr>::const_iterator itLay;
+    ostringstream outStream;
     for( itWin = m_windows.begin(); itWin != m_windows.end(); ++itWin )
     {
         TopWindow *pWin = itWin->second.get();
 
         // Find the layout id for this window
-        std::string layoutId;
+        string layoutId;
         const GenericLayout *pLayout = &pWin->getActiveLayout();
         for( itLay = m_layouts.begin(); itLay != m_layouts.end(); ++itLay )
         {
@@ -212,19 +212,19 @@ void Theme::saveConfig()
 // corresponding to the first valid ID. If no ID is valid, it returns NULL.
 // XXX The string handling here probably could be improved.
 template<class T> typename T::pointer
-Theme::IDmap<T>::find_first_object( const std::string &id ) const
+Theme::IDmap<T>::find_first_object( const string &id ) const
 {
-    std::string rightPart = id;
-    std::string::size_type pos;
+    string rightPart = id;
+    string::size_type pos;
     do
     {
         pos = rightPart.find( ";" );
-        std::string leftPart = rightPart.substr( 0, pos );
+        string leftPart = rightPart.substr( 0, pos );
 
         typename T::pointer p = find_object( leftPart );
         if( p ) return p;
 
-        if( pos != std::string::npos )
+        if( pos != string::npos )
         {
             rightPart = rightPart.substr( pos, rightPart.size() );
             rightPart =
@@ -232,16 +232,16 @@ Theme::IDmap<T>::find_first_object( const std::string &id ) const
                                   rightPart.size() );
         }
     }
-    while( pos != std::string::npos );
+    while( pos != string::npos );
     return NULL;
 }
 
-GenericBitmap *Theme::getBitmapById( const std::string &id ) const
+GenericBitmap *Theme::getBitmapById( const string &id ) const
 {
     return m_bitmaps.find_first_object( id );
 }
 
-GenericFont *Theme::getFontById( const std::string &id ) const
+GenericFont *Theme::getFontById( const string &id ) const
 {
     return m_fonts.find_first_object( id );
 }

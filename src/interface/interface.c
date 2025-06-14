@@ -38,6 +38,7 @@
 #endif
 
 #include <unistd.h>
+#include <assert.h>
 
 #include <vlc_common.h>
 #include <vlc_modules.h>
@@ -78,7 +79,8 @@ int intf_Create( playlist_t *playlist, const char *chain )
 
     /* Variable used for interface spawning */
     vlc_value_t val, text;
-    var_Create( p_intf, "intf-add", VLC_VAR_STRING | VLC_VAR_ISCOMMAND );
+    var_Create( p_intf, "intf-add", VLC_VAR_STRING |
+                VLC_VAR_HASCHOICE | VLC_VAR_ISCOMMAND );
     text.psz_string = _("Add Interface");
     var_Change( p_intf, "intf-add", VLC_VAR_SETTEXT, &text, NULL );
 #if !defined(_WIN32) && defined(HAVE_ISATTY)
@@ -154,36 +156,15 @@ static playlist_t *intf_GetPlaylist(libvlc_int_t *libvlc)
 }
 
 /**
- * Inserts an item in the playlist.
- *
- * This function is used during initialization. Unlike playlist_Add() and
- * variants, it inserts an item to the beginning of the playlist. That is
- * meant to compensate for the reverse parsing order of the command line.
- *
+ * Inserts an item in the playlist used by interfaces.
  * @note This function may <b>not</b> be called at the same time as
  * intf_DestroyAll().
  */
-int intf_InsertItem(libvlc_int_t *libvlc, const char *mrl, unsigned optc,
-                    const char *const *optv, unsigned flags)
+void intf_InsertItem(libvlc_int_t *libvlc, const char *mrl, unsigned optc,
+                     const char *const *optv, unsigned flags)
 {
-    playlist_t *playlist = intf_GetPlaylist(libvlc);
-    input_item_t *item = input_item_New(mrl, NULL);
-
-    if (unlikely(item == NULL))
-        return -1;
-
-    int ret = -1;
-
-    if (input_item_AddOptions(item, optc, optv, flags) == VLC_SUCCESS)
-    {
-        playlist_Lock(playlist);
-        if (playlist_NodeAddInput(playlist, item, playlist->p_playing,
-                                  0) != NULL)
-            ret = 0;
-        playlist_Unlock(playlist);
-    }
-    input_item_Release(item);
-    return ret;
+    playlist_AddExt(intf_GetPlaylist(libvlc), mrl, NULL, PLAYLIST_INSERT,
+                    0, -1, optc, optv, flags, true, pl_Unlocked);
 }
 
 void libvlc_InternalPlay(libvlc_int_t *libvlc)

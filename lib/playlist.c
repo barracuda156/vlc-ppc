@@ -28,7 +28,11 @@
 #include "libvlc_internal.h"
 #include "../src/libvlc.h"
 
-#include <vlc/vlc.h>
+#include <vlc/libvlc_structures.h>
+#include <vlc/libvlc.h>
+#include <vlc/libvlc_media.h>
+#include <vlc/libvlc_media_player.h>
+#include <vlc/deprecated.h>
 
 #include <vlc_playlist.h>
 

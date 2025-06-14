@@ -24,7 +24,7 @@
 
 #ifdef WIN32_SKINS
 
-#include "win32_dragdrop.hpp"
+#include "win32/win32_dragdrop.hpp"
 #include "../commands/cmd_add_item.hpp"
 #include "../events/evt_dragndrop.hpp"
 #include <list>
@@ -162,7 +162,7 @@ STDMETHODIMP Win32DragDrop::Drop( LPDATAOBJECT pDataObj, DWORD grfKeyState,
 
 void Win32DragDrop::HandleDrop( HDROP HDrop, int x, int y )
 {
-    std::list<std::string> files;
+    list<string> files;
 
     // Get the number of dropped files
     int nbFiles = DragQueryFileW( HDrop, 0xFFFFFFFF, NULL, 0 );

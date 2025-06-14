@@ -23,12 +23,12 @@
  *****************************************************************************/
 
 #include "evt_key.hpp"
-#include <vlc_actions.h>
+#include <vlc_keys.h>
 
 
-const std::string EvtKey::getAsString() const
+const string EvtKey::getAsString() const
 {
-    std::string event = "key";
+    string event = "key";
 
     // Add the action
     if( m_action == kDown )
@@ -42,7 +42,7 @@ const std::string EvtKey::getAsString() const
     char *keyName = vlc_keycode2str( m_key & ~KEY_MODIFIER, true );
     if( keyName )
     {
-        event += std::string(":") + keyName;
+        event += (string)":" + keyName;
         free( keyName );
     }
     else

@@ -48,7 +48,13 @@
  */
 
 static const char * test_defaults_args[] = {
-    "-v", "--vout=vdummy",
+    "-v",
+    "--ignore-config",
+    "-I",
+    "dummy",
+    "--no-media-library",
+    "--vout=dummy",
+    "--aout=dummy"
 };
 
 static const int test_defaults_nargs =
@@ -56,7 +62,6 @@ static const int test_defaults_nargs =
 
 /*static const char test_default_sample[] = "samples/test.sample";*/
 static const char test_default_sample[] = SRCDIR"/samples/empty.voc";
-static const char test_default_video[] = SRCDIR"/samples/image.jpg";
 
 
 /*********************************************************************

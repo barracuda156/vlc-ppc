@@ -176,9 +176,6 @@ static int Open(vlc_object_t *object)
     vout_display_t     *vd = (vout_display_t *)object;
     vout_display_sys_t *sys;
 
-    if (vout_display_IsWindowed(vd))
-        return VLC_EGENERIC;
-
     /* Allocate instance and initialize some members */
     vd->sys = sys = calloc(1, sizeof(*sys));
     if (!sys)
@@ -254,6 +251,7 @@ static int Open(vlc_object_t *object)
         Close(VLC_OBJECT(vd));
         return VLC_EGENERIC;
     }
+    vout_display_DeleteWindow(vd, NULL);
 
     /* */
     video_format_t fmt;
@@ -300,14 +298,21 @@ static int Open(vlc_object_t *object)
     fmt.i_visible_height = sys->height;
 
     /* */
+    vout_display_info_t info = vd->info;
+    info.has_hide_mouse = true;
+
+    /* */
     vd->fmt     = fmt;
+    vd->info    = info;
     vd->pool    = Pool;
     vd->prepare = NULL;
     vd->display = Display;
     vd->control = Control;
+    vd->manage  = NULL;
 
     /* */
-    vout_display_SendEventDisplaySize(vd, fmt.i_visible_width, fmt.i_visible_height);
+    vout_display_SendEventFullscreen(vd, true);
+    vout_display_SendEventDisplaySize(vd, fmt.i_visible_width, fmt.i_visible_height, true);
     return VLC_SUCCESS;
 }
 
@@ -320,7 +325,7 @@ static void Close(vlc_object_t *object)
     vout_display_sys_t *sys = vd->sys;
 
     if (sys->pool)
-        picture_pool_Release(sys->pool);
+        picture_pool_Delete(sys->pool);
     if (!sys->is_hw_accel && sys->picture)
         picture_Release(sys->picture);
 
@@ -387,8 +392,20 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
 }
 static int Control(vout_display_t *vd, int query, va_list args)
 {
-    (void) vd; (void) query; (void) args;
-    return VLC_EGENERIC;
+    vout_display_sys_t *sys = vd->sys;
+
+    switch (query) {
+    case VOUT_DISPLAY_CHANGE_DISPLAY_SIZE: {
+        const vout_display_cfg_t *cfg = va_arg(args, const vout_display_cfg_t *);
+        if (cfg->display.width  != sys->width ||
+            cfg->display.height != sys->height)
+            return VLC_EGENERIC;
+        return VLC_SUCCESS;
+    }
+    default:
+        msg_Err(vd, "Unsupported query in vout display fb");
+        return VLC_EGENERIC;
+    }
 }
 
 /* following functions are local */
@@ -509,7 +526,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
     /* Get framebuffer device information */
     if (ioctl(sys->fd, FBIOGET_VSCREENINFO, &sys->var_info)) {
         msg_Err(vd, "cannot get fb info (%s)", vlc_strerror_c(errno));
-        vlc_close(sys->fd);
+        close(sys->fd);
         return VLC_EGENERIC;
     }
     sys->old_info = sys->var_info;
@@ -528,7 +545,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
 
     if (ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->var_info)) {
         msg_Err(vd, "cannot set fb info (%s)", vlc_strerror_c(errno));
-        vlc_close(sys->fd);
+        close(sys->fd);
         return VLC_EGENERIC;
     }
 
@@ -542,7 +559,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
         /* Restore fb config */
         ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->old_info);
 
-        vlc_close(sys->fd);
+        close(sys->fd);
         return VLC_EGENERIC;
     }
 
@@ -577,7 +594,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
             /* Restore fb config */
             ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->old_info);
 
-            vlc_close(sys->fd);
+            close(sys->fd);
             return VLC_ENOMEM;
         }
         sys->fb_cmap.start = 0;
@@ -613,7 +630,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
         /* Restore fb config */
         ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->old_info);
 
-        vlc_close(sys->fd);
+        close(sys->fd);
         return VLC_EGENERIC;
     }
 
@@ -634,7 +651,7 @@ static int OpenDisplay(vout_display_t *vd, bool force_resolution)
         /* Restore fb config */
         ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->old_info);
 
-        vlc_close(sys->fd);
+        close(sys->fd);
         return VLC_EGENERIC;
     }
 
@@ -671,7 +688,7 @@ static void CloseDisplay(vout_display_t *vd)
         ioctl(sys->fd, FBIOPUT_VSCREENINFO, &sys->old_info);
 
         /* Close fb */
-        vlc_close(sys->fd);
+        close(sys->fd);
     }
 }
 

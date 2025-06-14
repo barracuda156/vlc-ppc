@@ -178,7 +178,7 @@ typedef struct avi_chunk_dmlh_s
     uint32_t dwTotalFrames;
 } avi_chunk_dmlh_t;
 
-#define AVI_ZEROSIZED_CHUNK     0xFF
+#define AVI_STRD_ZERO_CHUNK     0xFF
 #define AVI_ZERO_FOURCC         0xFE
 
 #define AVI_INDEX_OF_INDEXES    0x00
@@ -252,19 +252,19 @@ typedef union avi_chunk_u
 int     AVI_ChunkRead( stream_t *,
                        avi_chunk_t *p_chk,
                        avi_chunk_t *p_father );
-void    AVI_ChunkClean( stream_t *, avi_chunk_t * );
+void    AVI_ChunkFree( stream_t *, avi_chunk_t * );
 
-int     AVI_ChunkCount_( avi_chunk_t *, vlc_fourcc_t );
-void   *AVI_ChunkFind_ ( avi_chunk_t *, vlc_fourcc_t, int );
+int     AVI_ChunkCount_( avi_chunk_t *, vlc_fourcc_t, bool );
+void   *AVI_ChunkFind_ ( avi_chunk_t *, vlc_fourcc_t, int, bool );
 
 int     AVI_ChunkReadRoot( stream_t *, avi_chunk_t *p_root );
 void    AVI_ChunkFreeRoot( stream_t *, avi_chunk_t *p_chk  );
 int     AVI_ChunkFetchIndexes( stream_t *, avi_chunk_t *p_riff );
 
-#define AVI_ChunkCount( p_chk, i_fourcc ) \
-    AVI_ChunkCount_( AVI_CHUNK(p_chk), i_fourcc )
-#define AVI_ChunkFind( p_chk, i_fourcc, i_number ) \
-    AVI_ChunkFind_( AVI_CHUNK(p_chk), i_fourcc, i_number )
+#define AVI_ChunkCount( p_chk, i_fourcc, b_list ) \
+    AVI_ChunkCount_( AVI_CHUNK(p_chk), i_fourcc, b_list )
+#define AVI_ChunkFind( p_chk, i_fourcc, i_number, b_list ) \
+    AVI_ChunkFind_( AVI_CHUNK(p_chk), i_fourcc, i_number, b_list )
 
 /* *** avi stuff *** */
 

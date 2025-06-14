@@ -1,8 +1,6 @@
 # POSTPROC
 
-POSTPROC_URL := http://git.videolan.org/git/libpostproc.git
-POSTPROC_HASH := 3b7053f46dbfe4662063345245cb00b6acbbe969
-POSTPROC_VERSION := $(POSTPROC_HASH)
+POSTPROC_SNAPURL := http://git.videolan.org/?p=libpostproc.git;a=snapshot;h=HEAD;sf=tgz
 
 POSTPROCCONF = \
 	--cc="$(CC)" \
@@ -37,27 +35,14 @@ POSTPROCCONF += --enable-neon
 endif
 endif
 
-# ARM64 stuff
-ifeq ($(ARCH),aarch64)
-POSTPROCCONF += --arch=aarch64
-endif
-
 # MIPS stuff
 ifeq ($(ARCH),mipsel)
 POSTPROCCONF += --arch=mips
-endif
-ifeq ($(ARCH),mips64el)
-POSTPROCCONF += --arch=mips64
 endif
 
 # x86 stuff
 ifeq ($(ARCH),i386)
 POSTPROCCONF += --arch=x86
-endif
-
-# x86_64 stuff
-ifeq ($(ARCH),x86_64)
-POSTPROCCONF += --arch=x64_64
 endif
 
 # Darwin
@@ -76,12 +61,6 @@ endif
 # Linux
 ifdef HAVE_LINUX
 POSTPROCCONF += --target-os=linux --enable-pic
-endif
-
-ifdef HAVE_ANDROID
-ifeq ($(ANDROID_ABI), x86)
-POSTPROCCONF +=  --disable-mmx --disable-mmxext
-endif
 endif
 
 # Windows
@@ -109,19 +88,22 @@ ifeq ($(call need_pkg,"libpostproc"),)
 PKGS_FOUND += postproc
 endif
 
-$(TARBALLS)/postproc-$(POSTPROC_VERSION).tar.xz:
-	$(call download_git,$(POSTPROC_URL),,$(POSTPROC_HASH))
+$(TARBALLS)/postproc-git.tar.gz:
+	$(call download,$(POSTPROC_SNAPURL))
 
-.sum-postproc: $(TARBALLS)/postproc-$(POSTPROC_VERSION).tar.xz
-	$(call check_githash,$(POSTPROC_HASH))
+POSTPROC_VERSION := git
+
+.sum-postproc: $(TARBALLS)/postproc-$(POSTPROC_VERSION).tar.gz
+	$(warning Not implemented.)
 	touch $@
 
-postproc: postproc-$(POSTPROC_VERSION).tar.xz .sum-postproc
-	$(UNPACK)
+postproc: postproc-$(POSTPROC_VERSION).tar.gz .sum-postproc
+	rm -Rf $@ $@-git
+	mkdir -p $@-git
+	$(ZCAT) "$<" | (cd $@-git && tar xv --strip-components=1)
 	$(MOVE)
 
 .postproc: postproc
-	$(REQUIRE_GPL)
 	cd $< && $(HOSTVARS) ./configure \
 		--extra-cflags="$(EXTRA_CFLAGS)"  \
 		--extra-ldflags="$(LDFLAGS)" $(POSTPROCCONF) \

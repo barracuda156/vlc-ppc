@@ -46,10 +46,10 @@ public:
     static void destroy( intf_thread_t *pIntf );
 
     /// Print an error message
-    void error( const std::string &rMsg );
+    void error( const string &rMsg );
 
     /// Print a warning
-    void warn( const std::string &rMsg );
+    void warn( const string &rMsg );
 
 private:
     // Private because it's a singleton

@@ -42,42 +42,42 @@ public:
     virtual ~FSM() { }
 
     /// Add a state to the machine
-    void addState( const std::string &state );
+    void addState( const string &state );
 
     /// Add a transition to the machine
-    void addTransition( const std::string &state1, const std::string &event,
-                        const std::string &state2,
+    void addTransition( const string &state1, const string &event,
+                        const string &state2,
                         CmdGeneric *pCmd = NULL );
 
     /// Retrieve the current state
-    const std::string &getState() const { return m_currentState; }
+    const string &getState() const { return m_currentState; }
 
     /// Set the current state, without bothering about transitions
-    void setState( const std::string &state );
+    void setState( const string &state );
 
     /// Find a transition from the current state with the input event,
     /// change the state, and call the associated callback (if any).
-    void handleTransition( const std::string &event );
+    void handleTransition( const string &event );
 
 private:
     /// A Key_t contains the initial state of a transition, and a string
     /// characterizing an event (for example: "mouse:left:down:ctrl")
-    typedef std::pair<std::string, std::string> Key_t;
+    typedef pair<string, string> Key_t;
 
     /// A Data_t contains the final state of a transition, and a callback
     /// to execute when the transition is applied
-    typedef std::pair<std::string, CmdGeneric*> Data_t;
+    typedef pair<string, CmdGeneric*> Data_t;
 
     /// Current state of the machine
-    std::string m_currentState;
+    string m_currentState;
 
     /// Set containing the different states
-    std::set<std::string> m_states;
+    set<string> m_states;
 
     /// Map containing the different transitions between defined types
     /// It associates a final state (and potentially a callback)
     /// with a couple of the form: (currentState, triggerEvent)
-    std::map<Key_t, Data_t> m_transitions;
+    map<Key_t, Data_t> m_transitions;
 };
 
 

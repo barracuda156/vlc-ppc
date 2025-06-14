@@ -42,7 +42,7 @@ enum
 /**
  * Mouse state
  */
-typedef struct vlc_mouse_t
+typedef struct
 {
     /* Coordinate */
     int i_x;

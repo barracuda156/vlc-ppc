@@ -63,7 +63,6 @@
 #import "ExtensionsManager.h"
 #import "BWQuincyManager.h"
 #import "ControlsBar.h"
-#import "ResumeDialogController.h"
 #import "VLCDocumentController.h"
 
 #import "VideoEffects.h"
@@ -97,6 +96,56 @@ static int VolumeUpdated(vlc_object_t *, const char *,
                          vlc_value_t, vlc_value_t, void *);
 static int BossCallback(vlc_object_t *, const char *,
                          vlc_value_t, vlc_value_t, void *);
+
+typedef struct InformInputChangedContext {
+    intf_thread_t *p_intf;
+    input_thread_t *p_input_changed;
+} InformInputChangedContext;
+
+typedef struct {
+    BOOL record;
+} RecordStateContext;
+
+typedef struct {
+    NSString *text;
+    double number;
+} ProgressPanelContext;
+
+static void informInputChangedFunction(void *context)
+{
+    InformInputChangedContext *ctx = (InformInputChangedContext *)context;
+    [[ExtensionsManager getInstance:ctx->p_intf] inputChanged:ctx->p_input_changed];
+    if (ctx->p_input_changed)
+        vlc_object_release(ctx->p_input_changed);
+
+    free(ctx);
+}
+
+static void update_record_state_task(void *context)
+{
+    RecordStateContext *ctx = (RecordStateContext *)context;
+    [[VLCMain sharedInstance] updateRecordState:ctx->record];
+    free(ctx);
+}
+
+static void update_statistics_task(void *context)
+{
+    [[[VLCMain sharedInstance] info] updateStatistics];
+}
+
+static void boss_callback_task(void *context)
+{
+    [[VLCCoreInteraction sharedInstance] pause];
+    [[VLCApplication sharedApplication] hide:nil];
+}
+
+static void update_progress_panel_task(void *context)
+{
+    ProgressPanelContext *ctx = (ProgressPanelContext *)context;
+    [[[VLCMain sharedInstance] coreDialogProvider] updateProgressPanelWithText:ctx->text andNumber:ctx->number];
+    [ctx->text release];
+    free(ctx);
+}
 
 #pragma mark -
 #pragma mark VLC Interface Object Callbacks
@@ -325,6 +374,7 @@ static void QuitVLC( void *obj )
  * Run: main loop
  *****************************************************************************/
 static NSLock * o_appLock = nil;    // controls access to f_appExit
+static NSLock * o_plItemChangedLock = nil;
 
 static void Run(intf_thread_t *p_intf)
 {
@@ -332,6 +382,7 @@ static void Run(intf_thread_t *p_intf)
     [VLCApplication sharedApplication];
 
     o_appLock = [[NSLock alloc] init];
+    o_plItemChangedLock = [[NSLock alloc] init];
     o_vout_provider_lock = [[NSLock alloc] init];
 
     libvlc_SetExitHandler(p_intf->p_libvlc, QuitVLC, p_intf);
@@ -350,6 +401,7 @@ static void Run(intf_thread_t *p_intf)
     [NSApp run];
     msg_Dbg(p_intf, "Run loop has been stopped");
     [[VLCMain sharedInstance] applicationWillTerminate:nil];
+    [o_plItemChangedLock release];
     [o_appLock release];
     [o_vout_provider_lock release];
     o_vout_provider_lock = nil;
@@ -383,9 +435,7 @@ static int InputEvent(vlc_object_t *p_this, const char *psz_var,
             [[VLCMain sharedInstance] performSelectorOnMainThread:@selector(updateMainWindow) withObject: nil waitUntilDone: NO];
             break;
         case INPUT_EVENT_STATISTICS:
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[[VLCMain sharedInstance] info] updateStatistics];
-            });
+            dispatch_async_f(dispatch_get_main_queue(), NULL, update_statistics_task);
             break;
         case INPUT_EVENT_ES:
             break;
@@ -403,11 +453,12 @@ static int InputEvent(vlc_object_t *p_this, const char *psz_var,
             break;
         case INPUT_EVENT_BOOKMARK:
             break;
-        case INPUT_EVENT_RECORD:
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[VLCMain sharedInstance] updateRecordState: var_GetBool(p_this, "record")];
-            });
+        case INPUT_EVENT_RECORD: {
+            RecordStateContext *ctx = malloc(sizeof(RecordStateContext));
+            ctx->record = var_GetBool(p_this, "record");
+            dispatch_async_f(dispatch_get_main_queue(), ctx, update_record_state_task);
             break;
+        }
         case INPUT_EVENT_PROGRAM:
             [[VLCMain sharedInstance] performSelectorOnMainThread:@selector(updateMainMenu) withObject: nil waitUntilDone:NO];
             break;
@@ -514,10 +565,7 @@ static int BossCallback(vlc_object_t *p_this, const char *psz_var,
 {
     NSAutoreleasePool * o_pool = [[NSAutoreleasePool alloc] init];
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[VLCCoreInteraction sharedInstance] pause];
-        [[VLCApplication sharedApplication] hide:nil];
-    });
+    dispatch_async_f(dispatch_get_main_queue(), NULL, boss_callback_task);
 
     [o_pool release];
     return VLC_SUCCESS;
@@ -569,14 +617,15 @@ static int DialogCallback(vlc_object_t *p_this, const char *type, vlc_value_t pr
     return VLC_SUCCESS;
 }
 
-void updateProgressPanel (void *priv, const char *text, float value)
+void updateProgressPanel(void *priv, const char *text, float value)
 {
     NSAutoreleasePool *o_pool = [[NSAutoreleasePool alloc] init];
 
-    NSString *o_txt = toNSStr(text);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[[VLCMain sharedInstance] coreDialogProvider] updateProgressPanelWithText: o_txt andNumber: (double)(value * 1000.)];
-    });
+    ProgressPanelContext *ctx = malloc(sizeof(ProgressPanelContext));
+    ctx->text = [toNSStr(text) retain];
+    ctx->number = (double)(value * 1000.);
+
+    dispatch_async_f(dispatch_get_main_queue(), ctx, update_progress_panel_task);
 
     [o_pool release];
 }
@@ -967,8 +1016,6 @@ static bool f_appExit = false;
 
     if (!o_bookmarks)
         [o_bookmarks release];
-
-    [o_resume_dialog release];
 
     [o_coredialogs release];
     [o_eyetv release];
@@ -1396,11 +1443,12 @@ static bool f_appExit = false;
      * and other issues, we need to inform the extension manager on a separate thread.
      * The serial queue ensures that changed inputs are propagated in the same order as they arrive.
      */
-    dispatch_async(informInputChangedQueue, ^{
-        [[ExtensionsManager getInstance:p_intf] inputChanged:p_input_changed];
-        if (p_input_changed)
-            vlc_object_release(p_input_changed);
-    });
+    InformInputChangedContext *ctx = malloc(sizeof(InformInputChangedContext));
+    if (ctx) {
+        ctx->p_intf = p_intf;
+        ctx->p_input_changed = p_input_changed;
+        dispatch_async_f(informInputChangedQueue, ctx, informInputChangedFunction);
+    }
 }
 
 - (void)plItemUpdated
@@ -1774,14 +1822,6 @@ static bool f_appExit = false;
 - (id)coreDialogProvider
 {
     return o_coredialogs;
-}
-
-- (ResumeDialogController *)resumeDialog
-{
-    if (!o_resume_dialog)
-        o_resume_dialog = [[ResumeDialogController alloc] init];
-
-    return o_resume_dialog;
 }
 
 - (id)eyeTVController

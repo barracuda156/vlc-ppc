@@ -33,8 +33,6 @@
 #import "playlistinfo.h"
 #import "bookmarks.h"
 #import "TrackSynchronization.h"
-#import "ResumeDialogController.h"
-#import "playlist.h"
 
 @implementation VLCVoutWindowController
 
@@ -377,21 +375,21 @@
 
 - (void)updateWindowsControlsBarWithSelector:(SEL)aSel
 {
-    [o_vout_dict enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+    for (id key in o_vout_dict) {
+        id obj = [o_vout_dict objectForKey:key];
         if ([obj respondsToSelector:@selector(controlsBar)]) {
             id o_controlsBar = [obj controlsBar];
             if (o_controlsBar)
                 [o_controlsBar performSelector:aSel];
         }
-    }];
+    }
 }
 
-- (void)updateWindowsUsingBlock:(void (^)(VLCVideoWindowCommon *o_window))windowUpdater
+- (void)updateWindowsWithFunction:(void (*)(void *, void *))fn context:(void *)ctx
 {
-    [o_vout_dict enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
-        if ([obj isKindOfClass: [NSWindow class]])
-            windowUpdater(obj);
-    }];
+    for (VLCVideoWindowCommon *window in self.windows) {
+        fn(window, ctx);
+    }
 }
 
 - (void)updateWindowLevelForHelperWindows:(NSInteger)i_level
@@ -413,8 +411,6 @@
     [[[VLCMain sharedInstance] info] updateCocoaWindowLevel:i_currentFloatingWindowLevel];
     [[VLCBookmarks sharedInstance] updateCocoaWindowLevel:i_currentFloatingWindowLevel];
     [[VLCTrackSynchronization sharedInstance] updateCocoaWindowLevel:i_currentFloatingWindowLevel];
-
-    [[[VLCMain sharedInstance] resumeDialog] updateCocoaWindowLevel:i_currentFloatingWindowLevel];
 }
 
 @synthesize currentStatusWindowLevel=i_currentFloatingWindowLevel;

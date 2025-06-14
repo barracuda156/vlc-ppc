@@ -327,21 +327,27 @@ static VLCConvertAndSave *_o_sharedInstance = nil;
     [_window performClose:sender];
 }
 
+- (void)openMediaPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton) {
+        [self setMRL:[NSString stringWithUTF8String:vlc_path2uri([[[panel URL] path] UTF8String], NULL)]];
+        [self updateOKButton];
+        [self updateDropView];
+    }
+}
+
 - (IBAction)openMedia:(id)sender
 {
-    /* preliminary implementation until the open panel is cleaned up */
-    NSOpenPanel * openPanel = [NSOpenPanel openPanel];
+    NSOpenPanel *openPanel = [NSOpenPanel openPanel];
     [openPanel setCanChooseDirectories:NO];
     [openPanel setResolvesAliases:YES];
     [openPanel setAllowsMultipleSelection:NO];
-    [openPanel beginSheetModalForWindow:_window completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSOKButton)
-        {
-            [self setMRL: [NSString stringWithUTF8String:vlc_path2uri([[[openPanel URL] path] UTF8String], NULL)]];
-            [self updateOKButton];
-            [self updateDropView];
-        }
-    }];
+    [openPanel beginSheetForDirectory:nil
+                                 file:nil
+                    modalForWindow:_window
+                        modalDelegate:self
+                    didEndSelector:@selector(openMediaPanelDidEnd:returnCode:contextInfo:)
+                        contextInfo:NULL];
 }
 
 - (IBAction)switchProfile:(id)sender
@@ -436,26 +442,35 @@ static VLCConvertAndSave *_o_sharedInstance = nil;
     b_streaming = NO;
 }
 
+- (void)browseFilePanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton) {
+        [self setOutputDestination:[[panel URL] path]];
+        [_destination_filename_lbl setStringValue:[[NSFileManager defaultManager] displayNameAtPath:_outputDestination]];
+        [[_destination_filename_stub_lbl animator] setHidden:YES];
+        [[_destination_filename_lbl animator] setHidden:NO];
+    } else {
+        [self setOutputDestination:@""];
+        [[_destination_filename_lbl animator] setHidden:YES];
+        [[_destination_filename_stub_lbl animator] setHidden:NO];
+    }
+    [self updateOKButton];
+}
+
 - (IBAction)browseFileDestination:(id)sender
 {
-    NSSavePanel * saveFilePanel = [NSSavePanel savePanel];
-    [saveFilePanel setCanSelectHiddenExtension: YES];
-    [saveFilePanel setCanCreateDirectories: YES];
-    if ([[_customize_encap_matrix selectedCell] tag] != RAW) // there is no clever guess for this
+    NSSavePanel *saveFilePanel = [NSSavePanel savePanel];
+    [saveFilePanel setCanSelectHiddenExtension:YES];
+    [saveFilePanel setCanCreateDirectories:YES];
+    if ([[_customize_encap_matrix selectedCell] tag] != RAW)
         [saveFilePanel setAllowedFileTypes:[NSArray arrayWithObject:[self currentEncapsulationFormatAsFileExtension:YES]]];
-    [saveFilePanel beginSheetModalForWindow:_window completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSOKButton) {
-            [self setOutputDestination:[[saveFilePanel URL] path]];
-            [_destination_filename_lbl setStringValue: [[NSFileManager defaultManager] displayNameAtPath:_outputDestination]];
-            [[_destination_filename_stub_lbl animator] setHidden: YES];
-            [[_destination_filename_lbl animator] setHidden: NO];
-        } else {
-            [self setOutputDestination:@""];
-            [[_destination_filename_lbl animator] setHidden: YES];
-            [[_destination_filename_stub_lbl animator] setHidden: NO];
-        }
-        [self updateOKButton];
-    }];
+
+    [saveFilePanel beginSheetForDirectory:nil
+                                     file:nil
+                        modalForWindow:_window
+                            modalDelegate:self
+                        didEndSelector:@selector(browseFilePanelDidEnd:returnCode:contextInfo:)
+                            contextInfo:NULL];
 }
 
 - (IBAction)showStreamPanel:(id)sender
@@ -540,16 +555,24 @@ static VLCConvertAndSave *_o_sharedInstance = nil;
         [_stream_sdp_browsefile_btn setEnabled: NO];
 }
 
+- (void)sdpPanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [_stream_sdp_fld setStringValue:[[panel URL] path]];
+}
+
 - (IBAction)sdpFileLocationSelector:(id)sender
 {
-    NSSavePanel * saveFilePanel = [NSSavePanel savePanel];
-    [saveFilePanel setCanSelectHiddenExtension: YES];
-    [saveFilePanel setCanCreateDirectories: YES];
+    NSSavePanel *saveFilePanel = [NSSavePanel savePanel];
+    [saveFilePanel setCanSelectHiddenExtension:YES];
+    [saveFilePanel setCanCreateDirectories:YES];
     [saveFilePanel setAllowedFileTypes:[NSArray arrayWithObject:@"sdp"]];
-    [saveFilePanel beginSheetModalForWindow:_stream_panel completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSOKButton)
-            [_stream_sdp_fld setStringValue:[[saveFilePanel URL] path]];
-    }];
+    [saveFilePanel beginSheetForDirectory:nil
+                                     file:nil
+                        modalForWindow:_stream_panel
+                            modalDelegate:self
+                        didEndSelector:@selector(sdpPanelDidEnd:returnCode:contextInfo:)
+                            contextInfo:NULL];
 }
 
 - (BOOL)performDragOperation:(id <NSDraggingInfo>)sender

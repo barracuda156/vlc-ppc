@@ -133,30 +133,40 @@ static VLCDebugMessageVisualizer *_sharedMainInstance = nil;
     vlc_LogSet( VLCIntf->p_libvlc, NULL, NULL );
 }
 
+- (void)savePanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton) {
+        NSUInteger count = [_msg_arr count];
+        NSMutableAttributedString *string = [[NSMutableAttributedString alloc] init];
+        for (NSUInteger i = 0; i < count; i++)
+            [string appendAttributedString:[_msg_arr objectAtIndex:i]];
+
+        NSData *data = [string RTFFromRange:NSMakeRange(0, [string length])
+                         documentAttributes:[NSDictionary dictionaryWithObject:NSRTFTextDocumentType forKey:NSDocumentTypeDocumentAttribute]];
+
+        if ([data writeToFile:[[panel URL] path] atomically:YES] == NO)
+            msg_Warn(VLCIntf, "Error while saving the debug log");
+
+        [string release];
+    }
+}
+
 - (IBAction)saveDebugLog:(id)sender
 {
-    NSSavePanel * saveFolderPanel = [[NSSavePanel alloc] init];
+    NSSavePanel *saveFolderPanel = [[NSSavePanel alloc] init];
 
-    [saveFolderPanel setCanSelectHiddenExtension: NO];
-    [saveFolderPanel setCanCreateDirectories: YES];
-    [saveFolderPanel setAllowedFileTypes: [NSArray arrayWithObject:@"rtf"]];
+    [saveFolderPanel setCanSelectHiddenExtension:NO];
+    [saveFolderPanel setCanCreateDirectories:YES];
+    [saveFolderPanel setAllowedFileTypes:[NSArray arrayWithObject:@"rtf"]];
     [saveFolderPanel setNameFieldStringValue:[NSString stringWithFormat: _NS("VLC Debug Log (%s).rtf"), VERSION_MESSAGE]];
-    [saveFolderPanel beginSheetModalForWindow: _msgs_panel completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSOKButton) {
-            NSUInteger count = [_msg_arr count];
-            NSMutableAttributedString * string = [[NSMutableAttributedString alloc] init];
-            for (NSUInteger i = 0; i < count; i++)
-                [string appendAttributedString: [_msg_arr objectAtIndex:i]];
 
-            NSData *data = [string RTFFromRange:NSMakeRange(0, [string length])
-                             documentAttributes:[NSDictionary dictionaryWithObject: NSRTFTextDocumentType forKey: NSDocumentTypeDocumentAttribute]];
+    [saveFolderPanel beginSheetForDirectory:nil
+                                       file:nil
+                            modalForWindow:_msgs_panel
+                                modalDelegate:self
+                            didEndSelector:@selector(savePanelDidEnd:returnCode:contextInfo:)
+                                contextInfo:NULL];
 
-            if ([data writeToFile: [[saveFolderPanel URL] path] atomically: YES] == NO)
-                msg_Warn(VLCIntf, "Error while saving the debug log");
-
-            [string release];
-        }
-    }];
     [saveFolderPanel release];
 }
 

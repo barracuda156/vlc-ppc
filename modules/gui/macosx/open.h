@@ -309,6 +309,8 @@
 - (IBAction)panelOk:(id)sender;
 
 - (void)openFile;
+
+- (void)openPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
 @end
 
 @interface VLCOpenTextField : NSTextField

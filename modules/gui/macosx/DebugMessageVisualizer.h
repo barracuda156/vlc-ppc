@@ -39,4 +39,6 @@
 - (IBAction)updateMessagesPanel:(id)sender;
 - (IBAction)saveDebugLog:(id)sender;
 
+- (void)savePanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
+
 @end

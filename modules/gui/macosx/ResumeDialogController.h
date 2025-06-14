@@ -32,7 +32,7 @@ enum ResumeResult {
     RESUME_NOW
 };
 
-typedef void(^CompletionBlock)(enum ResumeResult);
+typedef void (*ResumeCompletionFunction)(enum ResumeResult, void *user_data);
 
 @interface ResumeDialogController : NSWindowController
 {
@@ -45,12 +45,16 @@ typedef void(^CompletionBlock)(enum ResumeResult);
 
     int currentResumeTimeout;
 
-    CompletionBlock completionBlock;
+    ResumeCompletionFunction completionFunction;
+    void *completionUserData;
 }
 
 - (IBAction)buttonClicked:(id)sender;
 
-- (void)showWindowWithItem:(input_item_t *)p_item withLastPosition:(NSInteger)pos completionBlock:(CompletionBlock)block;
+- (void)showWindowWithItem:(input_item_t *)p_item
+        withLastPosition:(NSInteger)pos
+        completionFunction:(ResumeCompletionFunction)fn
+        userData:(void *)user_data;
 
 - (void)updateCocoaWindowLevel:(NSInteger)i_level;
 

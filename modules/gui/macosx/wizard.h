@@ -181,4 +181,9 @@
 - (id)playlistWizard;
 - (void)initWithExtractValuesFrom: (NSString *)from to: (NSString *)to ofItem: (NSString *)item;
 
+- (void)t2_getNewStreamFromDialog:(NSOpenPanel *)panel
+                    returnCode:(NSInteger)returnCode
+                    contextInfo:(void *)contextInfo;
+- (void)t7_saveFolderPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
+- (void)t7_saveFilePanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
 @end

@@ -251,6 +251,8 @@
 - (id)tableView:(NSTableView *)aTableView objectValueForTableColumn:(NSTableColumn *)aTableColumn row:(int)rowIndex;
 - (BOOL)changeHotkeyTo: (NSString *)theKey;
 
+- (void)dirPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
+- (void)snapDirPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
 @end
 
 @interface VLCHotkeyChangeWindow : NSWindow

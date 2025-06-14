@@ -704,10 +704,10 @@
     NSScreen *screen = [window screen];
     NSRect screenFrame = [screen frame];
 
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        [context setDuration:0.5 * duration];
-        [[window animator] setFrame:screenFrame display:YES];
-    } completionHandler:nil];
+    [NSAnimationContext beginGrouping];
+    [[NSAnimationContext currentContext] setDuration:0.5 * duration];
+    [[window animator] setFrame:screenFrame display:YES];
+    [NSAnimationContext endGrouping];
 }
 
 - (void)window:window startCustomAnimationToExitFullScreenWithDuration:(NSTimeInterval)duration
@@ -715,10 +715,10 @@
     [window setStyleMask:([window styleMask] & ~NSFullScreenWindowMask)];
     [[window animator] setFrame:frameBeforeLionFullscreen display:YES animate:YES];
 
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        [context setDuration:0.5 * duration];
-        [[window animator] setFrame:frameBeforeLionFullscreen display:YES animate:YES];
-    } completionHandler:nil];
+    [NSAnimationContext beginGrouping];
+    [[NSAnimationContext currentContext] setDuration:0.5 * duration];
+    [[window animator] setFrame:frameBeforeLionFullscreen display:YES animate:YES];
+    [NSAnimationContext endGrouping];
 }
 
 - (void)windowWillEnterFullScreen:(NSNotification *)notification

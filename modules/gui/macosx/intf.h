@@ -65,12 +65,11 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
 @class AppleRemote;
 @class VLCControls;
 @class VLCPlaylist;
-@class ResumeDialogController;
 
 @interface VLCMain : NSObject <NSWindowDelegate, NSApplicationDelegate>
 {
     intf_thread_t *p_intf;      /* The main intf object */
-    input_thread_t *p_current_input;
+    input_thread_t *p_current_input, *p_input_changed;
     BOOL launched;              /* finishedLaunching */
     int items_at_launch;        /* items in playlist after launch */
     id o_mainmenu;              /* VLCMainMenu */
@@ -83,7 +82,6 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
     id o_eyetv;                 /* VLCEyeTVController */
     id o_bookmarks;             /* VLCBookmarks */
     id o_coreinteraction;       /* VLCCoreInteraction */
-    ResumeDialogController *o_resume_dialog;
 
     BOOL nib_main_loaded;       /* main nibfile */
     BOOL nib_open_loaded;       /* open nibfile */
@@ -124,8 +122,6 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
     NSTimer *o_itunes_play_timer;
 
     BOOL b_playlist_updated_selector_in_queue;
-
-    dispatch_queue_t informInputChangedQueue;
 }
 
 @property (readonly) VLCVoutWindowController* voutController;
@@ -147,7 +143,6 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
 - (id)info;
 - (id)wizard;
 - (id)coreDialogProvider;
-- (ResumeDialogController *)resumeDialog;
 - (id)eyeTVController;
 - (id)appleRemoteController;
 - (void)setActiveVideoPlayback:(BOOL)b_value;
@@ -157,6 +152,7 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
 - (BOOL)hasDefinedShortcutKey:(NSEvent *)o_event force:(BOOL)b_force;
 
 - (void)PlaylistItemChanged;
+- (void)informInputChanged;
 - (void)plItemUpdated;
 - (void)playbackStatusUpdated;
 - (void)sendDistributedNotificationWithUpdatedPlaybackStatus;
@@ -182,7 +178,6 @@ static NSString * VLCInputChangedNotification = @"VLCInputChangedNotification";
 - (BOOL)isTerminating;
 
 @end
-
 
 /*****************************************************************************
  * VLCApplication interface

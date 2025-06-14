@@ -1226,6 +1226,12 @@ static inline void save_string_list(intf_thread_t * p_intf, id object, const cha
     [self showSettingsForCategory: o_audio_view];
 }
 
+- (void)dirPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [o_input_record_fld setStringValue:[[panel URL] path]];
+}
+
 - (IBAction)videoSettingChanged:(id)sender
 {
     if (sender == o_video_snap_folder_btn) {
@@ -1237,13 +1243,12 @@ static inline void save_string_list(intf_thread_t * p_intf, id object, const cha
         [o_selectFolderPanel setMessage: _NS("Choose the folder to save your video snapshots to.")];
         [o_selectFolderPanel setCanCreateDirectories: YES];
         [o_selectFolderPanel setPrompt: _NS("Choose")];
-        [o_selectFolderPanel beginSheetModalForWindow: o_sprefs_win completionHandler: ^(NSInteger returnCode) {
-            if (returnCode == NSOKButton)
-            {
-                [o_video_snap_folder_fld setStringValue: [[o_selectFolderPanel URL] path]];
-                b_videoSettingChanged = YES;
-            }
-        }];
+        [panel beginSheetForDirectory:nil
+                         file:nil
+                modalForWindow:o_sprefs_win
+                modalDelegate:self
+                didEndSelector:@selector(dirPanelDidEnd:returnCode:contextInfo:)
+                    contextInfo:NULL];
         [o_selectFolderPanel release];
     } else
         b_videoSettingChanged = YES;
@@ -1322,6 +1327,12 @@ static inline void save_string_list(intf_thread_t * p_intf, id object, const cha
     return NSFontPanelFaceModeMask | NSFontPanelCollectionModeMask;
 }
 
+- (void)snapDirPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [o_video_snap_folder_fld setStringValue:[[panel URL] path]];
+}
+
 - (IBAction)inputSettingChanged:(id)sender
 {
     if (sender == o_input_cachelevel_pop) {
@@ -1338,13 +1349,12 @@ static inline void save_string_list(intf_thread_t * p_intf, id object, const cha
         [o_selectFolderPanel setMessage: _NS("Choose the directory or filename where the records will be stored.")];
         [o_selectFolderPanel setCanCreateDirectories: YES];
         [o_selectFolderPanel setPrompt: _NS("Choose")];
-        [o_selectFolderPanel beginSheetModalForWindow: o_sprefs_win completionHandler: ^(NSInteger returnCode) {
-            if (returnCode == NSOKButton)
-            {
-                [o_input_record_fld setStringValue: [[o_selectFolderPanel URL] path]];
-                b_inputSettingChanged = YES;
-            }
-        }];
+        [panel beginSheetForDirectory:nil
+                         file:nil
+                modalForWindow:o_sprefs_win
+                modalDelegate:self
+                didEndSelector:@selector(snapDirPanelDidEnd:returnCode:contextInfo:)
+                    contextInfo:NULL];
         [o_selectFolderPanel release];
 
         return;

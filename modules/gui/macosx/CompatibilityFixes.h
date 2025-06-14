@@ -74,8 +74,4 @@ typedef NSInteger NSWindowAnimationBehavior;
 - (BOOL)isDirectionInvertedFromDevice;
 @end
 
-@interface NSAnimationContext (IntroducedInLion)
-+ (void)runAnimationGroup:(void (^)(NSAnimationContext *context))changes completionHandler:(void (^)(void))completionHandler;
-@end
-
 #endif

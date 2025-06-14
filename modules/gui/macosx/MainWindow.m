@@ -45,6 +45,29 @@
 #import "VideoView.h"
 #import "VLCVoutWindowController.h"
 
+typedef struct {
+    NSURL *url;
+} SetRepresentedURLContext;
+
+typedef struct {
+    NSString *title;
+} SetTitleContext;
+
+static void set_represented_url_task(void *window, void *context)
+{
+    SetRepresentedURLContext *ctx = (SetRepresentedURLContext *)context;
+    [(VLCVideoWindowCommon *)window setRepresentedURL:ctx->url];
+    if (ctx->url) [ctx->url release];
+    free(ctx);
+}
+
+static void set_title_task(void *window, void *context)
+{
+    SetTitleContext *ctx = (SetTitleContext *)context;
+    [(VLCVideoWindowCommon *)window setTitle:ctx->title];
+    if (ctx->title) [ctx->title release];
+    free(ctx);
+}
 
 @interface VLCMainWindow (Internal)
 - (void)resizePlaylistAfterCollapse;
@@ -713,14 +736,14 @@ static VLCMainWindow *_o_sharedInstance = nil;
         NSURL * o_url = [NSURL URLWithString:[NSString stringWithUTF8String:uri]];
         if ([o_url isFileURL]) {
             [self setRepresentedURL: o_url];
-            [[[VLCMain sharedInstance] voutController] updateWindowsUsingBlock:^(VLCVideoWindowCommon *o_window) {
-                [o_window setRepresentedURL:o_url];
-            }];
+            SetRepresentedURLContext *ctx = malloc(sizeof(SetRepresentedURLContext));
+            ctx->url = [o_url retain];
+            [[[VLCMain sharedInstance] voutController] updateWindowsWithFunction:set_represented_url_task context:ctx];
         } else {
             [self setRepresentedURL: nil];
-            [[[VLCMain sharedInstance] voutController] updateWindowsUsingBlock:^(VLCVideoWindowCommon *o_window) {
-                [o_window setRepresentedURL:nil];
-            }];
+            SetRepresentedURLContext *ctx = malloc(sizeof(SetRepresentedURLContext));
+            ctx->url = nil;
+            [[[VLCMain sharedInstance] voutController] updateWindowsWithFunction:set_represented_url_task context:ctx];
         }
         free(uri);
 
@@ -733,9 +756,9 @@ static VLCMainWindow *_o_sharedInstance = nil;
 
         if ([aString length] > 0) {
             [self setTitle: aString];
-            [[[VLCMain sharedInstance] voutController] updateWindowsUsingBlock:^(VLCVideoWindowCommon *o_window) {
-                [o_window setTitle:aString];
-            }];
+            SetTitleContext *ctx = malloc(sizeof(SetTitleContext));
+            ctx->title = [aString retain];
+            [[[VLCMain sharedInstance] voutController] updateWindowsWithFunction:set_title_task context:ctx];
 
             [o_fspanel setStreamTitle: aString];
         } else {

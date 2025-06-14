@@ -107,8 +107,8 @@ vlc_module_end ()
 }
 - (void)setVoutDisplay:(vout_display_t *)vd;
 - (void)setVoutFlushing:(BOOL)flushing;
+- (void)screenParametersDidChange:(NSNotification *)notification;
 @end
-
 
 struct vout_display_sys_t
 {
@@ -203,7 +203,6 @@ static int Open (vlc_object_t *this)
         msg_Err(vd, "Invalid drawable-nsobject object. drawable-nsobject must either be an NSView or comply to the @protocol VLCOpenGLVideoViewEmbedding.");
         goto error;
     }
-
 
     [nsPool release];
     nsPool = nil;
@@ -458,6 +457,12 @@ static void OpenglSwap (vlc_gl_t *gl)
 
 #define VLCAssertMainThread() assert([[NSThread currentThread] isMainThread])
 
+- (void)screenParametersDidChange:(NSNotification *)notification
+{
+    [self performSelectorOnMainThread:@selector(reshape)
+                        withObject:nil
+                        waitUntilDone:NO];
+}
 
 + (void)getNewView:(NSValue *)value
 {
@@ -508,14 +513,10 @@ static void OpenglSwap (vlc_gl_t *gl)
     GLint params[] = { 1 };
     CGLSetParameter ([[self openGLContext] CGLContextObj], kCGLCPSwapInterval, params);
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationDidChangeScreenParametersNotification
-                                                      object:[NSApplication sharedApplication]
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification *notification) {
-                                                      [self performSelectorOnMainThread:@selector(reshape)
-                                                                             withObject:nil
-                                                                          waitUntilDone:NO];
-                                                  }];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                        selector:@selector(screenParametersDidChange:)
+                                        name:NSApplicationDidChangeScreenParametersNotification
+                                        object:[NSApplication sharedApplication]];
 
     [self setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     return self;

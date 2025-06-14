@@ -94,6 +94,7 @@ static NSMenu   *o_keys_menu = nil;
 
 - (IBAction)openFileDialog: (id)sender;
 
+- (void)openPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo;
 @end
 
 @interface ModuleConfigControl : VLCConfigControl

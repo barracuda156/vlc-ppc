@@ -43,14 +43,14 @@
 
 static void addonsEventsCallback( const vlc_event_t *event, void *data )
 {
-    @autoreleasepool {
-        if (event->type == vlc_AddonFound)
-            [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(addAddon:) withObject:[NSValue valueWithPointer:event->u.addon_generic_event.p_entry] waitUntilDone:NO];
-        else if (event->type == vlc_AddonsDiscoveryEnded)
-            [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(discoveryEnded) withObject:nil waitUntilDone:NO];
-        else if (event->type == vlc_AddonChanged)
-            [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(addonChanged:) withObject:[NSValue valueWithPointer:event->u.addon_generic_event.p_entry] waitUntilDone:NO];
-    }
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    if (event->type == vlc_AddonFound)
+        [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(addAddon:) withObject:[NSValue valueWithPointer:event->u.addon_generic_event.p_entry] waitUntilDone:NO];
+    else if (event->type == vlc_AddonsDiscoveryEnded)
+        [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(discoveryEnded) withObject:nil waitUntilDone:NO];
+    else if (event->type == vlc_AddonChanged)
+        [[VLCAddonManager sharedInstance] performSelectorOnMainThread:@selector(addonChanged:) withObject:[NSValue valueWithPointer:event->u.addon_generic_event.p_entry] waitUntilDone:NO];
+    [pool drain];
 }
 
 @implementation VLCAddonManager

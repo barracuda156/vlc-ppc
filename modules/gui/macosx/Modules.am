@@ -95,8 +95,6 @@ SOURCES_macosx = \
 	BWQuincyUI.m \
 	iTunes.h \
 	Spotify.h \
-	ResumeDialogController.h \
-	ResumeDialogController.m \
 	VLCDocumentController.h \
 	VLCDocumentController.m \
 	$(NULL)

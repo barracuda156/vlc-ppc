@@ -1148,22 +1148,31 @@ o_textfield = [[[NSSecureTextField alloc] initWithFrame: s_rc] retain];     \
     [super dealloc];
 }
 
-- (IBAction)openFileDialog: (id)sender
+- (void)openPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton) {
+        NSString *o_path = [[[panel URLs] objectAtIndex:0] path];
+        [o_textfield setStringValue:o_path];
+    }
+}
+
+- (IBAction)openFileDialog:(id)sender
 {
     NSOpenPanel *o_open_panel = [NSOpenPanel openPanel];
 
-    [o_open_panel setTitle: (b_directory)?
-        _NS("Select a directory"):_NS("Select a file")];
+    [o_open_panel setTitle: (b_directory) ?
+        _NS("Select a directory") : _NS("Select a file")];
     [o_open_panel setPrompt: _NS("Select")];
-    [o_open_panel setAllowsMultipleSelection: NO];
-    [o_open_panel setCanChooseFiles: !b_directory];
-    [o_open_panel setCanChooseDirectories: b_directory];
-    [o_open_panel beginSheetModalForWindow:[sender window] completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSOKButton) {
-            NSString *o_path = [[[o_open_panel URLs] objectAtIndex:0] path];
-            [o_textfield setStringValue: o_path];
-        }        
-    }];
+    [o_open_panel setAllowsMultipleSelection:NO];
+    [o_open_panel setCanChooseFiles:!b_directory];
+    [o_open_panel setCanChooseDirectories:b_directory];
+
+    [o_open_panel beginSheetForDirectory:nil
+                                    file:nil
+                        modalForWindow:[sender window]
+                            modalDelegate:self
+                        didEndSelector:@selector(openPanelDidEnd:returnCode:contextInfo:)
+                            contextInfo:NULL];
 }
 
 - (char *)stringValue

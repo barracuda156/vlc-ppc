@@ -51,10 +51,9 @@
 #import "open.h"
 #import "MainMenu.h"
 #import "CoreInteraction.h"
-#import "ResumeDialogController.h"
 
 #include <vlc_keys.h>
-#import <vlc_interface.h>
+#include <vlc_interface.h>
 #include <vlc_url.h>
 
 /*****************************************************************************
@@ -1546,27 +1545,37 @@
     if (settingValue == 2) // never resume
         return;
 
-    CompletionBlock completionBlock = ^(enum ResumeResult result) {
+    NSInteger returnValue = NSAlertErrorReturn;
+    if (settingValue == 0) { // ask
 
-        if (result == RESUME_RESTART)
+        currentResumeTimeout = 6;
+        NSString *o_restartButtonLabel = _NS("Restart playback");
+        o_restartButtonLabel = [o_restartButtonLabel stringByAppendingFormat:@" (%d)", currentResumeTimeout];
+        NSAlert *theAlert = [NSAlert alertWithMessageText:_NS("Continue playback?") defaultButton:_NS("Continue") alternateButton:o_restartButtonLabel otherButton:_NS("Always continue") informativeTextWithFormat:_NS("Playback of \"%@\" will continue at %@"), [NSString stringWithUTF8String:input_item_GetTitleFbName(p_item)], [[VLCStringUtility sharedInstance] stringForTime:lastPosition.intValue]];
+
+        NSTimer *timer = [NSTimer timerWithTimeInterval:1
+                                                 target:self
+                                               selector:@selector(updateAlertWindow:)
+                                               userInfo:theAlert
+                                                repeats:YES];
+
+        [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSModalPanelRunLoopMode];
+
+        returnValue = [theAlert runModal];
+        [timer invalidate];
+
+        // restart button was pressed or timeout happened
+        if (returnValue == NSAlertAlternateReturn ||
+            returnValue == NSRunAbortedResponse)
             return;
-
-        mtime_t lastPos = (mtime_t)lastPosition.intValue * 1000000;
-        msg_Dbg(VLCIntf, "continuing playback at %lld", lastPos);
-        var_SetTime(p_input_thread, "time", lastPos);
-
-        if (result == RESUME_ALWAYS)
-            config_PutInt(VLCIntf, "macosx-continue-playback", 1);
-    };
-
-    if (settingValue == 1) { // always
-        completionBlock(RESUME_NOW);
-        return;
     }
 
-    [[[VLCMain sharedInstance] resumeDialog] showWindowWithItem:p_item
-                                               withLastPosition:lastPosition.intValue
-                                                completionBlock:completionBlock];
+    mtime_t lastPos = (mtime_t)lastPosition.intValue * 1000000;
+    msg_Dbg(VLCIntf, "continuing playback at %lld", lastPos);
+    var_SetTime(p_input_thread, "time", lastPos);
+
+    if (returnValue == NSAlertOtherReturn)
+        config_PutInt(VLCIntf, "macosx-continue-playback", 1);
 }
 
 - (void)storePlaybackPositionForItem:(input_thread_t *)p_input_thread

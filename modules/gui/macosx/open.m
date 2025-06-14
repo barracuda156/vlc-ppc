@@ -737,19 +737,29 @@ static VLCOpen *_o_sharedMainInstance = nil;
 {
     NSOpenPanel *o_open_panel = [NSOpenPanel openPanel];
 
-    [o_open_panel setAllowsMultipleSelection: NO];
-    [o_open_panel setCanChooseDirectories: YES];
-    [o_open_panel setTitle: _NS("Open File")];
-    [o_open_panel setPrompt: _NS("Open")];
-    [o_open_panel beginSheetModalForWindow:[sender window] completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSFileHandlingPanelOKButton) {
-            if (o_file_path)
-                [o_file_path release];
-            o_file_path = [[[o_open_panel URLs] objectAtIndex:0] path];
-            [o_file_path retain];
-            [self openFilePathChanged: nil];
-        }
-    }];
+    [o_open_panel setAllowsMultipleSelection:NO];
+    [o_open_panel setCanChooseDirectories:YES];
+    [o_open_panel setTitle:_NS("Open File")];
+    [o_open_panel setPrompt:_NS("Open")];
+
+    // Classic sheet presentation (10.5+)
+    [o_open_panel beginSheetForDirectory:nil
+                                   file:nil
+                        modalForWindow:[sender window]
+                        modalDelegate:self
+                        didEndSelector:@selector(openPanelDidEnd:returnCode:contextInfo:)
+                            contextInfo:NULL];
+}
+
+- (void)openPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSFileHandlingPanelOKButton) {
+        if (o_file_path)
+            [o_file_path release];
+        o_file_path = [[[panel URLs] objectAtIndex:0] path];
+        [o_file_path retain];
+        [self openFilePathChanged:nil];
+    }
 }
 
 - (IBAction)openFileStreamChanged:(id)sender

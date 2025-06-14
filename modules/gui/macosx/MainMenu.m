@@ -49,6 +49,17 @@
 #import "DebugMessageVisualizer.h"
 #import "AddonManager.h"
 
+typedef struct {
+    BOOL b_value;
+} ToggleJumpButtonsContext;
+
+static void toggle_jump_buttons_task(void *window, void *context)
+{
+    ToggleJumpButtonsContext *ctx = (ToggleJumpButtonsContext *)context;
+    [[(VLCVideoWindowCommon *)window controlsBar] toggleForwardBackwardMode:ctx->b_value];
+    free(ctx);
+}
+
 @implementation VLCMainMenu
 static VLCMainMenu *_o_sharedInstance = nil;
 
@@ -748,9 +759,10 @@ static VLCMainMenu *_o_sharedInstance = nil;
     config_PutInt(VLCIntf, "macosx-show-playback-buttons", b_value);
 
     [[[[VLCMain sharedInstance] mainWindow] controlsBar] toggleJumpButtons];
-    [[[VLCMain sharedInstance] voutController] updateWindowsUsingBlock:^(VLCVideoWindowCommon *o_window) {
-        [[o_window controlsBar] toggleForwardBackwardMode: b_value];
-    }];
+
+    ToggleJumpButtonsContext *ctx = malloc(sizeof(ToggleJumpButtonsContext));
+    ctx->b_value = b_value;
+    [[[VLCMain sharedInstance] voutController] updateWindowsWithFunction:toggle_jump_buttons_task context:ctx];
 
     [o_mi_toggleJumpButtons setState: b_value];
 }

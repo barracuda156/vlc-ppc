@@ -1621,14 +1621,25 @@ static VLCWizard *_o_sharedInstance = nil;
         "features are however useful to save network streams, for example."));
 }
 
+- (void)t2_getNewStreamFromDialog:(NSOpenPanel *)panel
+                    returnCode:(NSInteger)returnCode
+                    contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [o_t2_fld_pathToNewStrm setStringValue:[[panel URL] absoluteString]];
+}
+
 - (IBAction)t2_addNewStream:(id)sender
 {
-    NSOpenPanel * openPanel = [NSOpenPanel openPanel];
-    SEL sel = @selector(t2_getNewStreamFromDialog:returnCode:contextInfo:);
-    [openPanel beginSheetModalForWindow: o_wizard_window completionHandler: ^(NSInteger returnCode) {
-        if (returnCode == NSOKButton)
-            [o_t2_fld_pathToNewStrm setStringValue: [[openPanel URL] absoluteString]];
-    }];
+    NSOpenPanel *openPanel = [NSOpenPanel openPanel];
+
+    // Use classic delegate-based async sheet API
+    [openPanel beginSheetForDirectory:nil
+                                 file:nil
+                    modalForWindow:o_wizard_window
+                        modalDelegate:self
+                    didEndSelector:@selector(t2_getNewStreamFromDialog:returnCode:contextInfo:)
+                        contextInfo:NULL];
 }
 
 - (IBAction)t2_chooseStreamOrPlst:(id)sender
@@ -1815,47 +1826,58 @@ static VLCWizard *_o_sharedInstance = nil;
             "CPU power than simple transcoding or streaming."));
 }
 
+- (void)t7_saveFolderPanelDidEnd:(NSOpenPanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [o_t7_fld_filePath setStringValue:[NSString stringWithFormat:@"%@/", [[panel URL] path]]];
+}
+
+- (void)t7_saveFilePanelDidEnd:(NSSavePanel *)panel returnCode:(NSInteger)returnCode contextInfo:(void *)contextInfo
+{
+    if (returnCode == NSOKButton)
+        [o_t7_fld_filePath setStringValue:[[panel URL] path]];
+}
+
 - (IBAction)t7_selectTrnscdDestFile:(id)sender
 {
-    /* provide a save-to-dialogue, so the user can choose a location for
-     * his/her new file. We take a modified NSOpenPanel to select a folder
-     * and a plain NSSavePanel to save a single file. */
-
     if ([[o_userSelections objectForKey:@"pathToStrm"] count] > 1)
     {
-        NSOpenPanel * saveFolderPanel = [[NSOpenPanel alloc] init];
+        NSOpenPanel *saveFolderPanel = [[NSOpenPanel alloc] init];
 
-        [saveFolderPanel setCanChooseDirectories: YES];
-        [saveFolderPanel setCanChooseFiles: NO];
-        [saveFolderPanel setCanSelectHiddenExtension: NO];
-        [saveFolderPanel setCanCreateDirectories: YES];
-        [saveFolderPanel beginSheetModalForWindow: o_wizard_window completionHandler:^(NSInteger returnCode) {
-            if (returnCode == NSOKButton)
-                [o_t7_fld_filePath setStringValue: [NSString stringWithFormat: @"%@/", [[saveFolderPanel URL] path]]];
-        }];
+        [saveFolderPanel setCanChooseDirectories:YES];
+        [saveFolderPanel setCanChooseFiles:NO];
+        [saveFolderPanel setCanSelectHiddenExtension:NO];
+        [saveFolderPanel setCanCreateDirectories:YES];
+
+        [saveFolderPanel beginSheetForDirectory:nil
+                                           file:nil
+                                modalForWindow:o_wizard_window
+                                modalDelegate:self
+                                didEndSelector:@selector(t7_saveFolderPanelDidEnd:returnCode:contextInfo:)
+                                    contextInfo:NULL];
         [saveFolderPanel release];
     }
     else
     {
-        NSSavePanel * saveFilePanel = [[NSSavePanel alloc] init];
+        NSSavePanel *saveFilePanel = [[NSSavePanel alloc] init];
 
-        /* don't use ".ps" as suffix, since the OSX Finder confuses our
-         * creations with PostScript-files and wants to open them with
-         * Preview.app */
-        NSString * theEncapFormat = [[o_encapFormats objectAtIndex:
-        [[o_userSelections objectForKey:@"encapFormat"] intValue]]
-        objectAtIndex:0];
+        NSString *theEncapFormat = [[o_encapFormats objectAtIndex:
+            [[o_userSelections objectForKey:@"encapFormat"] intValue]]
+            objectAtIndex:0];
         if (![theEncapFormat isEqualToString:@"ps"])
-            [saveFilePanel setAllowedFileTypes: [NSArray arrayWithObject:theEncapFormat]];
+            [saveFilePanel setAllowedFileTypes:[NSArray arrayWithObject:theEncapFormat]];
         else
-            [saveFilePanel setAllowedFileTypes: [NSArray arrayWithObject:@"mpg"]];
+            [saveFilePanel setAllowedFileTypes:[NSArray arrayWithObject:@"mpg"]];
 
-        [saveFilePanel setCanSelectHiddenExtension: YES];
-        [saveFilePanel setCanCreateDirectories: YES];
-        [saveFilePanel beginSheetModalForWindow: o_wizard_window completionHandler:^(NSInteger returnCode) {
-            if (returnCode == NSOKButton)
-                [o_t7_fld_filePath setStringValue:[[saveFilePanel URL] path]];
-        }];
+        [saveFilePanel setCanSelectHiddenExtension:YES];
+        [saveFilePanel setCanCreateDirectories:YES];
+
+        [saveFilePanel beginSheetForDirectory:nil
+                                         file:nil
+                                modalForWindow:o_wizard_window
+                                modalDelegate:self
+                                didEndSelector:@selector(t7_saveFilePanelDidEnd:returnCode:contextInfo:)
+                                    contextInfo:NULL];
         [saveFilePanel release];
     }
 }
